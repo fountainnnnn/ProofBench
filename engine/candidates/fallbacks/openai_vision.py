@@ -1,0 +1,71 @@
+"""Built-in OpenAI vision candidate (cloud API, OPENAI_API_KEY)."""
+
+from __future__ import annotations
+
+from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
+
+
+_ADAPTER_BODY = r'''
+import base64
+import json
+import os
+from pathlib import Path
+
+from openai import OpenAI
+
+
+FIELDS = ("invoice_number", "date", "vendor", "total")
+
+
+def _json_object(content: str) -> dict:
+    start = content.find("{")
+    end = content.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("model reply did not contain a JSON object")
+    value = json.loads(content[start:end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("model reply JSON was not an object")
+    return {field: "" if value.get(field) is None else str(value.get(field, "")) for field in FIELDS}
+
+
+def extract(image_path: str) -> dict:
+    encoded = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+    suffix = Path(image_path).suffix.casefold()
+    media_type = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    response = client.chat.completions.create(
+        model=os.environ.get("OPENAI_VISION_MODEL", "gpt-4o"),
+        messages=[
+            {
+                "role": "system",
+                "content": "Extract invoice fields. Return STRICT JSON only with exactly invoice_number, date, vendor, and total as string fields. Use an empty string when missing.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract the four invoice fields from this image."},
+                    {"type": "image_url", "image_url": {"url": "data:" + media_type + ";base64," + encoded}},
+                ],
+            },
+        ],
+        temperature=0,
+    )
+    content = response.choices[0].message.content
+    if not isinstance(content, str):
+        raise ValueError("model reply did not contain text")
+    return _json_object(content)
+'''
+
+
+def candidate() -> Candidate:
+    """Return the OpenAI vision fallback candidate."""
+    return Candidate(
+        name="openai_vision",
+        display_name="OpenAI Vision (GPT-4o)",
+        docs_url="https://platform.openai.com/docs/guides/vision",
+        kind="hosted_api",
+        build_commands=["pip install openai pillow"],
+        adapter_code=_ADAPTER_BODY.strip() + "\n\n" + RESULT_JSON_WRAPPER,
+        setup_complexity=1,
+        pricing_url="https://openai.com/api/pricing/",
+    )

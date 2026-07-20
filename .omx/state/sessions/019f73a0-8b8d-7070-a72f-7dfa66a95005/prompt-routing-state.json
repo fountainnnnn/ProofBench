@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "last_triage": {
+    "lane": "HEAVY",
+    "destination": "autopilot",
+    "reason": "implementation_research_goal",
+    "prompt_signature": "sha256:c9a05bf926c223832c0a5d5e622350da5b0cab7d93b6b1b21a2123e23e361930",
+    "turn_id": "019f73a0-8e4d-77b0-805b-52f65b099fc5",
+    "created_at": "2026-07-18T05:08:56.132Z"
+  },
+  "suppress_followup": true
+}

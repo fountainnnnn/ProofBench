@@ -1,0 +1,9 @@
+doc_id,invoice_number,date,vendor,total
+inv_001,INV-1001,2026-06-01,Acme Pte Ltd,128.50
+inv_002,INV-1002,2026-06-04,Meridian Office Supplies,266.09
+inv_003,INV-1003,2026-06-07,Northstar Logistics LLP,403.68
+inv_004,INV-1004,2026-06-10,Juniper Systems Pte Ltd,541.27
+inv_005,INV-1005,2026-06-13,Harbourfront Services,678.86
+inv_006,INV-1006,2026-06-16,Orchid Paper Company,816.45
+inv_007,INV-1007,2026-06-19,Acme Pte Ltd,954.04
+inv_008,INV-1008,2026-06-22,Meridian Office Supplies,1091.63

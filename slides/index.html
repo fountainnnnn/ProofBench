@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProofBench: Hackathon Pitch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: oklch(0.992 0.002 264);
+    --surface: oklch(0.985 0.003 264);
+    --surface-2: oklch(0.972 0.004 264);
+    --border: oklch(0.905 0.006 264);
+    --border-strong: oklch(0.82 0.008 264);
+    --text: oklch(0.24 0.02 264);
+    --text-2: oklch(0.46 0.015 264);
+    --text-3: oklch(0.62 0.012 264);
+    --accent: oklch(0.52 0.19 268);
+    --accent-soft: oklch(0.95 0.025 268);
+    --ok: oklch(0.62 0.15 155);
+    --warn: oklch(0.68 0.15 75);
+    --err: oklch(0.55 0.19 25);
+    --info: oklch(0.58 0.12 230);
+    --code-bg: oklch(0.27 0.02 264);
+    --code-text: oklch(0.85 0.02 160);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /* ---------- chrome ---------- */
+  #progress {
+    position: fixed; top: 0; left: 0; height: 3px; width: 0;
+    background: var(--accent); z-index: 30;
+    transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  #chrome {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 28px;
+    font-size: 13px; color: var(--text-3);
+    pointer-events: none;
+  }
+  #chrome .brand { font-weight: 600; color: var(--text-2); }
+  #chrome .nav { pointer-events: auto; display: flex; align-items: center; gap: 12px; }
+  #counter { font-family: var(--mono); font-size: 12px; }
+  .navbtn {
+    border: 1px solid var(--border-strong); background: var(--surface);
+    color: var(--text-2); border-radius: 6px; height: 28px; min-width: 32px;
+    font: 500 13px "Inter", system-ui, sans-serif; cursor: pointer; padding: 0 8px;
+  }
+  .navbtn:hover { color: var(--text); border-color: var(--text-3); }
+
+  /* ---------- slides ---------- */
+  .slide {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 72px 7vw 88px;
+    opacity: 0; transform: translateY(10px);
+    transition: opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
+                transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    pointer-events: none;
+  }
+  .slide.active { opacity: 1; transform: none; pointer-events: auto; }
+  .inner { width: 100%; max-width: 1240px; margin: 0 auto; }
+
+  h1.display {
+    font-size: clamp(64px, 9vw, 128px);
+    font-weight: 800; letter-spacing: -0.035em; line-height: 0.98;
+  }
+  h2 {
+    font-size: clamp(38px, 4.6vw, 62px);
+    font-weight: 700; letter-spacing: -0.025em; line-height: 1.06;
+    max-width: 22ch;
+  }
+  .lede {
+    margin-top: 28px;
+    font-size: clamp(20px, 2vw, 27px);
+    line-height: 1.45; color: var(--text-2);
+    max-width: 56ch;
+  }
+  .lede strong { color: var(--text); font-weight: 600; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center; }
+  .cols.wide-left { grid-template-columns: 1.1fr 0.9fr; }
+
+  /* numbered statement rows (problem, console) */
+  .rows { margin-top: 48px; max-width: 1080px; }
+  .row {
+    display: grid; grid-template-columns: 64px 1fr; gap: 24px;
+    padding: 22px 0; border-top: 1px solid var(--border);
+    align-items: baseline;
+  }
+  .row:last-child { border-bottom: 1px solid var(--border); }
+  .row .num { font-family: var(--mono); font-size: 15px; color: var(--accent); font-weight: 600; }
+  .row .txt { font-size: clamp(18px, 1.8vw, 23px); line-height: 1.45; color: var(--text-2); }
+  .row .txt strong { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
+
+  /* typographic statement slide (relevance) */
+  .statements { margin-top: 8px; }
+  .statements p { line-height: 1.28; letter-spacing: -0.015em; }
+  .st1 { font-size: clamp(26px, 2.6vw, 36px); color: var(--text-2); font-weight: 500; }
+  .st2 { font-size: clamp(34px, 3.6vw, 50px); color: var(--text); font-weight: 650; margin-top: 28px; max-width: 30ch; }
+  .st3 { font-size: clamp(42px, 4.8vw, 66px); color: var(--accent); font-weight: 750; margin-top: 28px; letter-spacing: -0.025em; max-width: 24ch; }
+
+  /* flow strip (pipeline) */
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin-top: 56px; }
+  .step { padding: 0 20px 0 0; position: relative; }
+  .step + .step { padding-left: 28px; border-left: 1px solid var(--border); }
+  .step .n { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 600; }
+  .step h3 { font-size: clamp(18px, 1.7vw, 22px); font-weight: 600; margin-top: 10px; letter-spacing: -0.01em; }
+  .step p { font-size: 14.5px; color: var(--text-2); line-height: 1.5; margin-top: 8px; }
+  .step .who { display: inline-block; margin-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--text-3); }
+
+  /* sponsor table */
+  table.spec { width: 100%; border-collapse: collapse; margin-top: 44px; }
+  table.spec th {
+    text-align: left; font-size: 13px; font-weight: 600; color: var(--text-2);
+    background: var(--surface-2); padding: 12px 20px; border-bottom: 1px solid var(--border-strong);
+  }
+  table.spec td {
+    padding: 18px 20px; border-bottom: 1px solid var(--border);
+    font-size: clamp(16px, 1.6vw, 20px); vertical-align: baseline;
+  }
+  table.spec td:first-child { font-weight: 650; white-space: nowrap; }
+  table.spec td .role { color: var(--text-2); }
+  table.spec td .role strong { color: var(--text); font-weight: 600; }
+
+  /* spec card mock (feature 1) */
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 1px 2px oklch(0.52 0.19 268 / 0.04), 0 2px 8px oklch(0.52 0.19 268 / 0.05);
+    padding: 28px;
+  }
+  .card h4 { font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 13.5px; color: var(--text);
+    background: var(--accent-soft); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 14px;
+  }
+  .chip.plain { background: var(--surface-2); color: var(--text-2); }
+  .card .meta { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 14px; color: var(--text-2); line-height: 1.6; }
+  .card .meta b { color: var(--text); font-weight: 600; }
+  .runbtn {
+    margin-top: 20px; display: inline-block; background: var(--accent); color: oklch(0.99 0.005 268);
+    font: 500 14px "Inter", system-ui, sans-serif; border-radius: 6px; padding: 10px 22px;
+  }
+
+  /* code panel (feature 2) */
+  pre.code {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    font-family: var(--mono); font-size: clamp(13px, 1.25vw, 15.5px); line-height: 1.65;
+    padding: 26px 28px; color: var(--text); overflow: hidden;
+    box-shadow: 0 1px 2px oklch(0.52 0.19 268 / 0.04), 0 2px 8px oklch(0.52 0.19 268 / 0.05);
+  }
+  pre.code .c { color: var(--text-3); }
+  pre.code .k { color: var(--accent); font-weight: 600; }
+
+  /* terminal panel (feature 3, the one dark surface) */
+  .term {
+    background: var(--code-bg); border-radius: 10px; padding: 26px 28px;
+    font-family: var(--mono); font-size: clamp(13px, 1.25vw, 15.5px); line-height: 1.75;
+    color: var(--code-text);
+  }
+  .term .dim { color: oklch(0.65 0.02 200); }
+  .term .b-info { color: oklch(0.78 0.12 230); }
+  .term .b-warn { color: oklch(0.8 0.14 80); }
+  .term .b-ok { color: oklch(0.8 0.14 155); }
+  .term .b-err { color: oklch(0.75 0.15 25); }
+
+  /* results table (feature 4) */
+  .tblwrap {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 1px 2px oklch(0.52 0.19 268 / 0.04), 0 2px 8px oklch(0.52 0.19 268 / 0.05);
+  }
+  table.res { width: 100%; border-collapse: collapse; }
+  table.res th {
+    background: var(--surface-2); font-size: 12px; font-weight: 600; color: var(--text-2);
+    text-align: right; padding: 10px 14px; border-bottom: 1px solid var(--border-strong);
+  }
+  table.res th:nth-child(2), table.res td:nth-child(2) { text-align: left; }
+  table.res td {
+    font-family: var(--mono); font-size: clamp(12.5px, 1.15vw, 15px);
+    text-align: right; padding: 11px 14px; border-bottom: 1px solid var(--border); color: var(--text-2);
+  }
+  table.res tr:last-child td { border-bottom: 0; }
+  table.res tr.first td { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+  table.res td:nth-child(2) { font-family: "Inter", system-ui, sans-serif; font-weight: 600; color: var(--text); }
+  .caption { margin-top: 12px; font-size: 13px; color: var(--text-3); }
+
+  /* metric list */
+  .metrics { margin-top: 32px; }
+  .metrics div {
+    padding: 12px 0; border-top: 1px solid var(--border);
+    font-size: clamp(17px, 1.7vw, 21px); color: var(--text-2);
+  }
+  .metrics div:last-child { border-bottom: 1px solid var(--border); }
+  .metrics b { color: var(--text); font-weight: 600; font-family: var(--mono); font-size: 0.92em; }
+
+  /* demo steps */
+  .demo { margin-top: 44px; max-width: 1080px; }
+  .demo .row { padding: 17px 0; }
+
+  /* closing */
+  .closing .big {
+    font-size: clamp(56px, 8vw, 116px); font-weight: 800; letter-spacing: -0.035em; line-height: 1;
+  }
+  .next { margin-top: 40px; font-size: clamp(18px, 1.8vw, 23px); color: var(--text-2); max-width: 62ch; line-height: 1.55; }
+  .next b { color: var(--text); font-weight: 600; }
+
+  .sponsors {
+    margin-top: 56px; display: flex; flex-wrap: wrap; gap: 10px 28px;
+    font-size: 14px; color: var(--text-3); font-weight: 500; letter-spacing: 0.01em;
+  }
+  .hint { position: absolute; bottom: 64px; right: 7vw; font-size: 12.5px; color: var(--text-3); font-family: var(--mono); }
+
+  @media (max-width: 900px) {
+    .cols, .cols.wide-left { grid-template-columns: 1fr; gap: 36px; }
+    .flow { grid-template-columns: 1fr 1fr; gap: 28px; }
+    .step + .step { border-left: 0; padding-left: 0; }
+  }
+  @media print {
+    body { overflow: visible; }
+    .slide { position: relative; opacity: 1; transform: none; pointer-events: auto;
+             page-break-after: always; min-height: 100vh; }
+    #chrome, #progress, .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+
+<!-- 01 · Title -->
+<section class="slide active">
+  <div class="inner">
+    <h1 class="display">ProofBench</h1>
+    <p class="lede"><strong>Agentic benchmarking of any tool, built from its own docs.</strong> Point it at a category and a labelled dataset: candidates are discovered, integrated, and run in parallel sandboxes, then scored deterministically against your ground truth.</p>
+    <div class="sponsors">
+      <span>Daytona</span><span>Oxylabs</span><span>Doubleword</span>
+    </div>
+  </div>
+  <div class="hint">← → navigate · f fullscreen</div>
+</section>
+
+<!-- 02 · Problem -->
+<section class="slide">
+  <div class="inner">
+    <h2>Picking a tool is still a guess.</h2>
+    <div class="rows">
+      <div class="row"><span class="num">01</span><span class="txt"><strong>Marketing over measurement.</strong>Every vendor page claims best-in-class performance. None of them show numbers on your data.</span></div>
+      <div class="row"><span class="num">02</span><span class="txt"><strong>Public benchmarks do not transfer.</strong>Leaderboards run on generic datasets. Your workload is not in them.</span></div>
+      <div class="row"><span class="num">03</span><span class="txt"><strong>A real eval costs a week.</strong>Every team hand-builds the same integrations, reruns the same harness, then argues about how to score it.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 · Relevance -->
+<section class="slide">
+  <div class="inner statements">
+    <p class="st1">Every stack is a chain of tool choices: OCR, parsers, vector stores, inference APIs.</p>
+    <p class="st2">A few points of quality become manual review hours. Latency and cost per 1,000 calls decide what ships.</p>
+    <p class="st3">The wrong pick compounds. Teams still choose on vibes.</p>
+  </div>
+</section>
+
+<!-- 04 · What it does -->
+<section class="slide">
+  <div class="inner">
+    <h2>Point it at a category and your labelled dataset.</h2>
+    <p class="lede">ProofBench returns a <strong>ranked, citation-backed verdict</strong> on which tool actually performs best on your data. No LLM ever judges correctness; the LLM only does logistics.</p>
+    <div class="flow">
+      <div class="step"><span class="n">1</span><h3>Discover</h3><p>Search for candidate tools in the category.</p><span class="who">orchestrator · Oxylabs</span></div>
+      <div class="step"><span class="n">2</span><h3>Read the docs</h3><p>Scrape documentation and pricing pages.</p><span class="who">Oxylabs</span></div>
+      <div class="step"><span class="n">3</span><h3>Integrate</h3><p>Generate a working adapter per tool, from its own docs.</p><span class="who">Doubleword</span></div>
+      <div class="step"><span class="n">4</span><h3>Run</h3><p>Build and execute every candidate in parallel.</p><span class="who">Daytona</span></div>
+      <div class="step"><span class="n">5</span><h3>Score</h3><p>Deterministic metrics against your ground truth.</p><span class="who">evaluate.py</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 05 · Sponsors -->
+<section class="slide">
+  <div class="inner">
+    <h2>Three sponsors, one pipeline.</h2>
+    <table class="spec">
+      <tr><th>Sponsor</th><th>Role in ProofBench</th></tr>
+      <tr><td>Daytona</td><td class="role"><strong>Sandbox fleet.</strong> A pre-warmed pool of isolated sandboxes. One per candidate, built and run in parallel.</td></tr>
+      <tr><td>Oxylabs</td><td class="role"><strong>Docs intel.</strong> Google search for candidate discovery, scraping of documentation and pricing pages.</td></tr>
+      <tr><td>Doubleword</td><td class="role"><strong>Batch inference and codegen.</strong> Generates each tool's adapter from its scraped documentation, and batches every LLM request in the pipeline: codegen calls and hosted extraction candidates all run through Doubleword's batch serving. It also competes in the benchmark as a candidate itself.</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- 06 · Feature 1: docs intel -->
+<section class="slide">
+  <div class="inner cols wide-left">
+    <div>
+      <h2>It reads the docs so you do not have to.</h2>
+      <p class="lede">Give the orchestrator agent a plain-language brief: 'benchmark invoice-extraction tools', or any other category. It searches Google and scrapes documentation and pricing pages with Oxylabs, then proposes an <strong>editable spec</strong>: candidates, dataset, metrics. You confirm, it runs.</p>
+    </div>
+    <div class="card">
+      <h4>Proposed spec</h4>
+      <div class="chips">
+        <span class="chip">tesseract</span>
+        <span class="chip">easyocr</span>
+        <span class="chip">paddleocr</span>
+        <span class="chip">doubleword</span>
+        <span class="chip plain">+ discovered tools</span>
+      </div>
+      <div class="meta">
+        Dataset: <b>data/demo</b>, 15 labelled invoices<br>
+        Metrics: <b>exact accuracy, field F1, CER, latency, cost</b><br>
+        Demo category: <b>invoice extraction</b>
+      </div>
+      <span class="runbtn">Run benchmark</span>
+    </div>
+  </div>
+</section>
+
+<!-- 07 · Feature 2: adapter codegen -->
+<section class="slide">
+  <div class="inner cols wide-left">
+    <div>
+      <h2>Integrations written from each tool's own documentation.</h2>
+      <p class="lede">Doubleword reads the scraped docs and generates the full adapter: install commands, API calls, and output mapping to <strong>one shared contract</strong>. The sandbox builds and validates it; a failed build goes back for regeneration.</p>
+      <p class="lede" style="margin-top:18px">The same Doubleword deployment is also the <strong>batch inference layer</strong>: every LLM request in a run, from adapter codegen to the hosted extraction candidates, goes out as a batched request through Doubleword.</p>
+    </div>
+    <pre class="code"><span class="c"># easyocr adapter (from scraped docs)</span>
+<span class="k">def</span> extract(image_path):
+    reader = easyocr.Reader([<span class="c">"en"</span>])
+    lines = reader.readtext(image_path)
+    <span class="k">return</span> {
+        <span class="c">"invoice_no"</span>: parse_no(lines),
+        <span class="c">"date"</span>:       parse_date(lines),
+        <span class="c">"total"</span>:      parse_total(lines),
+    }</pre>
+  </div>
+</section>
+
+<!-- 08 · Feature 3: sandbox fleet -->
+<section class="slide">
+  <div class="inner cols wide-left">
+    <div>
+      <h2>Every candidate races in its own Daytona sandbox.</h2>
+      <p class="lede">A pre-warmed pool builds, validates, and runs candidates <strong>in parallel</strong>. A failed build triggers self-repair: the agent reads the error, patches the adapter, retries. Every line streams to the console.</p>
+    </div>
+    <div class="term">
+      <div><span class="dim">[sb-1]</span> pip install easyocr torch <span class="b-info">building</span></div>
+      <div><span class="dim">[sb-1]</span> build ok in 41s <span class="b-warn">validating</span></div>
+      <div><span class="dim">[sb-2]</span> tesseract: exit 1 <span class="b-err">failed</span></div>
+      <div><span class="dim">[sb-2]</span> repair 1: adapter patched <span class="b-warn">repair</span></div>
+      <div><span class="dim">[sb-2]</span> rebuild ok <span class="b-info">running</span></div>
+      <div><span class="dim">[sb-1]</span> 15/15 docs extracted <span class="b-ok">done</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 09 · Feature 4: deterministic evaluator -->
+<section class="slide">
+  <div class="inner cols wide-left">
+    <div>
+      <h2>Scored by code, never judged by a model.</h2>
+      <p class="lede"><strong>evaluate.py</strong> compares every result against your ground truth. Deterministic, offline, reproducible byte-for-byte. The metric set adapts to the category.</p>
+      <div class="metrics">
+        <div><b>exact accuracy</b> &nbsp;whole-document match</div>
+        <div><b>field F1 · CER</b> &nbsp;per-field and character-level error</div>
+        <div><b>latency · failure rate · cost/1k</b> &nbsp;the operational picture</div>
+      </div>
+    </div>
+    <div>
+      <div class="tblwrap">
+        <table class="res">
+          <tr><th>#</th><th>Candidate</th><th>Exact</th><th>F1</th><th>CER</th><th>Latency</th><th>Fail</th><th>$/1k</th></tr>
+          <tr class="first"><td>1</td><td>openai_vision</td><td>96.7%</td><td>97.5%</td><td>0.012</td><td>1.18s</td><td>0.0%</td><td>$7.50</td></tr>
+          <tr><td>2</td><td>doubleword</td><td>94.2%</td><td>95.6%</td><td>0.021</td><td>2.41s</td><td>0.0%</td><td>$2.10</td></tr>
+          <tr><td>3</td><td>easyocr</td><td>82.5%</td><td>86.1%</td><td>0.084</td><td>0.74s</td><td>3.3%</td><td>$0.00</td></tr>
+          <tr><td>4</td><td>tesseract</td><td>77.5%</td><td>81.4%</td><td>0.112</td><td>0.31s</td><td>6.7%</td><td>$0.00</td></tr>
+        </table>
+      </div>
+      <p class="caption">Sample output, invoice-extraction demo category. One of many possible tool categories.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10 · Feature 5: console -->
+<section class="slide">
+  <div class="inner">
+    <h2>The agent's work is on stage.</h2>
+    <div class="rows">
+      <div class="row"><span class="num">01</span><span class="txt"><strong>Chat console.</strong>Launch a benchmark in one sentence. The chat is a console, not a chatbot.</span></div>
+      <div class="row"><span class="num">02</span><span class="txt"><strong>Live trace feed.</strong>Every tool call, every docs scrape, every repair attempt, streamed over SSE as it happens.</span></div>
+      <div class="row"><span class="num">03</span><span class="txt"><strong>Per-sandbox terminals.</strong>Watch each Daytona sandbox build and run, in the open.</span></div>
+      <div class="row"><span class="num">04</span><span class="txt"><strong>Ranked report.</strong>Sortable results table plus a citation-backed markdown report, downloadable as PDF. It never invents a number.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 11 · Demo -->
+<section class="slide">
+  <div class="inner">
+    <h2>The three-minute demo.</h2>
+    <div class="demo">
+      <div class="row"><span class="num">1</span><span class="txt"><strong>Say what to benchmark.</strong>"Benchmark invoice-extraction tools on my invoices."</span></div>
+      <div class="row"><span class="num">2</span><span class="txt"><strong>Review the spec.</strong>The agent searches and scrapes docs, then proposes candidates.</span></div>
+      <div class="row"><span class="num">3</span><span class="txt"><strong>Attach data.</strong>The synthetic set of 15 labelled invoices, or upload your own.</span></div>
+      <div class="row"><span class="num">4</span><span class="txt"><strong>Run.</strong>Four Daytona sandboxes build and race in parallel, repairs live on screen.</span></div>
+      <div class="row"><span class="num">5</span><span class="txt"><strong>Read the verdict.</strong>Ranked deterministic metrics and a citation-backed report.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 12 · Close -->
+<section class="slide closing">
+  <div class="inner">
+    <p class="big">Proven, not promised.</p>
+    <p class="next"><b>ProofBench tells you which tool wins on your data, with numbers you can defend.</b> OCR is the demo, not the limit: any tool category with public docs qualifies, and the same loop becomes a regression gate in CI.</p>
+    <div class="sponsors">
+      <span>Built on</span><span>Daytona</span><span>Oxylabs</span><span>Doubleword</span>
+    </div>
+  </div>
+</section>
+
+<div id="chrome">
+  <span class="brand">ProofBench</span>
+  <span class="nav">
+    <button class="navbtn" id="prev" aria-label="Previous slide">←</button>
+    <span id="counter">01 / 12</span>
+    <button class="navbtn" id="next" aria-label="Next slide">→</button>
+  </span>
+</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const total = slides.length;
+  const counter = document.getElementById('counter');
+  const progress = document.getElementById('progress');
+  let i = 0;
+
+  function show(n, push) {
+    i = Math.max(0, Math.min(total - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('active', k === i));
+    counter.textContent = String(i + 1).padStart(2, '0') + ' / ' + String(total).padStart(2, '0');
+    progress.style.width = ((i + 1) / total * 100) + '%';
+    if (push !== false) history.replaceState(null, '', '#' + (i + 1));
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(i + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(total - 1);
+    else if (e.key === 'f') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen().catch(() => {});
+    }
+  });
+  document.getElementById('next').addEventListener('click', () => show(i + 1));
+  document.getElementById('prev').addEventListener('click', () => show(i - 1));
+
+  const start = parseInt(location.hash.slice(1), 10);
+  show(Number.isFinite(start) ? start - 1 : 0, false);
+</script>
+</body>
+</html>
