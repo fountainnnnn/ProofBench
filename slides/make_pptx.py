@@ -8,6 +8,7 @@ Out: slides/proofbench_pitch.pptx
 """
 
 import math
+from datetime import datetime
 from pathlib import Path
 
 from pptx import Presentation
@@ -62,7 +63,14 @@ PAGE_W, PAGE_H = 13.333, 7.5
 MARGIN = 0.92
 CONTENT_W = PAGE_W - 2 * MARGIN
 
-SPONSORS = ["Daytona", "Oxylabs", "Doubleword"]
+# Services used in the hackathon build. Names identify integrations only; they
+# do not imply sponsorship, endorsement, partnership, or affiliation.
+HACKATHON_INTEGRATIONS = ["Daytona", "Oxylabs", "Doubleword"]
+
+NO_ENDORSEMENT_NOTE = (
+    "Third-party names and trademarks identify integrations only and do not imply "
+    "sponsorship, endorsement, partnership, or affiliation."
+)
 
 # ---------------------------------------------------------------- helpers
 
@@ -157,8 +165,8 @@ def numbered_rows(slide, rows, y0=2.55, row_h=1.06, num_size=14, title_size=18.5
     return y
 
 
-def sponsors_line(slide, y, prefix=None):
-    names = (["Built on"] if prefix else []) + SPONSORS
+def integrations_line(slide, y, prefix=None):
+    names = (["Built with"] if prefix else []) + HACKATHON_INTEGRATIONS
     runs = []
     for i, n in enumerate(names):
         runs.append((n + ("        " if i < len(names) - 1 else ""),
@@ -177,6 +185,21 @@ def h2(slide, text, y=0.85, size=40, color=TEXT, w=CONTENT_W):
 prs = Presentation()
 prs.slide_width = Emu(Inches(PAGE_W))
 prs.slide_height = Emu(Inches(PAGE_H))
+
+# Deck attribution is the product name, not a legal owner. "ProofBench" here is
+# the product this deck is about; it names no company, entity, or rights holder.
+prs.core_properties.title = "ProofBench"
+prs.core_properties.author = "ProofBench"
+prs.core_properties.last_modified_by = "ProofBench"
+# Fixed timestamps keep regeneration byte-stable; the default is python-pptx's
+# 2013 template date. `comments` is dc:description in core.xml.
+prs.core_properties.created = datetime(2026, 7, 20, 0, 0, 0)
+prs.core_properties.modified = datetime(2026, 7, 20, 0, 0, 0)
+prs.core_properties.subject = "ProofBench hackathon pitch deck"
+prs.core_properties.comments = (
+    "Product attribution only; third-party names identify integrations and do "
+    "not imply endorsement."
+)
 BLANK = prs.slide_layouts[6]
 TOTAL = 12
 idx = 0
@@ -185,7 +208,10 @@ idx = 0
 def new_slide():
     global idx
     s = prs.slides.add_slide(BLANK)
-    add_rect(s, 0, 0, PAGE_W, PAGE_H, fill=BG)
+    # Native slide background instead of a full-canvas shape: a PAGE_W x PAGE_H
+    # rectangle reads as an overflowing shape to slide QA tooling.
+    s.background.fill.solid()
+    s.background.fill.fore_color.rgb = BG
     chrome(s, idx, TOTAL)
     idx += 1
     return s
@@ -202,7 +228,7 @@ add_text(s, MARGIN, 3.75, 9.9, 1.9, [
            "integrated, and run in parallel sandboxes, then scored deterministically against "
            "your ground truth.", {"size": 21, "color": TEXT_2})], line_spacing=1.3),
 ])
-sponsors_line(s, 5.85)
+integrations_line(s, 5.85)
 
 # 02 · Problem
 s = new_slide()
@@ -259,16 +285,16 @@ for k, (n, name, desc, who) in enumerate(steps):
         para([(who, {"size": 11, "font": MONO, "color": TEXT_3})]),
     ])
 
-# 05 · Sponsors
+# 05 · Hackathon integrations
 s = new_slide()
-h2(s, "Three sponsors, one pipeline.")
+h2(s, "Three integrations, one pipeline.")
 tbl_y = 2.3
 add_rect(s, MARGIN, tbl_y, CONTENT_W, 0.5, fill=SURFACE_2)
 add_text(s, MARGIN + 0.2, tbl_y + 0.11, 2.4, 0.3,
-         [para([("Sponsor", {"size": 12, "bold": True, "color": TEXT_2})])])
+         [para([("Integration", {"size": 12, "bold": True, "color": TEXT_2})])])
 add_text(s, MARGIN + 2.8, tbl_y + 0.11, 8.0, 0.3,
          [para([("Role in ProofBench", {"size": 12, "bold": True, "color": TEXT_2})])])
-sponsor_rows = [
+integration_rows = [
     ("Daytona", "Sandbox fleet. ",
      "A pre-warmed pool of isolated sandboxes. One per candidate, built and run in parallel.", 0.85),
     ("Oxylabs", "Docs intel. ",
@@ -279,7 +305,7 @@ sponsor_rows = [
      "batch serving. It also competes in the benchmark as a candidate itself.", 1.35),
 ]
 y = tbl_y + 0.5
-for name, lead, rest, rh in sponsor_rows:
+for name, lead, rest, rh in integration_rows:
     hline(s, MARGIN, y, CONTENT_W)
     add_text(s, MARGIN + 0.2, y + 0.17, 2.5, 0.5,
              [para([(name, {"size": 17.5, "bold": True, "color": TEXT})])])
@@ -288,6 +314,8 @@ for name, lead, rest, rh in sponsor_rows:
                     (rest, {"size": 16, "color": TEXT_2})], line_spacing=1.18)])
     y += rh
 hline(s, MARGIN, y, CONTENT_W)
+add_text(s, MARGIN, y + 0.22, CONTENT_W, 0.4,
+         [para([(NO_ENDORSEMENT_NOTE, {"size": 11, "color": TEXT_3})], line_spacing=1.2)])
 
 # 06 · Feature 1: docs intel
 s = new_slide()
@@ -496,7 +524,9 @@ add_text(s, MARGIN, 3.85, 10.9, 1.7, [
            "and the same loop becomes a regression gate in CI.", {"size": 19, "color": TEXT_2})],
          line_spacing=1.35),
 ])
-sponsors_line(s, 5.75, prefix=True)
+integrations_line(s, 5.75, prefix=True)
+add_text(s, MARGIN, 6.25, CONTENT_W, 0.4,
+         [para([(NO_ENDORSEMENT_NOTE, {"size": 11, "color": TEXT_3})], line_spacing=1.2)])
 
 # ---------------------------------------------------------------- save
 

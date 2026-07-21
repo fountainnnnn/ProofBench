@@ -121,7 +121,7 @@
   .step p { font-size: 14.5px; color: var(--text-2); line-height: 1.5; margin-top: 8px; }
   .step .who { display: inline-block; margin-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--text-3); }
 
-  /* sponsor table */
+  /* integrations table */
   table.spec { width: 100%; border-collapse: collapse; margin-top: 44px; }
   table.spec th {
     text-align: left; font-size: 13px; font-weight: 600; color: var(--text-2);
@@ -218,10 +218,12 @@
   .next { margin-top: 40px; font-size: clamp(18px, 1.8vw, 23px); color: var(--text-2); max-width: 62ch; line-height: 1.55; }
   .next b { color: var(--text); font-weight: 600; }
 
-  .sponsors {
+  .integrations {
     margin-top: 56px; display: flex; flex-wrap: wrap; gap: 10px 28px;
     font-size: 14px; color: var(--text-3); font-weight: 500; letter-spacing: 0.01em;
   }
+  /* Third-party names identify integrations only; this note travels with them. */
+  .disclaimer { margin-top: 18px; font-size: 12px; color: var(--text-3); line-height: 1.4; max-width: 78ch; }
   .hint { position: absolute; bottom: 64px; right: 7vw; font-size: 12.5px; color: var(--text-3); font-family: var(--mono); }
 
   @media (max-width: 900px) {
@@ -246,9 +248,10 @@
   <div class="inner">
     <h1 class="display">ProofBench</h1>
     <p class="lede"><strong>Agentic benchmarking of any tool, built from its own docs.</strong> Point it at a category and a labelled dataset: candidates are discovered, integrated, and run in parallel sandboxes, then scored deterministically against your ground truth.</p>
-    <div class="sponsors">
-      <span>Daytona</span><span>Oxylabs</span><span>Doubleword</span>
+    <div class="integrations">
+      <span>Built with</span><span>Daytona</span><span>Oxylabs</span><span>Doubleword</span>
     </div>
+    <p class="disclaimer">Third-party names and trademarks identify integrations only and do not imply sponsorship, endorsement, partnership, or affiliation.</p>
   </div>
   <div class="hint">← → navigate · f fullscreen</div>
 </section>
@@ -289,16 +292,17 @@
   </div>
 </section>
 
-<!-- 05 · Sponsors -->
+<!-- 05 · Hackathon integrations -->
 <section class="slide">
   <div class="inner">
-    <h2>Three sponsors, one pipeline.</h2>
+    <h2>Three integrations, one pipeline.</h2>
     <table class="spec">
-      <tr><th>Sponsor</th><th>Role in ProofBench</th></tr>
+      <tr><th>Integration</th><th>Role in ProofBench</th></tr>
       <tr><td>Daytona</td><td class="role"><strong>Sandbox fleet.</strong> A pre-warmed pool of isolated sandboxes. One per candidate, built and run in parallel.</td></tr>
       <tr><td>Oxylabs</td><td class="role"><strong>Docs intel.</strong> Google search for candidate discovery, scraping of documentation and pricing pages.</td></tr>
       <tr><td>Doubleword</td><td class="role"><strong>Batch inference and codegen.</strong> Generates each tool's adapter from its scraped documentation, and batches every LLM request in the pipeline: codegen calls and hosted extraction candidates all run through Doubleword's batch serving. It also competes in the benchmark as a candidate itself.</td></tr>
     </table>
+    <p class="disclaimer">Third-party names and trademarks identify integrations only and do not imply sponsorship, endorsement, partnership, or affiliation.</p>
   </div>
 </section>
 
@@ -425,9 +429,10 @@
   <div class="inner">
     <p class="big">Proven, not promised.</p>
     <p class="next"><b>ProofBench tells you which tool wins on your data, with numbers you can defend.</b> OCR is the demo, not the limit: any tool category with public docs qualifies, and the same loop becomes a regression gate in CI.</p>
-    <div class="sponsors">
-      <span>Built on</span><span>Daytona</span><span>Oxylabs</span><span>Doubleword</span>
+    <div class="integrations">
+      <span>Built with</span><span>Daytona</span><span>Oxylabs</span><span>Doubleword</span>
     </div>
+    <p class="disclaimer">Third-party names and trademarks identify integrations only and do not imply sponsorship, endorsement, partnership, or affiliation.</p>
   </div>
 </section>
 
