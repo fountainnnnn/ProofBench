@@ -1,11 +1,21 @@
 # PRODUCT.md — ProofBench
 
-## Users
+## Current stage
 
-Hackathon judges and technical buyers watching a live demo, then developers evaluating the
-product afterwards on their own laptop. Both are fluent in modern dev tools (Linear, Vercel,
-Stripe dashboards). They notice when a component behaves strangely. They do not read marketing
-copy twice.
+ProofBench is a proprietary, source-visible pre-release, written and run locally by one
+developer. There is no hosted instance and no third-party user today, so the only actual
+user is the copyright holder. See
+[docs/adr/0001-local-product-boundary.md](docs/adr/0001-local-product-boundary.md).
+
+## Future target users
+
+If ProofBench is ever offered to others, the intended users are engineering, security,
+procurement, and platform teams comparing tools before adoption. They would need an
+auditable answer on their own data, clear separation between measured and historical synthetic
+evidence, and a report they can defend to another stakeholder. Operators would also need
+explicit tenant, retention, quota, and credential boundaries. Those boundaries are built
+and tested now, which is why the product is designed against this audience even though it
+does not serve them yet.
 
 ## Product Purpose
 
@@ -23,10 +33,10 @@ the only brand surface; it borrows the same restrained system.
 
 ## Theme (physical scene)
 
-A judge watches the demo on a projector in a bright NUS seminar room at 4:30 PM, Singapore
-daylight washing over the screen. The presenter stands five meters from the display. Every
-status badge, table row, and log line must survive washed-out projection. Light theme, high
-contrast, nothing that relies on subtle darkness.
+A technical buyer reviews results on a laptop during a decision meeting and later shares the
+report on a bright conference-room display. Every status badge, table row, and log line must
+remain legible in both settings. Use a light, high-contrast theme with no meaning carried by
+subtle color alone.
 
 ## Tone and Copy
 
@@ -46,4 +56,6 @@ contrast, nothing that relies on subtle darkness.
 1. Trust through evidence: every screen leads to the numbers and how they were produced.
 2. The agent's work is visible: tool calls and sandbox logs are first-class content.
 3. Familiar patterns over invention: standard nav, standard tables, standard forms.
-4. Demo legibility beats designer cleverness, always.
+4. Legibility beats designer cleverness, always.
+5. Real-only: there is no demo or simulated execution mode. Sample datasets may
+   ship synthetic input images, but every metric shown is genuinely measured.

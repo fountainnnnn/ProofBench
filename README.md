@@ -1,186 +1,283 @@
 # ProofBench
 
-**Agentic assessment of tools, built from their own docs.** Demo mode provides the
-deterministic invoice-extraction walkthrough. Real mode accepts any company tool
-category: an OpenAI or Kimi orchestrator discovers candidates, searches and scrapes
-official documentation with Oxylabs, and assesses whether each integration can be
-implemented credibly from that evidence. Daytona is created only for implementable
-candidates. Candidates without sufficient implementation detail skip Daytona and still
-receive an evidence-backed feasibility rating and report.
+ProofBench evaluates software tools from their documented integration paths and
+produces evidence-backed, provenance-labelled results. Extraction benchmarks
+run generated adapters in disposable Daytona sandboxes and score outputs with a
+deterministic evaluator. Tool assessments evaluate documentation and validated
+integration feasibility without inventing extraction scores.
 
-## Architecture
+A tool assessment states how each candidate was judged. A runnable, safe,
+credential-free artefact is `sandbox_verifiable` and may be exercised in
+Daytona. A cloud or SaaS product, anything needing a paid plan or a credential
+ProofBench does not hold, and anything whose documented operations are
+destructive is `comparison_only`: it is scored 0-100 from bounded documentation
+evidence, no sandbox is provisioned, and nothing claims it was executed. When no
+assessment can be produced at all, scores are withheld and rendered as
+unavailable rather than persisted as zeros.
 
-```
-                        ┌────────────────────────────────────────────┐
-                        │  Browser — React 18 + Vite + Tailwind      │
-                        │  web/          http://localhost:5173       │
-                        │  chat · spec editor · agent trace feed ·   │
-                        │  per-sandbox terminals · results dashboard │
-                        └───────────────────┬────────────────────────┘
-                              REST + SSE    │  (CORS, /api/*)
-                        ┌───────────────────▼────────────────────────┐
-                        │  FastAPI — server/main.py, server/runs.py  │
-                        │  /api/chat · /api/datasets · /api/sessions │
-                        │  /api/sessions/:id/run · /events (SSE)     │
-                        │                http://localhost:8000       │
-                        └───────────────────┬────────────────────────┘
-                                            │ one Orchestrator per session
-                        ┌───────────────────▼────────────────────────┐
-                        │  Orchestrator — engine/agent.py            │
-                        │  Kimi tool-calling loop (≤40 tool calls)   │
-                        │  INTAKE → SPEC_CONFIRM → DOCS_INTEL →      │
-                        │  ADAPTER_GEN → PROVISIONING → BUILDING →   │
-                        │  VALIDATING → RUNNING → COLLATING →        │
-                        │  EVALUATING → REPORTING → DONE             │
-                        └──┬─────────┬──────────┬──────────┬─────────┘
-                           │         │          │          │
-               ┌───────────▼─┐ ┌─────▼─────┐ ┌──▼────────┐ │
-               │ docs_intel  │ │adapter_gen│ │sandbox_   │ │
-               │  (Oxylabs)  │ │(Doubleword│ │pool       │ │
-               │ search +    │ │ codegen)  │ │(Daytona)  │ │
-               │ scrape docs │ │ adapter   │ │ 4 warm    │ │
-               │ + pricing   │ │ from docs │ │ sandboxes │ │
-               └─────────────┘ └───────────┘ └──┬────────┘ │
-                                                │          │
-                              ┌─────────────────▼────────┐ │
-                              │ one sandbox per candidate│ │
-                              │ build cmds → adapter →   │ │
-                              │ extract(image) per doc   │ │
-                              │ tesseract · easyocr ·    │ │
-                              │ nosana_vlm · doubleword  │ │
-                              │ · discovered tools       │ │
-                              └─────────────────┬────────┘ │
-                      RESULT_JSON per doc       │          │
-                              ┌─────────────────▼──────────▼────────┐
-                              │  evaluate.py — DETERMINISTIC        │
-                              │  results.jsonl vs ground_truth.csv  │
-                              │  exact accuracy · field F1 · CER ·  │
-                              │  latency · failure rate · cost      │
-                              │  (no LLM, no network, no judging)   │
-                              └─────────────────┬───────────────────┘
-                              ┌─────────────────▼───────────────────┐
-                              │  report_gen.py — Kimi reformats the │
-                              │  metrics into a ranked markdown     │
-                              │  report + citations (never invents  │
-                              │  numbers) → SSE → web, runs/<id>/   │
-                              └─────────────────────────────────────┘
+## Production architecture
+
+```text
+Browser (React/Vite)
+        |
+        | same-origin REST + authenticated SSE
+        v
+TLS ingress ---> loopback Nginx :8080 ---> FastAPI :8000 ---> SQLite WAL + owned artifact volumes
+                         |
+                         +--> docs/search providers
+                         +--> trusted adapter generation
+                         +--> disposable Daytona sandbox per candidate
+                         +--> deterministic evaluator + redacted report/PDF
 ```
 
-## Sponsor mapping
+Authentication is fail closed, resources are tenant scoped, attempts have
+immutable run IDs, datasets use server-issued IDs, and persisted results declare
+their provenance. ProofBench is real-only: every new run persists `measured`,
+and `synthetic` survives solely as a read-only label on historical runs. The
+included Compose deployment supports
+one API replica on one durable host. See [CONTRACTS.md](CONTRACTS.md) and
+[docs/OPERATIONS.md](docs/OPERATIONS.md) for the supported boundary.
 
-| Sponsor | Role in ProofBench |
-|---|---|
-| **Daytona** | Sandbox fleet — a pre-warmed pool of isolated sandboxes; one per candidate for building, validating, and running its integration in parallel (`engine/sandbox_pool.py`). |
-| **Kimi (Moonshot)** | Orchestrator — runs the intake/discovery chat and the autonomous tool-calling benchmark loop (`engine/agent.py`); also writes the final ranked report (`engine/report_gen.py`). |
-| **Oxylabs** | Search + scrape — Google search for candidate discovery and scraping of documentation/pricing pages (`engine/docs_intel.py`). |
-| **Nosana** | GPU VLM candidate — a hosted OpenAI-compatible vision model benchmarked as a candidate alongside local OCR tools (`engine/candidates/fallbacks/nosana_vlm.py`). |
-| **Doubleword** | Batched assessment + candidate — the autobatcher evaluates all Real-mode candidate documentation with the configured DeepSeek V4 Pro model, and Doubleword also serves as a hosted vision candidate in the OCR walkthrough. |
+This hardened single-host stack is what "production" means throughout these
+docs: the controls are built and tested, but they are exercised today only in
+local, single-operator use. See [License and project status](#license-and-project-status).
 
-## Setup
+## Requirements
 
-Prerequisites: Python 3.12, Node.js 18+.
+- Python 3.12
+- Node.js 22.12 or newer
+- Docker Desktop or Docker Engine with Compose v2 for the production stack
+- Provider credentials for the integrations you enable
 
-```bash
-# 1. Python virtual environment
+## Local development
+
+```powershell
 python -m venv .venv
-
-# 2. Install backend dependencies (Windows Git Bash)
-.venv/Scripts/python -m pip install -r requirements.txt
-#    macOS/Linux: .venv/bin/python -m pip install -r requirements.txt
-
-# 3. Configure API keys
-cp .env.example .env
-#    open .env and fill in the values — every variable is documented
-#    inline in .env.example
-
-# 4. Install frontend dependencies
-cd web && npm install && cd ..
+.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.txt
+Copy-Item .env.example .env
+Set-Location web
+npm ci
+Set-Location ..
 ```
 
-## Run
+`.env.example` already ships the tokenless local profile, so `.env` needs no
+access-control edits for a solo machine:
 
-Chat sessions are stored under `runs/`. Use the **Delete** control beside an idle session in the console to permanently remove its chat history and run artifacts. Stop running sessions before deleting them.
-
-Two terminals from the project root:
-
-```bash
-# Terminal 1 — API server on :8000
-.venv/Scripts/python -m uvicorn server.main:app --port 8000
-
-# Terminal 2 — web UI on :5173
-cd web && npm run dev
+```dotenv
+PROOFBENCH_INSECURE_DEV=1
+PROOFBENCH_DEV_TENANT=local-dev
+PROOFBENCH_API_KEYS=
 ```
 
-Open http://localhost:5173.
+Then run two terminals from the repository root:
 
-### Adding provider credentials in Settings
-
-System credentials in `.env` are available automatically. You can also open **Settings**
-and add a provider's required environment variable, such as `ANTHROPIC_API_KEY` or
-`MISTRAL_API_KEY`. Settings-provided values live only in the running server process,
-are never returned to the browser after saving, and are injected only into the Daytona
-sandbox processes that execute generated adapters. Restarting the server clears them.
-
-## Demo flow (6 steps)
-
-1. **Start a session.** Open http://localhost:5173 and click "New benchmark" in
-   the sidebar.
-2. **Say what to benchmark.** In the chat, e.g. "Benchmark invoice-extraction
-   tools on my invoices." The Kimi intake agent searches the web and scrapes
-   docs (Oxylabs), then proposes an editable spec — candidates such as
-   `tesseract`, `easyocr`, `nosana_vlm`, `doubleword`.
-3. **Attach a dataset.** Click the synthetic-set chip to generate 15 labelled
-   invoices (`make_dataset.py`), or upload your own images plus a
-   `ground_truth.csv`.
-4. **Confirm and run.** Review the spec card (edit candidate chips if needed)
-   and hit "Run benchmark".
-5. **Watch the agent work.** The trace feed streams live: docs scraping,
-   adapter codegen (Doubleword), four Daytona sandboxes building, validating,
-   and running candidates in parallel — with per-sandbox terminal output and
-   highlighted self-repair attempts.
-6. **Read the verdict.** The results card shows the deterministic metrics per
-   candidate (exact accuracy, field F1, CER, mean latency, failure rate, cost
-   per 1k docs, setup complexity) in a sortable ranked table, plus a
-   citation-backed markdown report you can download.
-
-## Real mode flow
-
-1. Select **Real** and describe the company objective and tools to compare. The category
-   can be CRM, observability, collaboration, payments, data infrastructure, or another
-   software category.
-2. The intake agent searches for official candidate documentation and produces an editable
-   implementation-assessment spec with citations.
-3. ProofBench submits the scraped candidate docs through the Doubleword autobatcher using
-   the configured `DOUBLEWORD_MODEL`, then rates documentation quality, implementation
-   feasibility, authentication clarity, and setup complexity.
-4. When the documentation supports a credible integration, ProofBench generates a smoke test
-   and validates it in Daytona. When it does not, Daytona is skipped for that candidate.
-5. Every candidate receives a 0-100 rating and appears in the final markdown and PDF report,
-   including candidates that could not be implemented.
-
-## Verify the wiring
-
-```bash
-# Sponsor API connectivity — prints PASS/SKIP/FAIL per service, never secrets
-.venv/Scripts/python smoke_test.py
-
-# Deterministic evaluator unit tests (no network, no API keys needed)
-.venv/Scripts/python -m pytest engine/test_evaluate.py -q
-
-# Regenerate the synthetic demo dataset
-.venv/Scripts/python make_dataset.py --out data/demo --n 15
+```powershell
+.venv\Scripts\python.exe -m uvicorn server.main:app --port 8000
 ```
 
-## Repo layout
+```powershell
+Set-Location web
+npm run dev
+```
 
-| Path | What lives there |
+Open `http://localhost:5173`. The console enters without a sign-in screen. Never
+enable the tokenless local mode on a shared, staged, or externally reachable
+host: it authenticates nothing.
+
+## Compose quickstart
+
+Pick one of two deployment profiles. The API refuses to start with neither.
+
+### Local (default, tokenless, loopback only)
+
+This is the supported shape for a single operator on one machine.
+
+1. Copy `.env.example` to `.env`. It already ships the local profile:
+   `PROOFBENCH_INSECURE_DEV=1`, `PROOFBENCH_DEV_TENANT=local-dev`, and an empty
+   `PROOFBENCH_API_KEYS`.
+2. Set the provider credentials needed by the integrations you enable.
+3. Start the pinned, non-root, read-only stack:
+
+```powershell
+docker compose build --pull
+docker compose up -d --wait
+```
+
+Open `http://127.0.0.1:8080/`. There is no sign-in screen and no API token:
+every request resolves to the single `local-dev` tenant, and the header shows
+`Local mode` instead of a sign-out control.
+
+> **Loopback only.** The local profile has no authentication whatsoever.
+> Anything that can reach the listener has full read and write access to your
+> benchmark data. Keep `PROOFBENCH_BIND_ADDRESS=127.0.0.1`. Do not port-forward
+> it, publish it on a LAN or `0.0.0.0` address, or put it behind an ingress.
+> Exposing ProofBench to anyone but you means opting into the authenticated
+> profile below.
+
+### Authenticated (any deployment reachable by anyone else)
+
+1. Copy `.env.example` to `.env`.
+2. Set `PROOFBENCH_INSECURE_DEV=0` and set `PROOFBENCH_API_KEYS` to a
+   tenant-to-random-token JSON map. Each token must contain at least 32
+   characters.
+3. Set the provider credentials needed by your deployment.
+4. Terminate TLS at a trusted ingress that strips incoming forwarding headers,
+   preserves the external Host, and sets `X-Forwarded-Proto`; set
+   `PROOFBENCH_COOKIE_SECURE=true`.
+5. Start the same stack:
+
+```powershell
+docker compose build --pull
+docker compose up -d --wait
+```
+
+Compose exposes Nginx on `127.0.0.1:8080` by default. Keep that loopback bind
+for a same-host TLS proxy. No images are published anywhere: pushing a `v*` tag
+does nothing, and the manual release workflow is deliberately blocked (see
+[Verification](#verification)). Build locally with `docker compose build --pull`.
+`PROOFBENCH_API_IMAGE` and `PROOFBENCH_WEB_IMAGE` exist for a future in which
+published digests exist; leave them unset and Compose builds from source.
+
+In the authenticated profile, open `https://your-host/` and enter the tenant
+token in the sign-in screen. The browser keeps the bearer only in memory; the
+API issues a short-lived HttpOnly cookie for read-only SSE and report requests.
+
+Operational probes:
+
+```powershell
+# Local profile (no credential):
+curl.exe http://127.0.0.1:8080/api/live
+curl.exe http://127.0.0.1:8080/api/ready
+
+# Authenticated profile:
+curl.exe https://your-host/api/live
+curl.exe -H "Authorization: Bearer YOUR_TOKEN" https://your-host/api/ready
+```
+
+## Verification
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_local_tmp
+.venv\Scripts\python.exe integration_test.py
+.venv\Scripts\python.exe -m pip check
+.venv\Scripts\python.exe -m pip_audit -r requirements.txt --require-hashes
+
+Set-Location web
+npm run lint:a11y
+npm test
+npm run build
+npm audit --audit-level=high
+```
+
+None of the above contacts a provider. The Playwright suite (`npm run test:e2e`)
+is likewise provider-free: it asserts the console exposes no demo execution
+control and that an explicit `mode: "demo"` is rejected at the schema boundary
+without allocating a session or a run.
+
+One test is deliberately excluded from that guarantee and is skipped unless you
+opt in:
+
+```powershell
+$env:PROOFBENCH_RUN_LIVE_SMOKE = "1"
+# Only against an authenticated deployment; omit for the local profile.
+# $env:PROOFBENCH_E2E_TOKEN = "<tenant token>"
+npm run test:e2e:live
+```
+
+This performs one real run — OpenAI intake plus Daytona execution — and **incurs
+provider cost**. It is held to one sample labelled dataset, one short objective,
+and the first-party local candidates (`tesseract`, `easyocr`) so no paid hosted
+candidate inference is billed, under a strict wall-clock budget
+(`PROOFBENCH_LIVE_SMOKE_TIMEOUT_MS`, default 15 minutes). It asserts the
+completed run persists immutable `measured` provenance with metrics, and that
+the report PDF downloads.
+
+CI repeats these checks on Windows and Linux, generates Python and npm SBOMs,
+runs CodeQL, builds both container images, scans them for high/critical issues,
+and starts/probes the Compose stack.
+
+Nothing is published. `.github/workflows/release.yml` runs only on manual
+`workflow_dispatch` — pushing a `v*` tag does not build or publish anything —
+and it is intentionally blocked today: it refuses to run until the LICENSE
+legal-name placeholder is resolved, a human-reviewed `THIRD_PARTY_NOTICES.md`
+exists, and the operator acknowledges
+[docs/DISTRIBUTION_CHECKLIST.md](docs/DISTRIBUTION_CHECKLIST.md). None of those
+is satisfied, so the workflow is expected to fail. It is kept wired up (SBOM,
+maximum provenance attestation, pinned actions, immutable digests) so the
+procedure stays testable. Local builds are unaffected.
+
+## Main product flow
+
+1. Sign in and create a benchmark session.
+2. Select an existing owned dataset, generate the sample labelled dataset, or
+   upload images plus a matching `ground_truth.csv`. The sample dataset's images
+   are synthetic, but they carry known ground truth, so a real run measured
+   against them produces genuine metrics.
+3. Review the explicit extraction or tool-assessment specification.
+4. Start a run. Every run executes for real; there is no demo or simulated mode.
+   Each retry gets a new immutable run ID.
+5. Follow the redacted trace stream and sandbox lifecycle.
+6. Review provenance, deterministic metrics where applicable, citations, and the
+   downloadable report. New runs persist `measured`; `synthetic` appears only on
+   read-only historical runs written before ProofBench became real-only.
+
+## Repository layout
+
+| Path | Purpose |
 |---|---|
-| `engine/` | Orchestrator, tool layer, sandbox pool, docs intel, adapter codegen, deterministic evaluator, report writer, candidate definitions |
-| `server/` | FastAPI app — chat, datasets, run registry, SSE event stream |
-| `web/` | React 18 + Vite + Tailwind v3 frontend (dark theme) |
-| `data/` | Generated/uploaded datasets (`images/` + `ground_truth.csv`) |
-| `runs/` | Per-run artifacts: `results.jsonl`, metrics, reports |
-| `make_dataset.py` | Synthetic labelled invoice generator (Pillow, deterministic seed) |
-| `smoke_test.py` | Sponsor connectivity check (Daytona, Kimi, Doubleword, Nosana, Oxylabs) |
-| `CONTRACTS.md` | Frozen engineering contracts — interfaces every lane builds against |
-| `slides/` | Hackathon pitch deck: `index.html` (browser deck) and `make_pptx.py`, which builds `proofbench_pitch.pptx` |
+| `engine/` | Orchestrator, capability-bound tools, sandbox lifecycle, evaluator, report generation |
+| `server/` | Authenticated FastAPI service and durable state |
+| `web/` | React console and Nginx production image |
+| `docs/` | Operations and data-handling requirements |
+| `.github/` | CI, CodeQL, and dependency update policy |
+| `requirements*.in/txt` | Direct inputs and hash-locked Python environments |
+
+Runtime data in `runs/` and `data/` is ignored by Git. Provider credentials must
+come from a deployment secret manager or environment and must never be committed.
+
+## Further documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — component boundaries and data flow
+- [docs/adr/0001-local-product-boundary.md](docs/adr/0001-local-product-boundary.md) — ADR-0001, the local single-operator product boundary
+- [docs/DISTRIBUTION_CHECKLIST.md](docs/DISTRIBUTION_CHECKLIST.md) — what must be done before any distribution or hosted launch
+
+## Security and data handling
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and
+[docs/DATA_HANDLING.md](docs/DATA_HANDLING.md) for retention, deletion, and the
+privacy prerequisites that a future third-party-facing deployment would have to
+satisfy.
+
+## Hackathon integrations
+
+ProofBench integrates several third-party services used in the hackathon build:
+Daytona for disposable sandboxes, Oxylabs for search and documentation scraping,
+Doubleword for adapter generation and batch inference, OpenRouter as an
+OpenAI-compatible provider for orchestration, assessment, and reports, and Kimi
+and Nosana as configured model endpoints. Each is reached through its own
+credentials, which you supply.
+
+Third-party names and trademarks appear only to identify these integrations and
+remain the property of their respective owners. Their use does not imply any
+current sponsorship, endorsement, partnership, or affiliation.
+
+## License and project status
+
+ProofBench is proprietary software. The copyright holder is the individual
+developer who wrote it; there is no company behind it. See [LICENSE](LICENSE):
+all rights are reserved, and use, copying, modification, or distribution
+requires the copyright holder's prior written permission. Third-party
+dependencies are not covered by that file and remain under their own licenses.
+
+There is no public ProofBench service, no hosted instance, and no domain. The
+only supported deployment today is the hardened stack in this repository, run
+locally or on a single trusted host by the copyright holder. Nothing here is an
+offer of a service, and no availability, support, or retention commitment is
+made to anyone.
+
+Selling ProofBench as a hosted SaaS, or licensing it to a company to adapt,
+remains open. Either would first require, at minimum: the holder's legal name
+recorded in [LICENSE](LICENSE), a written contract, a published privacy notice
+and terms, a named security contact, and the multi-host work described in
+[CONTRACTS.md](CONTRACTS.md) section 8. None of that exists yet, so no
+third-party-facing claims should be made about this software.

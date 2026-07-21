@@ -1,251 +1,238 @@
-# ProofBench — Engineering Contracts (FROZEN)
+# ProofBench technical interfaces and invariants (v2)
 
-Every lane builds against this file. Do not deviate from these interfaces. If a contract
-is impossible to satisfy, stop and report — do not improvise a different shape.
+This document defines the internal technical interfaces and safety invariants of
+the hardened local build. Git history preserves the hackathon v1 document.
 
-Python 3.12. All LLM clients use the `openai` package with a custom `base_url`.
-All secrets come from `.env` via `python-dotenv` (`load_dotenv()` at entry points only).
-Never hardcode credentials. Never print secret values.
+"Contract" here means a constraint binding on the code, not an agreement with
+any person. These invariants are binding regardless of who runs the software,
+and no change may weaken them. They are not a service commitment: there is no
+public ProofBench instance, and nothing here offers availability, support, or
+retention to anyone.
 
-Project layout (ownership):
+Scope: the hardened single-host deployment in this repository, which today is
+run locally by the copyright holder. See
+[docs/adr/0001-local-product-boundary.md](docs/adr/0001-local-product-boundary.md)
+for the product boundary and [ARCHITECTURE.md](ARCHITECTURE.md) for the current
+map. A future hosted SaaS or a licensee's adaptation would have to satisfy these
+invariants and add the multi-host requirements in section 8, plus the
+third-party-facing obligations in
+[docs/DATA_HANDLING.md](docs/DATA_HANDLING.md). ProofBench is proprietary; see
+[LICENSE](LICENSE).
 
-| Path | Owner |
-|---|---|
-| `CONTRACTS.md`, `smoke_test.py`, `engine/candidates/base.py`, `engine/sandbox_pool.py`, `engine/tools.py`, `engine/agent.py` | KIMI (orchestrator) |
-| `make_dataset.py`, `engine/evaluate.py`, `engine/test_evaluate.py`, `engine/docs_intel.py`, `engine/adapter_gen.py`, `engine/candidates/fallbacks/*.py` | CODEX |
-| `server/main.py`, `server/runs.py`, `engine/report_gen.py`, `web/**` | CLAUDE |
+## 1. Identity and tenancy
 
----
+- A deployment runs in exactly one of two modes, and refuses to start in
+  neither. `GET /api/auth/session` reports which one in `auth_mode`.
+  - `local`: `PROOFBENCH_INSECURE_DEV=1` is the explicit, loopback-only
+    tokenless bypass. Every request resolves to the single deterministic tenant
+    `PROOFBENCH_DEV_TENANT` (default `local-dev`) with no bearer, API key, or
+    cookie. `GET /api/auth/session` returns
+    `{"auth_mode": "local", "cookie_authenticated": true, "write_authenticated": true}`
+    so the console enters without a credential. This mode authenticates nothing
+    and must not be reachable beyond `127.0.0.1`.
+  - `authenticated`: `PROOFBENCH_API_KEYS`, a JSON map of tenant IDs to random
+    tokens of at least 32 characters. Required for any deployment reachable by
+    anyone but the operator. `GET /api/auth/session` returns
+    `auth_mode: "authenticated"` with the two flags resolved fail closed.
+- In `authenticated` mode, state-changing API requests require
+  `Authorization: Bearer` or `X-API-Key`.
+  The HttpOnly, SameSite=Strict `/api` cookie is limited to read-only browser
+  transports such as SSE and report downloads. The sole cookie-authenticated
+  write exception is idempotent logout, which also requires an exact same-origin
+  `Origin` check and can only clear the auth cookie.
+- All sessions, runs, events, messages, datasets, settings, and artifacts are
+  owner scoped. Cross-tenant access returns 404 where resource existence would
+  otherwise leak.
 
-## 1. Candidate contract — `engine/candidates/base.py`
+## 2. Resource identity
 
-Every benchmark candidate (Tesseract, EasyOCR, hosted VLMs, discovered tools) is described
-by the SAME dataclass. The runner is fully generic over it.
+- A `session_id` identifies a conversation and its run history.
+- Every benchmark attempt receives a new immutable `run_id` and artifact
+  directory. Results and reports are addressed only by `run_id`.
+- A `dataset_id` is server issued and tenant owned. API responses never expose
+  absolute filesystem paths, and client input cannot select a host path.
+- Session responses include `latest_run_id` and ordered `run_history` entries.
 
-```python
-from dataclasses import dataclass, field
+## 3. Core HTTP API
 
-@dataclass
-class Candidate:
-    name: str                    # unique slug, e.g. "tesseract"
-    display_name: str            # "Tesseract OCR 5.x"
-    docs_url: str                # documentation the integration was built from
-    kind: str                    # "local_tool" | "hosted_api"
-    build_commands: list[str]    # shell cmds to install/configure INSIDE a Daytona sandbox
-    adapter_code: str            # python source executed INSIDE the sandbox (see below)
-    setup_complexity: int = 1    # 1 (trivial) .. 5 (painful); agent may worsen it on repairs
-    pricing_url: str = ""        # where pricing was scraped from ("" if free/local)
+All JSON request bodies are strictly validated and bounded.
+
+```text
+GET    /api/auth/session                 auth_mode + cookie/write auth state
+POST   /api/auth/session
+DELETE /api/auth/session
+GET    /api/live                         public process liveness
+GET    /api/ready                        authenticated storage readiness
+GET    /api/metrics                      authenticated bounded operations summary
+POST   /api/chat                         create/continue a session
+GET    /api/sessions
+POST   /api/sessions
+GET    /api/sessions/{session_id}
+DELETE /api/sessions/{session_id}
+POST   /api/sessions/{session_id}/run    -> {session_id, run_id, status}
+POST   /api/sessions/{session_id}/stop
+GET    /api/sessions/{session_id}/events SSE
+POST   /api/datasets
+GET    /api/datasets
+DELETE /api/datasets/{dataset_id}
+GET    /api/runs/{run_id}/results
+GET    /api/runs/{run_id}/report.pdf
+GET    /api/settings/provider-keys       secret-free status + write policy
+POST   /api/settings/provider-keys       insecure-dev dual opt-in only
+DELETE /api/settings/provider-keys/{env} insecure-dev dual opt-in only
 ```
 
-`adapter_code` contract (runs inside the sandbox via `code_run`, CWD contains the dataset):
-- Reads ONE image path from `sys.argv`... NO — simpler: adapter defines
-  `extract(image_path: str) -> dict` and the runner wraps it. The adapter MUST end with:
-  ```python
-  import json, sys, time
-  _t0 = time.time()
-  try:
-      _out = extract(sys.argv[1])
-      print("RESULT_JSON:" + json.dumps({"ok": True, "fields": _out, "latency_s": round(time.time()-_t0, 3)}))
-  except Exception as e:
-      print("RESULT_JSON:" + json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}))
-  ```
-- `extract()` returns `{"invoice_number": str, "date": str, "vendor": str, "total": str}`
-  (empty string for missing fields). No prints other than the `RESULT_JSON:` line.
+Quota rejection uses HTTP 429 and `Retry-After`. A referenced, active, or
+synthetic dataset cannot be deleted. A rejected operation does not partially
+mutate session state.
 
-## 2. Data schemas
+## 4. Event stream
 
-**Ground truth CSV** (`ground_truth.csv`):
-```csv
-doc_id,invoice_number,date,vendor,total
-inv_001,INV-1001,2026-06-01,Acme Pte Ltd,128.50
-```
-`date` is ISO `YYYY-MM-DD`; `total` is decimal string, SGD.
+Events are append-only, monotonically sequenced, bounded, persisted in SQLite,
+and visible across supported worker processes. A terminal event belongs to a
+specific operation/run and cannot terminate or overwrite a newer one.
 
-**Results JSONL** (one line per candidate × document):
-```json
-{"candidate": "tesseract", "doc_id": "inv_001", "ok": true,
- "prediction": {"invoice_number": "...", "date": "...", "vendor": "...", "total": "..."},
- "latency_s": 1.234, "error": null}
-```
-On failure: `"ok": false, "prediction": null, "error": "TimeoutError: ..."`, `latency_s` measured anyway.
-
-**Metrics JSON** (evaluator output, per candidate):
-```json
-{"tesseract": {"exact_accuracy": 0.73, "field_f1": 0.81, "cer": 0.12,
- "mean_latency_s": 1.9, "failure_rate": 0.0, "cost_per_1k_docs": 0.0,
- "setup_complexity": 2, "n_docs": 15}}
-```
-
-## 3. `make_dataset.py` (CODEX)
-
-CLI: `python make_dataset.py --out data/demo --n 15`
-- Generates `n` synthetic invoice PNGs (Pillow only, no external fonts/assets — use
-  `ImageFont.load_default()` or truetype fallback) into `<out>/images/inv_XXX.png`
-- Varied but deterministic layouts (`random.seed(42)`): 3+ layout templates, slight noise/rotation
-- Writes `<out>/ground_truth.csv` per §2. Printed output: absolute path of the CSV.
-- Acceptance: `python make_dataset.py --out data/demo --n 15` exits 0, CSV has 15 rows + header.
-
-## 4. `engine/evaluate.py` (CODEX) — deterministic, NO LLM, NO network
-
-```python
-def normalize_text(s: str) -> str
-def normalize_date(s: str) -> str        # best-effort → "YYYY-MM-DD"; "" if unparseable
-def normalize_amount(s: str) -> int|None # → cents; None if unparseable
-def token_f1(pred: str, gt: str) -> float
-def cer(pred: str, gt: str) -> float     # pure-python Levenshtein / max(len(gt),1)
-def evaluate_results(results_path: str, ground_truth_path: str,
-                     pricing: dict | None = None) -> dict  # → Metrics JSON (§2)
-```
-- Exact-match rules: text fields compared after `normalize_text`; date after `normalize_date`;
-  total after `normalize_amount` (equal cents).
-- `cost_per_1k_docs` = per-doc usage × price from `pricing` (name → per-doc or per-1k-token
-  price); 0.0 for local tools when `pricing` lacks an entry.
-- `engine/test_evaluate.py`: ≥10 pytest cases incl. date formats ("1 Jun 2026", "06/01/2026"),
-  currency ("$1,234.50"), partial vendor match (F1 in (0,1)), CER edge cases (empty gt → 0).
-- Acceptance: `python -m pytest engine/test_evaluate.py -q` all green.
-
-## 5. `engine/docs_intel.py` (CODEX) — Oxylabs
-
-Endpoint `https://realtime.oxylabs.io/v1/queries`, HTTP basic auth from
-`OXYLABS_USERNAME`/`OXYLABS_PASSWORD`, `requests`, 60 s timeout, raise `RuntimeError` with
-response body on non-200.
-
-```python
-def web_search(query: str, n: int = 5) -> list[dict]
-    # payload {"source":"google_search","query":query,"parse":True}
-    # → [{"title","url","snippet"}] from results[0].content.results.organic[:n]
-def scrape_page(url: str) -> str
-    # payload {"source":"universal","url":url} → results[0].content (str, may be HTML)
-def gather_tool_docs(candidates: list[dict], out_dir: str) -> dict
-    # candidates: [{"name","docs_url","pricing_url"}]
-    # writes <out_dir>/docs/<name>.md (+ <name>_pricing.md) ; returns
-    # {"docs": {name: path}, "pricing": {name: path_or_none}}
-```
-
-## 6. `engine/adapter_gen.py` (CODEX)
-
-```python
-def generate_adapter(tool_name: str, docs_md: str, model: str | None = None) -> Candidate
-def get_fallback(name: str) -> Candidate | None
-```
-- `generate_adapter`: OpenAI-compatible client, `base_url="https://api.doubleword.ai/v1"`,
-  key `DOUBLEWORD_API_KEY`, model = arg or `DOUBLEWORD_MODEL` env. Prompt demands STRICT JSON
-  `{"display_name","build_commands":["..."],"adapter_code":"...","setup_complexity":N}`
-  where adapter_code follows §1. Parse defensively (strip ```json fences); raise `ValueError`
-  on bad output. Build the returned `Candidate` with `docs_url=""`, `kind` guessed from docs.
-- `get_fallback` imports `engine/candidates/fallbacks/*` — one function per file:
-  `def candidate() -> Candidate` (per §1) for `tesseract`, `easyocr`, `nosana_vlm`, `doubleword`.
-- Hosted-API fallbacks (nosana_vlm, doubleword): `build_commands` = `["pip install openai pillow"]`
-  (run in sandbox); adapter posts base64 image to the OpenAI-compatible endpoint using env
-  vars baked in at generation time by `tools.py` — adapters read `os.environ[...]`.
-  nosana_vlm uses `NOSANA_BASE_URL`/`NOSANA_API_KEY`/`NOSANA_MODEL`; doubleword uses
-  `DOUBLEWORD_BASE_URL`(default https://api.doubleword.ai/v1)/`DOUBLEWORD_API_KEY`/`DOUBLEWORD_MODEL`.
-- Acceptance: `python -c "from engine.adapter_gen import get_fallback; print(get_fallback('tesseract').name)"` → `tesseract`.
-
-## 7. `engine/sandbox_pool.py` (KIMI) — Daytona lifecycle
-
-```python
-class SandboxHandle:  # wraps a daytona sandbox
-    id: str; label: str
-class SandboxPool:
-    def __init__(self, size: int = 4)
-    def start(self) -> None                 # pre-warm `size` sandboxes (parallel)
-    def acquire(self, label: str) -> SandboxHandle
-    def exec(self, h: SandboxHandle, cmd: str, timeout: int = 120) -> str      # stdout+stderr
-    def run_python(self, h: SandboxHandle, code: str, timeout: int = 180) -> str  # stdout
-    def upload(self, h: SandboxHandle, local_path: str, remote_path: str) -> None
-    def release(self, h: SandboxHandle) -> None   # back to pool (keep alive)
-    def destroy_all(self) -> None
-```
-Uses `daytona` SDK, `Daytona()` from env. Daytona API key: `DAYTONA_API_KEY`.
-
-## 8. `engine/tools.py` (KIMI) — agent tool layer
-
-- `TOOL_SCHEMAS: list[dict]` — OpenAI function-calling schemas for:
-  `web_search(query)`, `scrape_docs(url)`, `generate_adapter(tool_name, docs_md)`,
-  `spawn_sandbox(label)`, `exec_in_sandbox(id, cmd)`, `run_python_in_sandbox(id, code)`,
-  `upload_files(id, local_dir)`, `record_result(candidate, doc_id, ok, prediction, latency_s, error)`,
-  `evaluate(results_path, ground_truth_path)`, `write_report(metrics_json)`
-- `dispatch_tool(name: str, args: dict, ctx: RunContext) -> str` (JSON string result).
-- `RunContext` dataclass: `run_id`, `pool: SandboxPool`, `run_dir: str`,
-  `emit: Callable[[str, dict], None]` (event emitter → SSE), `results_path`, `env_passthrough: dict`
-  (secrets injected into sandbox adapter env, never logged).
-
-## 9. `engine/agent.py` (KIMI) — Orchestrator
-
-```python
-class Orchestrator:
-    def __init__(self, run_id: str, run_dir: str, emit: Callable[[str, dict], None])
-    def chat(self, user_message: str) -> None      # INTAKE/DISCOVERY conversation (streams)
-    def run_benchmark(self, spec: dict) -> dict    # autonomous protocol → metrics dict
-```
-- Kimi client: `base_url="https://api.moonshot.ai/v1"`, key `MOONSHOT_API_KEY`,
-  model `KIMI_MODEL` env (default `kimi-k2-thinking`).
-- Tool loop: ≤40 calls; per-call 120 s default; 1 adapter self-repair per candidate, then
-  `get_fallback(name)`; on total candidate failure mark it and CONTINUE others.
-- Phases (emitted as `state` events): INTAKE → SPEC_CONFIRM → DOCS_INTEL → ADAPTER_GEN →
-  PROVISIONING → BUILDING → VALIDATING → RUNNING → COLLATING → EVALUATING → REPORTING → DONE.
-- `spec` = `{"category": str, "fields": [...4 default...], "candidates": [{"name","docs_url",
-  "pricing_url","kind"}], "dataset": {"path": str}}`.
-- Never asks the LLM to judge correctness. Evaluation only via `evaluate` tool.
-
-## 10. `engine/report_gen.py` (CLAUDE)
-
-```python
-def write_report(metrics: dict, citations: list[dict], out_path: str) -> str  # markdown
-```
-Kimi client (same env as §9). Input = evaluator metrics JSON + `[{"title","url"}]` from
-docs_intel. Output: ranked markdown report — table first, per-candidate findings, verdict,
-citations. MUST NOT invent numbers; only reformat what's given. Writes file, returns markdown.
-
-## 11. Server — `server/main.py`, `server/runs.py` (CLAUDE)
-
-FastAPI on :8000, CORS `http://localhost:5173`. In-memory registry + persist under `runs/<id>/`.
-
-- `POST /api/chat` `{session_id?: str, message: str, dataset_id?: str}` →
-  `{session_id}` immediately; agent reply streams on the session's SSE channel.
-- `POST /api/datasets` multipart images[]+ground_truth.csv, or `{use_synthetic: true}`
-  (runs `make_dataset.py --n 15`) → `{dataset_id, path}`.
-- `POST /api/sessions/{id}/run` `{spec}` → launches `Orchestrator.run_benchmark` in a thread.
-- `GET /api/sessions/{id}/events` → SSE (`text/event-stream`).
-- `GET /api/sessions` → `[{id, title, phase, created_at}]`. `GET /api/sessions/{id}` → full state.
-- `GET /api/runs/{id}/results` → `{metrics, report_md, citations}`.
-
-**SSE event schema (FROZEN):**
-```
-event: delta      data: {"text": "..."}                                  # assistant tokens
-event: artifact   data: {"kind": "spec", "spec": {...}}
-event: artifact   data: {"kind": "trace", "tool": "...", "args_summary": "...", "status": "start|ok|error", "detail": "..."}
-event: artifact   data: {"kind": "sandbox_log", "sandbox": "tesseract", "line": "...", "phase": "building|validating|running"}
-event: artifact   data: {"kind": "results", "metrics": {...}}
-event: artifact   data: {"kind": "report", "markdown": "...", "citations": [...]}
-event: state      data: {"phase": "BUILDING", "candidates": {"tesseract": "running", ...}}
-event: error      data: {"message": "..."}
+```text
+event: delta      data: {"text":"..."}
+event: artifact   data: {"kind":"spec|trace|sandbox_log|results|report", ...}
+event: state      data: {"phase":"...","candidates":{...}}
+event: error      data: {"message":"..."}
 event: done       data: {}
 ```
 
-## 12. Web — `web/` (CLAUDE) — Vite + React 18 + Tailwind v3, dark theme
+Persisted and emitted data is redacted before the write. Events never contain
+bearer tokens, provider credentials, private host paths, or unbounded strings.
 
-Professional AI-startup chat UI (think Linear/ChatGPT dark). Components in `web/src/components/`:
-`Sidebar` (session list, "New benchmark"), `ChatThread` (messages, markdown, streaming),
-`Composer` (input, dataset attach chip, synthetic-set chip), `SpecCard` (editable candidate
-chips + "Run benchmark" button → POST run), `AgentTraceCard` (tool feed + per-sandbox
-terminal panels, phase badges, self-repair highlight), `ResultsCard` (ranked sortable table
-+ per-field bars + verdict + citations + report download).
-`web/src/api.js`: `postChat`, `uploadDataset`, `startRun`, `openEvents(session_id)` (EventSource),
-`listSessions`, `getSession`, `getResults`. Base URL `http://localhost:8000`, vite proxy optional.
-Font: Inter via Google Fonts. Accent: indigo/violet gradient. No emojis in UI copy.
-Acceptance: `cd web && npm install && npm run build` exits 0.
+## 5. Benchmark specifications and provenance
 
-## 13. `smoke_test.py` (KIMI)
+Specifications use an explicit discriminator:
 
-`python smoke_test.py` — checks Daytona (create/exec/code_run/apt tesseract), Kimi (chat +
-`/v1/models`), Doubleword (`/v1/models`), Nosana (auth), Oxylabs (search+scrape). Prints
-PASS/FAIL per service, exits non-zero on any FAIL. Never prints secrets.
+- `benchmark_type: "extraction"` selects a labelled dataset and deterministic
+  field evaluation.
+- `benchmark_type: "tool_assessment"` evaluates documentation and integration
+  feasibility without fabricating extraction metrics.
 
-## 14. Global rules
+A `tool_assessment` row declares how it was judged, and the two fields are
+independent of its score:
 
-- stdlib + `requirements.txt` only. No new deps without orchestrator approval.
-- Every module runnable on Windows host; sandbox-side code targets Debian Linux.
-- No network calls in `evaluate.py`. No LLM judging of extraction correctness anywhere.
-- Log lines destined for SSE must be single-line, ≤300 chars, no secrets.
+- `execution_mode` is `sandbox_verifiable` for a runnable, safe artefact that
+  needs no credentials, or `comparison_only` for a cloud/SaaS product, anything
+  requiring a paid plan or a credential ProofBench does not hold, and anything
+  whose documented operations are destructive or otherwise unsafe to invoke. A
+  `comparison_only` candidate never causes a sandbox to be provisioned and
+  carries no build commands or verification code.
+- `assessment_basis` is `sandbox_execution` only when a sandbox genuinely ran,
+  `documentation_evidence` when the rating rests on documentation alone, and
+  `unavailable` when no assessment was produced.
+
+Suitability is a 0-100 documentation-evidence score on every path. A
+`comparison_only` candidate receives a legitimate score and is never penalised
+for being unrunnable; sandbox execution adjusts a score only when execution
+actually happened. A failed scrape, a provider outage, or an unparseable
+response yields `assessment_basis: "unavailable"` with every score withheld as
+`null`. Zeros are never written for work that was not performed, and the UI,
+report, and PDF render withheld scores as unavailable.
+
+Every successful result artifact declares `provenance`:
+
+- `measured`: a real benchmark execution. This is the only value the write path
+  can produce. ProofBench is real-only: `mode` accepts `"real"` alone, so an
+  explicit `"demo"` on `POST /api/chat` or `POST /api/sessions/{id}/run` fails
+  schema validation with `422` before any session or run is allocated.
+- `synthetic`: read-only historical data. Runs persisted before ProofBench
+  became real-only keep this label; it is never written again and never
+  rewritten.
+
+A sample labelled dataset may contain synthetic input images, but the metrics
+measured against its ground truth are produced by genuine execution and are
+therefore `measured`.
+
+While a claimed run has not persisted metrics, the result endpoint reports
+`pending`. A legacy or corrupt row with metrics but no authoritative database
+provenance reports `unverified` and withholds metrics. Neither state is valid
+benchmark evidence.
+
+Failures do not persist plausible-looking metrics. UI and reports use the
+backend provenance verbatim and render missing values as unavailable.
+
+## 5a. Provider capabilities and documentation retrieval
+
+LLM provider selection is capability based, not vendor based. Each capability
+lists the providers that can serve it in preference order and resolves to the
+first one configured: orchestration and report writing use Moonshot, then
+OpenAI, then OpenRouter; documentation assessment uses Doubleword, then
+OpenRouter, then OpenAI, then DeepSeek; adapter generation uses DeepSeek, then
+OpenRouter. `OPENROUTER_API_KEY` alone therefore satisfies every capability.
+`GET /api/providers` reports the resolved provider per capability from
+configuration only and issues no provider request. A run is blocked only when an
+essential capability has no configured provider.
+
+Documentation retrieval prefers Oxylabs, which resolves and fetches the target
+itself. When Oxylabs is unconfigured or fails, ProofBench falls back to a direct
+fetch that is strictly bounded: public HTTPS only, every redirect hop
+revalidated against the same outbound URL policy with a freshly pinned client,
+no process proxies, no private, loopback, link-local, or metadata addresses, and
+hard limits on redirect count, elapsed time, response bytes, permitted content
+types, and returned text length. Provider error text is never echoed to the
+caller.
+
+## 6. Deterministic evaluator
+
+`engine/evaluate.py` is network-free and contains no LLM calls. It compares
+candidate JSONL output with an owned `ground_truth.csv` and returns exact
+accuracy, field F1, CER, latency, failure rate, cost, setup complexity, and
+document count. Candidate/document identities, row counts, field lengths,
+result bytes, and edit-distance work are bounded before evaluation.
+
+For extraction, the engine alone invokes each registered `Candidate` adapter
+over every authorized image and writes result records. A model may assist with
+documentation and adapter generation, but it cannot supply a dataset runner or
+append result records through a tool call. The supported scored field schema is
+exactly `invoice_number`, `date`, `vendor`, and `total`, in that order.
+
+## 7. Sandbox and credential boundary
+
+- Every candidate attempt uses a disposable sandbox which is destroyed on
+  success, failure, timeout, or cancellation.
+- Tools operate through run-scoped capabilities: registered candidate IDs,
+  document IDs, result path, ground-truth path, and trusted adapter identity.
+- Credential entitlements are exact and server owned. User-controlled names,
+  URLs, prompts, or generated code cannot grant credentials.
+- `DAYTONA`, orchestration, search/scrape, and report-writer credentials are
+  permanently forbidden inside candidate sandboxes. The deny prefixes are
+  `DAYTONA_`, `DEEPSEEK_`, `DOUBLEWORD_`, `KIMI_`, `MOONSHOT_`, `OPENAI_`,
+  `OPENROUTER_`, `ORCHESTRATOR_`, and `OXYLABS_`. The only exceptions are the
+  exact names a first-party adapter genuinely needs, enumerated server side in
+  `engine/builtin_adapters.py`. Generated generic adapters and documentation
+  verification code are entitled to nothing at all.
+- The durable sandbox ledger records ownership before use and removes it only
+  after confirmed deletion. Reconciliation is deployment scoped, leader
+  coordinated, age/lease aware, and never lists or deletes unowned resources.
+
+## 8. Persistence and lifecycle
+
+- SQLite WAL is the supported single-host transactional store. Schema upgrades
+  run through ordered migrations and require a tested backup/rollback point.
+- Admission, ownership, run claims, quotas, dataset references, and deletion
+  tombstones are transactional.
+- `PROOFBENCH_RETENTION_DAYS` defaults to `0`, meaning no automatic expiry, so
+  a local operator's own data is never deleted on a horizon they did not choose.
+  A positive value expires completed tenant data after that many days. Active
+  resources are never expired. Filesystem deletion failures remain durably
+  queued and observable until retried.
+- The supported Compose deployment uses one API replica. Scaling across hosts
+  requires a network database, object storage, external queue, and secret
+  manager while preserving these contracts.
+
+## 9. Deployment contract
+
+- The web app uses same-origin `/api` through Nginx. Production TLS termination
+  sets `PROOFBENCH_COOKIE_SECURE=true`.
+- Containers run non-root with a read-only root filesystem, no added Linux
+  capabilities, and persistent volumes only for runtime state.
+- Liveness, authenticated readiness, unit/integration tests, accessibility
+  checks, locked-dependency audits, SBOM generation, container builds, image
+  scans, and Compose smoke tests are release gates.
+
+Any intentional change to these interfaces or invariants must update this file,
+tests, operations documentation, and the relevant client in the same change.
