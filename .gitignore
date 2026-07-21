@@ -7,3 +7,36 @@ dist/
 runs/
 data/demo/
 .pytest_cache/
+# Ad-hoc pytest --basetemp scratch roots (one per manual test run).
+.pytest_*/
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.omx/
+.agents/
+tmp/
+*.log
+.qa/
+.tmp/
+web/test-results/
+web/playwright-report/
+
+# Local production/runtime state
+proofbench.db
+proofbench.db-*
+data/uploads/
+
+# Local IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Browser QA artifacts. The capture scripts are tracked; their output is not.
+web/pb-theme-*.png
+web/pb-shot-*.png
+web/pb-polish-*.png
+web/pb-final-*.png
+web/astryx-*.png
