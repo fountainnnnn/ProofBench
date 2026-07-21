@@ -169,10 +169,15 @@
   color-scheme: dark;
 }
 
+/* min-height, not height. The console shell sets its own viewport height
+   (.pb-viewport-height), so it does not need a fixed-height ancestor; but a
+   long ordinary document like the landing page does need to grow past the
+   viewport. With `height: 100%` the body was pinned to the viewport and
+   everything below the fold became unreachable. */
 html,
 body,
 #root {
-  height: 100%;
+  min-height: 100%;
 }
 
 html {

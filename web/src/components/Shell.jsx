@@ -239,7 +239,13 @@ export default function Shell() {
             entirely non-focusable (e.g. Settings with runtime writes disabled)
             would otherwise be unscrollable by keyboard (axe
             scrollable-region-focusable). */}
-        <main id="proofbench-main" tabIndex={0} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+        {/* `relative` is load-bearing: it makes this scroll container the
+            containing block for absolutely positioned descendants. Without it
+            an `sr-only` label (Tailwind's sr-only is position:absolute) inside
+            an otherwise unpositioned chain resolves against the initial
+            containing block, escaping the shell's overflow-hidden and growing
+            the document so the whole app scrolls behind its own chrome. */}
+        <main id="proofbench-main" tabIndex={0} className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
           <Outlet />
         </main>
 
