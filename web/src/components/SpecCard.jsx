@@ -1,110 +1,131 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { safeHttpUrl } from "../linkSafety.js";
+import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
+import { BTN_DANGER, BTN_PRIMARY, PANEL } from "./ui.jsx";
 
-export default function SpecCard({ spec, onRun, onStop, running, stopping }) {
+export default function SpecCard({ spec, datasetId, onRun, onStop, running, stopping, interactionDisabled = false }) {
+  const safeSpec = useMemo(() => sanitizeForDisplay(spec || {}), [spec]);
   const [candidates, setCandidates] = useState([]);
 
   useEffect(() => {
-    setCandidates(spec?.candidates || []);
-  }, [spec]);
+    setCandidates(safeSpec.candidates || []);
+  }, [safeSpec]);
 
   const removeCandidate = (name) => {
-    setCandidates((cs) => cs.filter((c) => c.name !== name));
+    setCandidates((current) => current.filter((candidate) => candidate.name !== name));
   };
 
-  const dataset = spec?.dataset?.path || "(none)";
-  const isAssessment = spec?.benchmark_type === "tool_assessment";
+  const dataset = datasetId || safeSpec?.dataset?.dataset_id ||
+    (safeSpec?.dataset?.path ? "Attached dataset" : "None selected");
+  const isAssessment = safeSpec?.benchmark_type === "tool_assessment";
 
   return (
-    <div className="pb-card pb-card-hover pb-hover-lift p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <span className="text-[16px] font-semibold text-[var(--text)]">
-          Benchmark spec
-        </span>
-        {spec?.category && (
-          <span className="text-[13px] text-[var(--text-2)]">{spec.category}</span>
+    <section className={`${PANEL} min-w-0 p-5`} aria-label="Benchmark spec">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">Benchmark spec</h2>
+        {safeSpec?.category && (
+          <span className="pb-contain text-[12px] text-[var(--ink-2)]">
+            {safeVisibleText(safeSpec.category)}
+          </span>
         )}
       </div>
 
-      <div className="mb-3">
-        <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
-          Candidates
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {candidates.length === 0 && (
-            <span className="text-[12px] text-[var(--text-3)]">
-              No candidates left. Keep at least one to run.
-            </span>
-          )}
-          {candidates.map((c) => (
-            <span
-              key={c.name}
-              className="flex items-center gap-1.5 rounded-full bg-[var(--surface-2)] px-3 py-1 text-[12px] text-[var(--text)]"
-            >
-              {isAssessment ? (c.display_name || c.name) : c.name}
-              {isAssessment && c.docs_url && (
-                <a
-                  href={c.docs_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-[11px] text-[var(--accent)] hover:underline"
+      <div className="mt-4">
+        <div className="pb-eyebrow">Candidates</div>
+        {candidates.length === 0 ? (
+          <p className="mt-1.5 text-[13px] text-[var(--ink-2)]">
+            No candidates left. Keep at least one to run.
+          </p>
+        ) : (
+          /* Chips, not full-width rows: five candidates as stacked rows ran
+             taller than the reply they belong to. Wrapped chips fit the same
+             five on two lines. */
+          <ul className="mt-2 flex flex-wrap gap-1.5">
+            {candidates.map((candidate, index) => {
+              const docsUrl = safeHttpUrl(candidate.docs_url);
+              const name = safeVisibleText(candidate.display_name || candidate.name || "Unnamed candidate");
+              return (
+                <li
+                  key={`${safeVisibleText(candidate.name)}-${index}`}
+                  className="group inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full bg-[var(--surface-2)] py-1 pl-3 pr-1"
                 >
-                  docs
-                </a>
-              )}
-              <button
-                onClick={() => removeCandidate(c.name)}
-                className="text-[var(--text-3)] transition-colors hover:text-[var(--err)]"
-                title="Remove"
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
+                  <span className="pb-contain min-w-0 truncate text-[13px] text-[var(--ink)]">
+                    {isAssessment ? name : safeVisibleText(candidate.name)}
+                  </span>
+                  {isAssessment && docsUrl && (
+                    <a
+                      href={docsUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="shrink-0 text-[12px] text-[var(--accent)] hover:underline"
+                    >
+                      docs
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeCandidate(candidate.name)}
+                    disabled={interactionDisabled}
+                    aria-label={`Remove ${name} from benchmark`}
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--ink-3)] transition-colors duration-150 ease-out-quart hover:bg-[var(--danger-tint)] hover:text-[var(--danger)] disabled:opacity-40"
+                  >
+                    <span aria-hidden="true">×</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {isAssessment && safeSpec?.objective && (
+          <div className="mt-4">
+            <div className="pb-eyebrow">Company objective</div>
+            <p className="pb-contain mt-1 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+              {safeVisibleText(safeSpec.objective)}
+            </p>
+          </div>
+        )}
+
+        {!isAssessment && safeSpec?.fields && (
+          <div className="mt-4">
+            <div className="pb-eyebrow">Fields</div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+              {safeSpec.fields.map((field, index) => (
+                <span key={`${safeVisibleText(field)}-${index}`} className="pb-mono pb-contain text-[12px] text-[var(--ink-2)]">
+                  {safeVisibleText(field)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!isAssessment && (
+          <div className="mt-4 text-[12px] text-[var(--ink-3)]">
+            Dataset <span className="pb-mono pb-contain text-[var(--ink-2)]">{safeVisibleText(dataset)}</span>
+          </div>
+        )}
       </div>
 
-      {isAssessment && spec?.objective && (
-        <div className="mb-3">
-          <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
-            Company objective
-          </div>
-          <p className="max-w-[65ch] text-[12px] leading-relaxed text-[var(--text-2)]">
-            {spec.objective}
-          </p>
-        </div>
-      )}
-
-      {!isAssessment && spec?.fields && (
-        <div className="mb-3">
-          <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--text-3)]">
-            Fields
-          </div>
-          <div className="flex flex-wrap gap-x-3 gap-y-1">
-            {spec.fields.map((f) => (
-              <span key={f} className="font-mono text-[12px] text-[var(--text-2)]">
-                {f}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!isAssessment && (
-        <div className="mb-4 text-[12px] text-[var(--text-3)]">
-          Dataset: <span className="font-mono text-[var(--text-2)]">{dataset}</span>
-        </div>
-      )}
-
-      <div className="flex gap-2">
-        <button onClick={() => onRun({ ...spec, candidates })} disabled={running || candidates.length === 0}
-          className="h-9 rounded-md bg-[var(--accent)] px-4 text-[13px] font-medium text-[var(--surface)] transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-40">
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onRun({ ...safeSpec, candidates })}
+          disabled={running || interactionDisabled || candidates.length === 0}
+          className={BTN_PRIMARY}
+        >
           {running ? "Running..." : "Run benchmark"}
         </button>
-        {running && <button onClick={onStop} disabled={stopping}
-          className="h-9 rounded-md border border-[color-mix(in_oklab,var(--err)_45%,transparent)] px-4 text-[13px] font-medium text-[var(--err)] transition-colors hover:bg-[color-mix(in_oklab,var(--err)_8%,transparent)] disabled:opacity-50">
-          {stopping ? "Stopping..." : "Stop"}
-        </button>}
+        {running && (
+          <button type="button" onClick={onStop} disabled={stopping} className={BTN_DANGER}>
+            {stopping ? "Stopping..." : "Stop"}
+          </button>
+        )}
+        {!running && (
+          <p className="text-[12px] text-[var(--ink-3)]">
+            Nothing executes until you confirm this specification.
+          </p>
+        )}
       </div>
-    </div>
+    </section>
   );
 }

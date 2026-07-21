@@ -2,28 +2,171 @@
 @tailwind components;
 @tailwind utilities;
 
-/* DESIGN.md color tokens (OKLCH). The whole app consumes these variables,
-   either via the Tailwind theme mapping or arbitrary values. */
+/* ProofBench design tokens (OKLCH). The whole neutral family is tinted toward
+   one petrol hue (210-220): the canvas, the ink, the accent, and the verdict
+   hero are all the same colour at different lightness, so the brand is the
+   verdict rather than a decoration. Names stay stable so existing markup keeps
+   working; only the values define the look. */
 :root {
-  --bg: oklch(0.992 0.002 264);
-  --surface: oklch(0.985 0.003 264);
-  --surface-2: oklch(0.972 0.004 264);
-  --border: oklch(0.905 0.006 264);
-  --border-strong: oklch(0.82 0.008 264);
-  --text: oklch(0.24 0.02 264);
-  --text-2: oklch(0.46 0.015 264);
-  --text-3: oklch(0.62 0.012 264);
-  --accent: oklch(0.52 0.19 268);
-  --accent-hover: oklch(0.46 0.19 268);
-  --accent-soft: oklch(0.95 0.025 268);
-  --ok: oklch(0.62 0.15 155);
-  --warn: oklch(0.68 0.15 75);
-  --err: oklch(0.55 0.19 25);
-  --info: oklch(0.58 0.12 230);
-  --code-bg: oklch(0.27 0.02 264);
-  --code-text: oklch(0.85 0.02 160);
-  --shadow-card: 0 1px 2px rgb(30 27 75 / 0.02), 0 4px 12px rgb(30 27 75 / 0.04);
-  --shadow-lift: 0 4px 12px rgb(30 27 75 / 0.06), 0 12px 28px rgb(30 27 75 / 0.06);
+  /* Canvas: Mindora light gray (#F1F5F4 family). White cards rest on it with
+     soft diffuse shadows. */
+  --paper: oklch(0.966 0.006 175);
+  --bg: var(--paper);
+  --surface: oklch(0.998 0.001 175);
+  --surface-2: oklch(0.945 0.008 165);
+
+  /* Canvas atmosphere: a whisper-low vertical wash so large empty regions read
+     as air rather than dead gray. --paper stays the solid mid-tone that
+     component fills reference; these two are only the gradient stops. */
+  --canvas-top: oklch(0.975 0.006 165);
+  --canvas-bottom: oklch(0.957 0.008 190);
+  /* The left frame: a near-canvas tone, distinct from both the wash and the
+     white cards, so the shell reads as an intentional frame. */
+  --sidebar-bg: oklch(0.951 0.008 182);
+
+  /* Ink: Mindora dark slate (#2F3E46 family), never pure black. */
+  --ink: oklch(0.36 0.023 215);
+  --ink-2: oklch(0.44 0.02 210);
+  --ink-3: oklch(0.48 0.018 205);
+  --text: var(--ink);
+  --text-2: var(--ink-2);
+  --text-3: var(--ink-3);
+
+  /* Hairlines: Mindora inputs and dividers carry a visible 1px border. */
+  --line: oklch(0.905 0.008 170);
+  --border: var(--line);
+  --line-strong: oklch(0.845 0.01 170);
+  --border-strong: var(--line-strong);
+
+  /* Accent: sage green (#5EBB7E family), darkened to stay readable as text.
+     Links, focus, selection, live state. */
+  --accent: oklch(0.48 0.10 152);
+  --accent-ink: oklch(0.42 0.10 152);
+  --accent-hover: var(--accent-ink);
+  --accent-tint: oklch(0.93 0.035 152);
+  --accent-soft: var(--accent-tint);
+
+  /* The signature Mindora button: dark slate at rest, sage green on hover. */
+  --btn-primary-hover: oklch(0.56 0.105 152);
+
+  /* Semantic pairs. Each is an accessible text colour plus its own tint, so a
+     small label on the tint clears 4.5:1. Danger leans dusty pink (#EBAEB1). */
+  --ok: oklch(0.46 0.11 152);
+  --ok-tint: oklch(0.94 0.035 152);
+  --warn: oklch(0.45 0.10 75);
+  --warn-tint: oklch(0.95 0.04 85);
+  --danger: oklch(0.46 0.14 20);
+  --danger-tint: oklch(0.93 0.035 15);
+  /* Mindora soft blue (#A7C7E7 family): the secondary-action pastel. */
+  --blue: oklch(0.47 0.08 250);
+  --blue-tint: oklch(0.93 0.03 250);
+  /* Legacy names kept so existing markup and pinned regression tests hold. */
+  --err: var(--danger);
+  --err-strong: var(--danger);
+  --err-soft: var(--danger-tint);
+  --info: var(--accent);
+
+  /* Terminal panels are dark slate because their content is logs. */
+  --code-bg: oklch(0.30 0.022 215);
+  --code-text: oklch(0.87 0.02 152);
+
+  /* The verdict hero: the single dark card, in the brand slate. */
+  --hero-ink: oklch(0.36 0.023 215);
+  --hero-ink-2: oklch(0.78 0.02 190);
+  --hero-text: oklch(0.985 0.003 175);
+
+  /* Elevation: Mindora soft/medium/strong diffuse shadows, tinted slate. */
+  --shadow-card: 0 1px 2px oklch(0.36 0.03 200 / 0.05), 0 6px 22px oklch(0.36 0.03 200 / 0.10);
+  --shadow-lift: 0 8px 30px oklch(0.36 0.03 200 / 0.14), 0 24px 60px oklch(0.36 0.03 200 / 0.11);
+  --shadow-btn: none;
+
+  /* Shape: generous, consistent. */
+  --radius-control: 12px;
+  --radius-surface: 24px;
+  --radius-dialog: 28px;
+
+  /* Layout rhythm */
+  --canvas: 1280px;
+  --sidebar: 248px;
+  --gap: 24px;
+
+  /* Motion: functional only. */
+  --motion: 150ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Dark theme: the same petrol family inverted. Auto-follows the system unless
+   the operator pins a theme in Settings (html[data-theme]). Every token keeps
+   its role: --ink stays "the strong colour" (light on dark), --surface stays
+   "the card colour", so component markup is theme-blind. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: oklch(0.215 0.018 215);
+    --surface: oklch(0.265 0.02 215);
+    --surface-2: oklch(0.315 0.02 212);
+    --canvas-top: oklch(0.238 0.02 215);
+    --canvas-bottom: oklch(0.198 0.017 215);
+    --sidebar-bg: oklch(0.242 0.02 214);
+    --ink: oklch(0.94 0.006 170);
+    --ink-2: oklch(0.74 0.015 190);
+    --ink-3: oklch(0.72 0.015 195);
+    --line: oklch(0.345 0.02 213);
+    --line-strong: oklch(0.43 0.02 210);
+    --accent: oklch(0.76 0.10 152);
+    --accent-ink: oklch(0.82 0.09 152);
+    --accent-tint: oklch(0.345 0.05 152);
+    --btn-primary-hover: oklch(0.70 0.10 152);
+    --ok: oklch(0.78 0.12 152);
+    --ok-tint: oklch(0.335 0.05 152);
+    --warn: oklch(0.80 0.10 80);
+    --warn-tint: oklch(0.34 0.05 80);
+    --danger: oklch(0.76 0.10 20);
+    --danger-tint: oklch(0.335 0.05 15);
+    --blue: oklch(0.78 0.08 250);
+    --blue-tint: oklch(0.34 0.045 250);
+    --code-bg: oklch(0.175 0.016 215);
+    --code-text: oklch(0.87 0.02 152);
+    --hero-ink: oklch(0.315 0.022 215);
+    --hero-ink-2: oklch(0.77 0.018 190);
+    --hero-text: oklch(0.965 0.005 175);
+    --shadow-card: 0 1px 2px oklch(0 0 0 / 0.25), 0 4px 20px oklch(0 0 0 / 0.22);
+    --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.35), 0 24px 60px oklch(0 0 0 / 0.35);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: oklch(0.215 0.018 215);
+  --surface: oklch(0.265 0.02 215);
+  --surface-2: oklch(0.315 0.02 212);
+  --canvas-top: oklch(0.238 0.02 215);
+  --canvas-bottom: oklch(0.198 0.017 215);
+  --sidebar-bg: oklch(0.242 0.02 214);
+  --ink: oklch(0.94 0.006 170);
+  --ink-2: oklch(0.74 0.015 190);
+  --ink-3: oklch(0.72 0.015 195);
+  --line: oklch(0.345 0.02 213);
+  --line-strong: oklch(0.43 0.02 210);
+  --accent: oklch(0.76 0.10 152);
+  --accent-ink: oklch(0.82 0.09 152);
+  --accent-tint: oklch(0.345 0.05 152);
+  --btn-primary-hover: oklch(0.70 0.10 152);
+  --ok: oklch(0.78 0.12 152);
+  --ok-tint: oklch(0.335 0.05 152);
+  --warn: oklch(0.80 0.10 80);
+  --warn-tint: oklch(0.34 0.05 80);
+  --danger: oklch(0.76 0.10 20);
+  --danger-tint: oklch(0.335 0.05 15);
+  --blue: oklch(0.78 0.08 250);
+  --blue-tint: oklch(0.34 0.045 250);
+  --code-bg: oklch(0.175 0.016 215);
+  --code-text: oklch(0.87 0.02 152);
+  --hero-ink: oklch(0.315 0.022 215);
+  --hero-ink-2: oklch(0.77 0.018 190);
+  --hero-text: oklch(0.965 0.005 175);
+  --shadow-card: 0 1px 2px oklch(0 0 0 / 0.25), 0 4px 20px oklch(0 0 0 / 0.22);
+  --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.35), 0 24px 60px oklch(0 0 0 / 0.35);
+  color-scheme: dark;
 }
 
 html,
@@ -32,146 +175,332 @@ body,
   height: 100%;
 }
 
+html {
+  /* No route may push the document sideways, at any width. */
+  overflow-x: hidden;
+}
+
+.pb-viewport-height {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.pb-viewport-min {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.pb-safe-top {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+
+.pb-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.pb-safe-inline-shell {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+.pb-safe-screen {
+  padding-top: max(1rem, env(safe-area-inset-top));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+/* Mindora pairing: Inter carries headings, buttons, and controls; DM Sans
+   carries body text and descriptions. */
+h1, h2, h3, h4, h5, h6,
+button, input, textarea, select, label, th, summary {
+  font-family: "Inter Variable", Inter, system-ui, "Segoe UI", sans-serif;
+}
+
 body {
   margin: 0;
-  background: radial-gradient(circle at 14% 16%, color-mix(in oklch, var(--accent-soft) 24%, transparent), transparent 48%),
-    radial-gradient(circle at 88% 84%, color-mix(in oklch, var(--surface-2) 36%, transparent), transparent 42%),
-    var(--bg);
-  color: var(--text);
-  font-family: "Inter", system-ui, sans-serif;
+  background-color: var(--paper);
+  /* Fixed attachment keeps the wash from banding as the inner regions scroll. */
+  background-image: linear-gradient(180deg, var(--canvas-top) 0%, var(--canvas-bottom) 100%);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: "DM Sans Variable", "DM Sans", "Inter Variable", Inter, system-ui, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
 }
 
 .pb-shell-bg {
   min-height: 100%;
-  background:
-    radial-gradient(circle at 14% 16%, color-mix(in oklch, var(--accent-soft) 24%, transparent), transparent 48%),
-    radial-gradient(circle at 88% 84%, color-mix(in oklch, var(--surface-2) 36%, transparent), transparent 42%),
-    var(--bg);
+  background-color: var(--paper);
+  background-image: linear-gradient(180deg, var(--canvas-top) 0%, var(--canvas-bottom) 100%);
+  background-attachment: fixed;
 }
 
-.pb-card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in oklch, var(--surface) 92%, transparent);
+/* A panel is a white borderless surface resting on the tinted canvas. Never
+   nested inside another panel. */
+.pb-card,
+.pb-panel {
+  border-radius: var(--radius-surface);
+  background: var(--surface);
   box-shadow: var(--shadow-card);
 }
 
-.pb-card-hover:hover {
-  border-color: color-mix(in oklch, var(--accent) 22%, var(--border));
-  box-shadow: var(--shadow-lift);
-  background: color-mix(in oklch, var(--surface) 96%, var(--accent-soft));
-}
-
+/* Interactive surfaces deepen softly on hover; nothing tilts or glows. */
+.pb-card-hover,
 .pb-hover-lift {
   transition:
-    transform 180ms cubic-bezier(0.25, 1, 0.5, 1),
-    box-shadow 180ms cubic-bezier(0.25, 1, 0.5, 1),
-    border-color 180ms cubic-bezier(0.25, 1, 0.5, 1);
+    background-color var(--motion) var(--ease),
+    box-shadow var(--motion) var(--ease);
 }
 
-.pb-hover-lift:hover {
-  transform: translateY(-1px) scale(1.005);
+.pb-card-hover:hover {
   box-shadow: var(--shadow-lift);
 }
 
 .pb-sidebar-shell {
-  background: color-mix(in oklch, var(--surface-2) 88%, var(--surface));
-  box-shadow: inset -1px 0 0 var(--border);
+  background: var(--sidebar-bg);
 }
 
 .pb-nav-item {
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   transition:
-    background-color 160ms cubic-bezier(0.25, 1, 0.5, 1),
-    color 160ms cubic-bezier(0.25, 1, 0.5, 1),
-    transform 160ms cubic-bezier(0.25, 1, 0.5, 1);
+    background-color var(--motion) var(--ease),
+    color var(--motion) var(--ease);
 }
 
-.pb-nav-item:hover {
-  transform: translateX(1px);
-}
-
+/* Selected navigation is the black pill: the one strong element in the bar. */
 .pb-nav-item-active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border: 1px solid color-mix(in oklch, var(--accent) 28%, var(--accent-soft));
+  background: var(--ink);
+  color: var(--surface);
 }
 
 .pb-stat-chip {
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
-  background: color-mix(in oklch, var(--surface-2) 82%, transparent);
-  padding: 0.44rem 0.75rem;
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  padding: 0.375rem 0.625rem;
 }
 
 .pb-pill {
   border-radius: 999px;
-  border: 1px solid var(--border);
   background: var(--surface-2);
-  padding: 0.125rem 0.55rem;
+  padding: 0.125rem 0.625rem;
   transition:
-    border-color 160ms cubic-bezier(0.25, 1, 0.5, 1),
-    color 160ms cubic-bezier(0.25, 1, 0.5, 1),
-    background-color 160ms cubic-bezier(0.25, 1, 0.5, 1);
+    color var(--motion) var(--ease),
+    background-color var(--motion) var(--ease);
 }
 
 .pb-pill:hover {
-  border-color: color-mix(in oklch, var(--accent) 26%, var(--border));
-  color: var(--accent);
-  background: color-mix(in oklch, var(--accent-soft) 65%, var(--surface-2));
+  background: var(--line);
 }
 
 .pb-panel-soft {
-  background:
-    linear-gradient(
-      to right,
-      color-mix(in oklch, var(--surface-2) 82%, transparent),
-      var(--surface)
-    );
-  border-top: 1px solid color-mix(in oklch, var(--accent-soft) 45%, var(--border));
+  background: var(--surface);
+}
+
+/* Section label: a quiet sentence-case group label, at most one per screen. */
+.pb-eyebrow {
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--ink-3);
+}
+
+/* Anchored page header: sticky band with a permanent structural hairline —
+   the one always-on hairline outside compact lists. */
+.pb-page-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* A real translucent surface anchors the band: scrolling content passes
+     under something, not under the bare canvas. Falls back to an opaque
+     surface where backdrop-filter is unsupported. */
+  background: var(--surface);
+  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  backdrop-filter: blur(10px) saturate(1.05);
+  -webkit-backdrop-filter: blur(10px) saturate(1.05);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Console route title: the sans replacement for .pb-display on every console
+   route (Benchmark, Runs, Datasets, Settings). */
+.pb-page-title {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+/* The verdict voice: a serif display used only on the landing hero and verdict
+   winner names. All other UI stays in the system sans; numbers stay mono. */
+.pb-display {
+  font-family: "Cormorant Variable", Cormorant, Georgia, serif;
+  font-style: italic;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* Mono only where it carries meaning: metrics, identifiers, timestamps. */
+.pb-mono {
+  font-family: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Every interactive element gets the same visible 2px focus outline. */
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: var(--accent-tint);
 }
 
-/* Thin scrollbars on the tinted neutrals */
+/* Long identifiers, URLs, and scraped text must wrap rather than widen the page. */
+.pb-contain {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Static skeleton geometry: solid blocks that hold the shape of the content,
+   with a low-amplitude opacity pulse and no shimmer sweep. */
+.pb-skeleton {
+  background: var(--surface-2);
+  border-radius: var(--radius-control);
+  animation: pb-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pb-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* A table that becomes a stack of labelled row summaries on small screens.
+   Explicit ARIA roles in the markup preserve the table semantics once the
+   display type is changed, so nothing is clipped and nothing is lost. */
+.pb-stack-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+@media (max-width: 720px) {
+  .pb-stack-table,
+  .pb-stack-table > tbody,
+  .pb-stack-table > tbody > tr,
+  .pb-stack-table > tbody > tr > td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .pb-stack-table {
+    table-layout: auto;
+  }
+
+  .pb-stack-table > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .pb-stack-table > tbody > tr {
+    padding: 14px 18px;
+  }
+
+  .pb-stack-table > tbody > tr > td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 3px 0;
+    text-align: left;
+    max-width: none;
+    white-space: normal;
+  }
+
+  .pb-stack-table > tbody > tr > td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-3);
+  }
+
+  .pb-stack-table > tbody > tr > td[data-label=""]::before,
+  .pb-stack-table > tbody > tr > td:not([data-label])::before {
+    content: none;
+  }
+
+  /* The primary cell reads as the row title, not as a labelled field. */
+  .pb-stack-table > tbody > tr > td[data-primary] {
+    display: block;
+    padding-bottom: 6px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .pb-stack-table > tbody > tr > td[data-actions] {
+    justify-content: flex-start;
+    padding-top: 8px;
+  }
+}
+
+/* Thin scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-color: var(--line-strong) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--line-strong);
   border-radius: 4px;
 }
 
-/* Markdown defaults inside the chat/report cards */
-.md :where(h1, h2, h3) {
+/* Markdown defaults inside the chat/report panels. Backend markdown headings
+   are demoted in JSX so a route keeps one H1, so every level is styled. */
+.md :where(h1, h2, h3, h4, h5, h6) {
   font-weight: 600;
-  color: var(--text);
-  margin: 0.75em 0 0.4em;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0.9em 0 0.4em;
 }
-.md h1 {
-  font-size: 1.25rem;
+.md :where(h1, h2) {
+  font-size: 16px;
 }
-.md h2 {
-  font-size: 1.1rem;
+.md :where(h3, h4) {
+  font-size: 14px;
+}
+.md :where(h5, h6) {
+  font-size: 13px;
+  color: var(--ink-2);
 }
 .md p {
   margin: 0.5em 0;
   line-height: 1.6;
 }
-.md ul {
-  list-style: disc;
+.md ul,
+.md ol {
   padding-left: 1.25rem;
   margin: 0.5em 0;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
 }
 .md a {
   color: var(--accent);
@@ -180,22 +509,171 @@ body {
 .md code {
   background: var(--surface-2);
   padding: 0.1em 0.35em;
-  border-radius: 4px;
-  font-family: ui-monospace, monospace;
+  border-radius: 6px;
+  font-family: "JetBrains Mono Variable", ui-monospace, monospace;
   font-size: 0.85em;
+  overflow-wrap: anywhere;
 }
+/* A fenced code block is a box that scrolls itself. Without this it keeps its
+   default `white-space: pre`, so one long line (an echoed spec, a scraped
+   payload) widens the whole message column and pushes the reply off screen. */
+.md pre {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0.6em 0;
+  padding: 0.7em 0.85em;
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.md pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
 .md table {
   border-collapse: collapse;
   margin: 0.75em 0;
-  width: 100%;
-  font-size: 0.85rem;
+  width: auto;
+  font-size: 13px;
+}
+
+/* Only the generated report forces a readable minimum: it renders inside its
+   own horizontally scrolling panel. A chat message has no such panel, so the
+   same rule there would widen the reading column. */
+.md-report table {
+  min-width: max(100%, 48rem);
 }
 .md th,
 .md td {
-  border: 1px solid var(--border);
   padding: 0.4em 0.6em;
   text-align: left;
+  border-bottom: 1px solid var(--line);
 }
 .md th {
-  background: var(--surface-2);
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* An assistant turn leads with a 24px avatar tile. Neutralising the top margin
+   of the reply's first block lets the tile sit flush against the first line. */
+.pb-msg-body > .md > :first-child {
+  margin-top: 0;
+}
+
+.pb-long-list-item {
+  content-visibility: auto;
+  contain-intrinsic-size: 28px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Ambient chat atmosphere: two blurred sage/white blobs drifting very slowly
+   behind the benchmark thread. Transform-only animation (GPU-cheap), opaque
+   cards float above it, and the global prefers-reduced-motion rule freezes it.
+   It is air, not decoration: chroma stays whisper-low in both themes. */
+.pb-atmosphere {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pb-atmosphere::before,
+.pb-atmosphere::after {
+  content: "";
+  position: absolute;
+  width: 55vmax;
+  height: 55vmax;
+  border-radius: 50%;
+  /* Softness is baked into the gradient falloff instead of a blur filter:
+     measured 16fps with blur(90px), 58fps without. A radial gradient is
+     already smooth; the filter was pure cost. */
+  will-change: transform;
+}
+
+.pb-atmosphere::before {
+  top: -22%;
+  left: -12%;
+  background: radial-gradient(closest-side, oklch(0.88 0.055 152 / 0.42) 0%, oklch(0.88 0.055 152 / 0.18) 45%, transparent 72%);
+  animation: pb-drift-a 16s ease-in-out infinite alternate;
+}
+
+.pb-atmosphere::after {
+  bottom: -25%;
+  right: -15%;
+  background: radial-gradient(closest-side, oklch(0.985 0.006 165 / 0.85) 0%, oklch(0.985 0.006 165 / 0.35) 45%, transparent 72%);
+  animation: pb-drift-b 21s ease-in-out infinite alternate;
+}
+
+:root[data-theme="dark"] .pb-atmosphere::before {
+  background: radial-gradient(closest-side, oklch(0.38 0.06 152 / 0.34) 0%, oklch(0.38 0.06 152 / 0.14) 45%, transparent 72%);
+}
+
+:root[data-theme="dark"] .pb-atmosphere::after {
+  background: radial-gradient(closest-side, oklch(0.30 0.03 200 / 0.48) 0%, oklch(0.30 0.03 200 / 0.20) 45%, transparent 72%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .pb-atmosphere::before {
+    background: radial-gradient(closest-side, oklch(0.38 0.06 152 / 0.34) 0%, oklch(0.38 0.06 152 / 0.14) 45%, transparent 72%);
+  }
+
+  :root:not([data-theme="light"]) .pb-atmosphere::after {
+    background: radial-gradient(closest-side, oklch(0.30 0.03 200 / 0.48) 0%, oklch(0.30 0.03 200 / 0.20) 45%, transparent 72%);
+  }
+}
+
+@keyframes pb-drift-a {
+  from {
+    transform: translate3d(-6%, -4%, 0) scale(0.95);
+  }
+  to {
+    transform: translate3d(34%, 22%, 0) scale(1.3);
+  }
+}
+
+@keyframes pb-drift-b {
+  from {
+    transform: translate3d(6%, 4%, 0) scale(1.2);
+  }
+  to {
+    transform: translate3d(-30%, -20%, 0) scale(0.85);
+  }
+}
+
+/* Peak-End: the verdict is the peak of a run and earns one arrival beat. A
+   single rise-and-fade on mount, transform/opacity only; the global
+   prefers-reduced-motion rule freezes it to an instant appearance. */
+.pb-verdict-enter {
+  animation: pb-verdict-rise 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes pb-verdict-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

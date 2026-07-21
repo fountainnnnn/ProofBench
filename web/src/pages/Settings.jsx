@@ -1,140 +1,177 @@
-import { useEffect, useState } from "react";
-import { deleteProviderKey, getHealth, listProviderKeys, saveProviderKey } from "../api.js";
+import { useEffect, useId, useState } from "react";
+import {
+  deleteProviderKey,
+  getProviderReadiness,
+  listProviderKeys,
+  saveProviderKey,
+} from "../api.js";
+import { BTN_DANGER, BTN_PRIMARY, BTN_SECONDARY, Collapse, INPUT, PAGE_HEADER, PAGE_TITLE, PANEL, Skeleton } from "../components/ui.jsx";
+import HeaderActions from "../components/HeaderActions.jsx";
+import { THEME_CHOICES, applyTheme, storedTheme } from "../theme.js";
 
-const PANEL =
-  "rounded-[14px] border border-[color:var(--border)] bg-[color:var(--surface)] shadow-card";
-const SKEL = "animate-pulse rounded-md bg-[color:var(--surface-2)]";
-const CHIP =
-  "pb-pill inline-flex max-w-full items-center gap-1.5 px-2 py-1 font-mono text-[12px] text-[color:var(--text)] transition-colors duration-150 hover:border-[color:var(--border-strong)] hover:text-[color:var(--accent)]";
-
-const KEYS = [
-  {
-    env: "DAYTONA_API_KEY",
-    caption: "Daytona: sandbox fleet",
-    aliases: ["daytona"],
-  },
-  {
-    env: "MOONSHOT_API_KEY",
-    caption: "Moonshot: orchestrator model",
-    aliases: ["moonshot", "kimi"],
-  },
-  {
-    env: "NOSANA_API_KEY",
-    caption: "Nosana: GPU candidate",
-    aliases: ["nosana"],
-  },
-  {
-    env: "DOUBLEWORD_API_KEY",
-    caption: "Doubleword: Real-mode batch assessment + candidate",
-    aliases: ["doubleword"],
-  },
-  {
-    env: "OXYLABS_USERNAME",
-    caption: "Oxylabs: docs search",
-    aliases: ["oxylabs"],
-  },
-  {
-    env: "OPENAI_API_KEY",
-    caption: "OpenAI: vision candidate",
-    aliases: ["openai"],
-  },
-];
-
-// Health payload shape is not frozen; walk it recursively and match aliases.
-function flattenLeaves(value, path, out) {
-  if (value && typeof value === "object") {
-    for (const [k, v] of Object.entries(value)) {
-      flattenLeaves(v, path ? `${path}.${k}` : k, out);
-    }
-  } else {
-    out.push([path, value]);
-  }
-}
-
-function toBool(v) {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number") return v > 0;
-  if (typeof v === "string") {
-    const s = v.trim().toLowerCase();
-    return !["", "missing", "false", "no", "unset", "null", "none"].includes(
-      s
-    );
-  }
-  return v != null;
-}
-
-function resolveKey(health, aliases) {
-  const leaves = [];
-  flattenLeaves(health, "", leaves);
-  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-  for (const alias of aliases) {
-    const a = norm(alias);
-    const hit = leaves.find(([path]) => norm(path).includes(a));
-    if (hit) return toBool(hit[1]);
-  }
-  return null; // not reported by the endpoint
-}
-
-const STATUS = {
-  set: {
-    dot: "bg-[color:var(--ok)]",
-    word: "text-[color:var(--ok)]",
-    label: "set",
-  },
-  missing: {
-    dot: "bg-[color:var(--err)]",
-    word: "text-[color:var(--err)]",
-    label: "missing",
-  },
-  unknown: {
-    dot: "bg-[color:var(--text-3)]",
-    word: "text-[color:var(--text-3)]",
-    label: "unknown",
-  },
+// Readiness is a configuration check the server performs without contacting a
+// provider, so opening Settings never issues a billable request.
+const READINESS = {
+  ready: { word: "text-[var(--ok)]", label: "ready" },
+  partial: { word: "text-[var(--warn)]", label: "partly configured" },
+  missing: { word: "text-[var(--danger)]", label: "not configured" },
 };
 
+// Monogram tint pairs, cycled so adjacent services differ. Assignment is keyed
+// on the provider id (a fixed identity), not render order, so a service keeps
+// the same tile even when the list reorders as its status changes.
+const TILE_TINTS = [
+  "bg-[var(--ok-tint)] text-[var(--ok)]",
+  "bg-[var(--blue-tint)] text-[var(--blue)]",
+  "bg-[var(--warn-tint)] text-[var(--warn)]",
+  "bg-[var(--danger-tint)] text-[var(--danger)]",
+];
+
+function Chevron({ open }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 12 12"
+      className={`h-3 w-3 shrink-0 text-[var(--ink-3)] transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4.5 2.5 8 6l-3.5 3.5" />
+    </svg>
+  );
+}
+
+// One service = one row. The header line is always visible (icon, name, status);
+// its env-var breakdown and full capability sentence fold away behind the row's
+// own disclosure so the list reads as a short scannable index.
+/* Two characters, so the tile is legible without relying on its hue: a single
+   initial collided on six of eight services (three D, three O). Internal
+   capitals win where a name has them (DeepSeek -> DS, OpenRouter -> OR),
+   otherwise the first two letters (Daytona -> Da, Doubleword -> Do). */
+function monogram(label) {
+  const name = String(label || "?").trim();
+  const capitals = name.replace(/[^A-Za-z]/g, "").match(/[A-Z]/g) || [];
+  if (capitals.length >= 2) return capitals.slice(0, 2).join("");
+  const letters = name.replace(/[^A-Za-z]/g, "");
+  if (letters.length >= 2) return letters[0].toUpperCase() + letters[1].toLowerCase();
+  return (letters[0] || "?").toUpperCase();
+}
+
+function ServiceRow({ item, tile }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const st = READINESS[item.status] || READINESS.missing;
+  // Danger is reserved for a missing essential capability. An unconfigured
+  // optional provider is not an error, so its "not configured" word stays quiet.
+  const quiet = item.status === "missing" && !item.essential;
+  const word = quiet ? "text-[var(--ink-3)]" : st.word;
+  const missing = new Set(item.missing || []);
+  return (
+    <li>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? `${id}-body` : undefined}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-3 py-3 text-left focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+      >
+        <span
+          className={`grid h-7 w-7 shrink-0 place-items-center rounded-[8px] text-[12px] font-semibold ${tile}`}
+          aria-hidden="true"
+        >
+          {monogram(item.label)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-[13px] font-medium text-[var(--ink)]">{item.label}</span>
+            {item.essential && (
+              <span className="shrink-0 rounded-full bg-[var(--surface-2)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--ink-2)]">
+                required
+              </span>
+            )}
+            <span className={`ml-auto shrink-0 text-[12px] font-medium ${word}`}>{st.label}</span>
+          </span>
+          <span className="mt-0.5 block truncate text-[12px] text-[var(--ink-2)]">{item.capability}</span>
+        </span>
+        <Chevron open={open} />
+      </button>
+      {open && (
+        <div id={`${id}-body`} className="pb-3 pl-10">
+          {item.required?.length > 0 && (
+            <ul className="divide-y divide-[var(--line)] overflow-hidden rounded-[8px] bg-[var(--surface-2)]">
+              {item.required.map((env) => {
+                const isMissing = missing.has(env);
+                return (
+                  <li key={env} className="flex items-center gap-x-2.5 px-3 py-2">
+                    <code className="pb-mono pb-contain flex-1 text-[12px] text-[var(--ink)]">{env}</code>
+                    <span
+                      className={`shrink-0 text-[12px] font-medium ${isMissing ? "text-[var(--danger)]" : "text-[var(--ink-3)]"}`}
+                    >
+                      {isMissing ? "missing" : "set"}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <p className="pb-contain mt-2 text-[12px] leading-relaxed text-[var(--ink-2)]">{item.capability}</p>
+        </div>
+      )}
+    </li>
+  );
+}
+
 export default function Settings() {
-  const [health, setHealth] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
+  const [theme, setThemeState] = useState(storedTheme);
+  const setTheme = (value) => {
+    setThemeState(value);
+    applyTheme(value);
+  };
+  useEffect(() => {
+    const sync = () => setThemeState(storedTheme());
+    window.addEventListener("pb-theme-change", sync);
+    return () => window.removeEventListener("pb-theme-change", sync);
+  }, []);
   const [providerKeys, setProviderKeys] = useState([]);
+  const [providerPolicy, setProviderPolicy] = useState({
+    loaded: false,
+    runtimeWritesEnabled: false,
+    managedBy: "deployment",
+  });
   const [envName, setEnvName] = useState("");
   const [secretValue, setSecretValue] = useState("");
   const [keyError, setKeyError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [confirmingRemoval, setConfirmingRemoval] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  const [readiness, setReadiness] = useState(null);
+  const [readinessFailed, setReadinessFailed] = useState(false);
 
   const refreshProviderKeys = async () => {
     const data = await listProviderKeys();
     setProviderKeys(data.keys || []);
+    setProviderPolicy({
+      loaded: true,
+      runtimeWritesEnabled: data.runtime_writes_enabled === true,
+      managedBy: data.managed_by || "deployment",
+    });
   };
 
   useEffect(() => {
     let alive = true;
-    getHealth()
-      .then((data) => {
-        if (alive) setHealth(data);
-      })
-      .catch(() => {
-        if (alive) setFailed(true);
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
+    getProviderReadiness()
+      .then((data) => { if (alive) setReadiness(data); })
+      .catch(() => { if (alive) setReadinessFailed(true); });
     refreshProviderKeys().catch(() => {});
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
-
-  const statusFor = (key) => {
-    if (failed) return "unknown";
-    const v = resolveKey(health, key.aliases);
-    if (v === null) return "unknown";
-    return v ? "set" : "missing";
-  };
 
   const addProviderKey = async (event) => {
     event.preventDefault();
+    if (!providerPolicy.runtimeWritesEnabled) return;
     setSaving(true);
     setKeyError("");
     try {
@@ -150,166 +187,321 @@ export default function Settings() {
   };
 
   const removeProviderKey = async (env) => {
+    if (!providerPolicy.runtimeWritesEnabled) return;
+    setRemoving(env);
+    setKeyError("");
     try {
       await deleteProviderKey(env);
       await refreshProviderKeys();
+      setConfirmingRemoval(null);
     } catch (error) {
       setKeyError(error.message);
+    } finally {
+      setRemoving(null);
     }
   };
 
+  const providers = readiness?.providers || [];
+  // Fixed tint map keyed on provider identity (canonical, alphabetical), so the
+  // tile is stable per service and independent of the display order below.
+  const tintIndex = {};
+  [...providers]
+    .map((p) => p.provider)
+    .sort()
+    .forEach((id, i) => { tintIndex[id] = i; });
+  const tintFor = (id) => TILE_TINTS[(tintIndex[id] ?? 0) % TILE_TINTS.length];
+  // Daytona first, then ready services, then partial, then unconfigured.
+  const rank = (p) => {
+    if (p.provider === "daytona") return 0;
+    return { ready: 1, partial: 2, missing: 3 }[p.status] ?? 3;
+  };
+  const ordered = [...providers].sort((a, b) => rank(a) - rank(b));
+
+  // The runtime credential controls are spelled once and placed into whichever
+  // branch is live, so the enabled form and the collapsed dead form never drift
+  // apart. When writes are disabled every control renders in its disabled state.
+  const addKeyForm = (
+    <form onSubmit={addProviderKey} className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="grid gap-3">
+        <input
+          value={envName}
+          onChange={(event) => setEnvName(event.target.value)}
+          placeholder="PROVIDER_API_KEY"
+          aria-label="Provider environment variable"
+          disabled={!providerPolicy.runtimeWritesEnabled}
+          className={`pb-mono ${INPUT} text-[12px] disabled:opacity-100 disabled:text-[var(--ink-3)]`}
+          required
+        />
+        <input
+          type="password"
+          value={secretValue}
+          onChange={(event) => setSecretValue(event.target.value)}
+          placeholder="API key or provider value"
+          aria-label="Provider credential value"
+          autoComplete="off"
+          disabled={!providerPolicy.runtimeWritesEnabled}
+          className={`${INPUT} disabled:opacity-100 disabled:text-[var(--ink-3)]`}
+          required
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={saving || !providerPolicy.runtimeWritesEnabled}
+        className={`${BTN_PRIMARY} sm:self-start`}
+      >
+        {saving ? "Saving" : "Add key"}
+      </button>
+    </form>
+  );
+
+  const keyErrorNode = keyError ? (
+    <p className="mt-3 text-[12px] text-[var(--danger)]" role="alert">
+      {keyError}
+    </p>
+  ) : null;
+
+  const managedKeyList = providerKeys.length > 0 ? (
+    <ul className="mt-4 divide-y divide-[var(--line)] overflow-hidden rounded-[12px] bg-[var(--surface-2)]">
+      {providerKeys.map((key) => (
+        <li key={key.env} className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-3">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--ok)]" aria-hidden="true" />
+          <code className="pb-mono pb-contain text-[12px] text-[var(--ink)]">{key.env}</code>
+          <span className="text-[12px] text-[var(--ink-3)]">{key.source}</span>
+          {key.source === "settings" &&
+            (confirmingRemoval === key.env ? (
+              <span
+                className="ml-auto flex items-center gap-2"
+                role="group"
+                aria-label={`Confirm removal of ${key.env}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => removeProviderKey(key.env)}
+                  disabled={removing === key.env || !providerPolicy.runtimeWritesEnabled}
+                  className={BTN_DANGER}
+                >
+                  {removing === key.env ? "Removing" : "Confirm remove"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingRemoval(null)}
+                  disabled={removing === key.env}
+                  className={BTN_SECONDARY}
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingRemoval(key.env)}
+                disabled={!providerPolicy.runtimeWritesEnabled}
+                title={!providerPolicy.runtimeWritesEnabled ? "Managed by deployment" : undefined}
+                className={`${BTN_DANGER} ml-auto`}
+              >
+                Remove
+              </button>
+            ))}
+        </li>
+      ))}
+    </ul>
+  ) : null;
+
   return (
-    <div className="mx-auto w-full max-w-3xl px-8 py-8">
-      <h1 className="text-[22px] font-semibold tracking-tight text-[color:var(--text)]">
-        Settings
-      </h1>
+    <div className="flex min-h-full flex-col">
+      <header className={`${PAGE_HEADER} px-4 sm:px-8`}>
+        <div className="mx-auto flex w-full max-w-canvas items-start justify-between gap-x-6 pb-3 pt-3.5">
+          <div className="min-w-0">
+            <h1 className={PAGE_TITLE}>Settings</h1>
+            <p className="mt-0.5 max-w-[70ch] text-[13px] text-[var(--ink-2)]">
+              What this deployment can currently prove, and which credentials it holds.
+            </p>
+          </div>
+          <HeaderActions showReadiness={false} />
+        </div>
+      </header>
 
-      <section className="mt-8">
-        <h2 className="text-[16px] font-semibold text-[color:var(--text)]">
-          API keys
-        </h2>
-        <p className="mt-1 text-[12px] text-[color:var(--text-3)]">
-          Keys are read from .env on the server. Nothing secret is shown here.
-        </p>
-
-        {failed && (
-          <div className="mt-4 flex items-center gap-2.5 rounded-[10px] border border-[color:color-mix(in_oklab,var(--warn)_35%,transparent)] bg-[color:color-mix(in_oklab,var(--warn)_10%,transparent)] px-4 py-3">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-[color:var(--warn)]" />
-            <p className="text-[13px] text-[color:var(--text)]">
-              Server health endpoint unavailable, showing static checklist
+      <div className="mx-auto w-full max-w-[760px] px-4 pb-10 pt-8 sm:px-8">
+        {readiness && !readinessFailed && (
+          <div
+            className={`mb-8 flex items-start gap-2.5 rounded-[12px] px-4 py-3 ${
+              readiness.run_ready ? "bg-[var(--ok-tint)]" : "bg-[var(--danger-tint)]"
+            }`}
+            role="status"
+          >
+            <span
+              className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                readiness.run_ready ? "bg-[var(--ok)]" : "bg-[var(--danger)]"
+              }`}
+              aria-hidden="true"
+            />
+            <p className="pb-contain text-[13px] leading-relaxed text-[var(--ink)]">
+              {readiness.run_ready
+                ? "Ready to run real benchmarks."
+                : `Real benchmarks are blocked until these are configured: ${
+                    (readiness.blocked_by || []).join(", ")
+                  }.`}
             </p>
           </div>
         )}
 
-        <div className={`mt-4 ${PANEL} overflow-hidden`}>
-          {loading ? (
-            <div className="flex flex-col gap-4 p-4">
-              {[...Array(6)].map((_, i) => (
+        <section aria-labelledby="services-heading" className={`${PANEL} p-5`}>
+          <h2 id="services-heading" className="text-[16px] font-semibold text-[var(--ink)]">
+            Services
+          </h2>
+          <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+            Configuration check only. ProofBench does not contact any provider to build this list.
+            Expand a service to see its environment variables.
+          </p>
+
+          {readinessFailed ? (
+            <div className="mt-4 flex items-center gap-2.5 rounded-[12px] bg-[var(--warn-tint)] px-4 py-3">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--warn)]" aria-hidden="true" />
+              <p className="text-[13px] text-[var(--ink)]">Provider readiness is unavailable right now.</p>
+            </div>
+          ) : !readiness ? (
+            <div className="mt-4 flex flex-col gap-4">
+              {[...Array(4)].map((_, i) => (
                 <div key={i} className="flex items-center gap-3">
-                  <div className={`h-2 w-2 rounded-full ${SKEL}`} />
-                  <div className={`h-3.5 w-44 ${SKEL}`} />
-                  <div className={`ml-auto h-3 w-40 ${SKEL}`} />
+                  <Skeleton className="h-7 w-7 rounded-[8px]" />
+                  <Skeleton className="h-3.5 w-44" />
+                  <Skeleton className="ml-auto h-3 w-24" />
                 </div>
               ))}
             </div>
           ) : (
-            <ul className="divide-y divide-[color:var(--border)]">
-              {KEYS.map((key) => {
-                const st = STATUS[statusFor(key)];
-                return (
-                  <li key={key.env} className="flex items-center gap-3 px-4 py-3">
-                    <span
-                      className={`h-2 w-2 shrink-0 rounded-full ${st.dot}`}
-                      title={st.label}
-                    />
-                    <code className="font-mono text-[12px] text-[color:var(--text)]">
-                      {key.env}
-                    </code>
-                    <span className={`text-[11px] font-medium ${st.word}`}>
-                      {st.label}
-                    </span>
-                    <span className="ml-auto text-right text-[12px] text-[color:var(--text-3)]">
-                      {key.caption}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        <div className={`mt-6 ${PANEL} p-4`}>
-          <h3 className="text-[14px] font-semibold text-[color:var(--text)]">
-            Add a provider credential
-          </h3>
-          <p className="mt-1 max-w-[65ch] text-[12px] leading-relaxed text-[color:var(--text-3)]">
-            Use the environment variable required by the provider, for example ANTHROPIC_API_KEY or MISTRAL_API_KEY. Values are held only in this running server, never shown in the app, logs, or reports.
-          </p>
-          <form onSubmit={addProviderKey} className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
-            <input
-              value={envName}
-              onChange={(event) => setEnvName(event.target.value)}
-              placeholder="PROVIDER_API_KEY"
-              aria-label="Provider environment variable"
-              className="h-9 rounded-md border border-[color:var(--border-strong)] bg-[color:var(--surface)] px-3 font-mono text-[12px] text-[color:var(--text)] outline-none focus:ring-2 focus:ring-[color:color-mix(in_oklab,var(--accent)_40%,transparent)]"
-              required
-            />
-            <input
-              type="password"
-              value={secretValue}
-              onChange={(event) => setSecretValue(event.target.value)}
-              placeholder="API key or provider value"
-              aria-label="Provider credential value"
-              autoComplete="off"
-              className="h-9 rounded-md border border-[color:var(--border-strong)] bg-[color:var(--surface)] px-3 text-[13px] text-[color:var(--text)] outline-none focus:ring-2 focus:ring-[color:color-mix(in_oklab,var(--accent)_40%,transparent)]"
-              required
-            />
-            <button
-              type="submit"
-              disabled={saving}
-              className="h-9 rounded-md bg-[color:var(--accent)] px-3 text-[13px] font-medium text-[color:var(--surface)] transition-colors hover:bg-[color:var(--accent-hover)] disabled:opacity-50"
-            >
-              {saving ? "Saving" : "Add key"}
-            </button>
-          </form>
-          {keyError && <p className="mt-3 text-[12px] text-[color:var(--err)]">{keyError}</p>}
-          {providerKeys.length > 0 && (
-            <ul className="mt-4 divide-y divide-[color:var(--border)] rounded-md border border-[color:var(--border)]">
-              {providerKeys.map((key) => (
-                <li key={key.env} className="flex items-center gap-3 px-3 py-2.5">
-                  <span className="h-2 w-2 rounded-full bg-[color:var(--ok)]" />
-                  <code className="font-mono text-[12px] text-[color:var(--text)]">{key.env}</code>
-                  <span className="text-[12px] text-[color:var(--text-3)]">{key.source}</span>
-                  {key.source === "settings" && (
-                    <button onClick={() => removeProviderKey(key.env)} className="ml-auto text-[12px] text-[color:var(--err)] hover:underline">
-                      Remove
-                    </button>
-                  )}
-                </li>
+            <ul aria-label="Services" className="mt-2 divide-y divide-[var(--line)]">
+              {ordered.map((item) => (
+                <ServiceRow key={item.provider} item={item} tile={tintFor(item.provider)} />
               ))}
             </ul>
           )}
-        </div>
-      </section>
+        </section>
 
-      <section className="mt-10">
-        <h2 className="text-[16px] font-semibold text-[color:var(--text)]">
-          About
-        </h2>
-        <div className={`mt-3 ${PANEL} p-6`}>
-          <p className="text-[14px] font-semibold text-[color:var(--text)]">
-            ProofBench
+        <section aria-labelledby="runtime-heading" className={`${PANEL} mt-8 p-5`}>
+          <h2 id="runtime-heading" className="text-[16px] font-semibold text-[var(--ink)]">
+            Runtime credentials
+          </h2>
+          <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+            Injected into sandboxes so a candidate tool can read its own key. Write only, never read
+            back, never included in a report.
           </p>
-          <p className="mt-1 max-w-[65ch] text-[13px] leading-relaxed text-[color:var(--text-2)]">
-            Benchmarks invoice-extraction tools against your own labelled
-            data, runs them in isolated Daytona sandboxes, and scores results
-            deterministically against ground truth.
+
+          {providerPolicy.runtimeWritesEnabled ? (
+            <div className="mt-4">
+              {addKeyForm}
+              {keyErrorNode}
+              {managedKeyList}
+            </div>
+          ) : (
+            <div className="mt-4">
+              {providerPolicy.loaded && (
+                <p
+                  className="rounded-[12px] bg-[var(--surface-2)] px-3.5 py-2.5 text-[12px] text-[var(--ink-2)]"
+                  role="status"
+                >
+                  Managed by deployment. Runtime credential changes are disabled in this environment.
+                </p>
+              )}
+              <div className="mt-3">
+                <Collapse
+                  title="System-managed keys"
+                  summary={
+                    providerKeys.length === 0
+                      ? "None stored"
+                      : `${providerKeys.length} ${providerKeys.length === 1 ? "key" : "keys"}`
+                  }
+                  defaultOpen
+                >
+                  {addKeyForm}
+                  {keyErrorNode}
+                  {managedKeyList}
+                </Collapse>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className={`${PANEL} mt-8 p-5`} aria-labelledby="appearance-heading">
+          <h2 id="appearance-heading" className="text-[16px] font-semibold text-[var(--ink)]">
+            Appearance
+          </h2>
+          <p className="mt-1 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+            Theme for this browser. System follows the operating system preference.
           </p>
-          <a
-            href="/CONTRACTS.md"
-            target="_blank"
-            rel="noreferrer"
-            className={`${CHIP} mt-4`}
-          >
-            CONTRACTS.md
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M5 11 11 5M6.5 5H11v4.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </a>
-        </div>
-      </section>
+          <div role="radiogroup" aria-labelledby="appearance-heading" className="mt-4 inline-flex rounded-full bg-[var(--surface-2)] p-1">
+            {THEME_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                role="radio"
+                aria-checked={theme === choice.value}
+                onClick={() => setTheme(choice.value)}
+                className={`min-h-8 rounded-full px-3.5 text-[13px] font-medium transition-colors duration-150 ${
+                  theme === choice.value
+                    ? "bg-[var(--ink)] text-[var(--surface)]"
+                    : "text-[var(--ink-2)] hover:text-[var(--ink)]"
+                }`}
+              >
+                {choice.label}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className={`${PANEL} mt-8 p-5`} aria-labelledby="about-heading">
+          <h2 id="about-heading" className="text-[16px] font-semibold text-[var(--ink)]">
+            About this deployment
+          </h2>
+          <p className="mt-1.5 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+            ProofBench benchmarks invoice-extraction tools against your own labelled data, runs them
+            in isolated Daytona sandboxes, and scores results deterministically against ground truth.
+          </p>
+
+          <dl className="mt-6 grid grid-cols-1 gap-x-[24px] gap-y-8 md:grid-cols-2">
+            <div>
+              <dt className="pb-eyebrow">Status</dt>
+              <dd className="mt-1.5 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+                Proprietary, pre-release software run locally by a single operator. It is not a
+                hosted or supported product. The source may be publicly visible, which is not
+                permission to use it.
+              </dd>
+            </div>
+            <div>
+              <dt className="pb-eyebrow">Licensing</dt>
+              <dd className="mt-1.5 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+                Proprietary software. All rights are reserved by its copyright holder, an individual
+                developer. Using, copying, modifying, or distributing it requires prior written
+                permission. See the LICENSE file in the source repository. Third-party dependencies
+                are not covered by that license and remain under their own terms.
+              </dd>
+            </div>
+            <div>
+              <dt className="pb-eyebrow">Deployment</dt>
+              <dd className="mt-1.5 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+                This is a local instance, run by whoever operates this server. There is no public or
+                hosted ProofBench service. Uploaded datasets, run artifacts, and reports stay on this
+                deployment and are kept until you delete them, unless the operator has set
+                PROOFBENCH_RETENTION_DAYS to a positive number. Benchmark runs send documents to
+                disposable sandboxes and to whichever third-party providers are enabled above, under
+                those providers' own terms.
+              </dd>
+            </div>
+            <div>
+              <dt className="pb-eyebrow">No service commitment</dt>
+              <dd className="mt-1.5 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+                No availability, support, or response commitment is offered for this software, and no
+                privacy notice or terms of service have been published for it.
+              </dd>
+            </div>
+          </dl>
+
+          <p className="mt-6 max-w-[65ch] text-[12px] leading-relaxed text-[var(--ink-3)]">
+            CONTRACTS.md, LICENSE, and the operations and data-handling docs live in the source
+            repository. They are not served by this app.
+          </p>
+        </section>
+      </div>
     </div>
   );
 }

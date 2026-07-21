@@ -9,12 +9,10 @@
       name="description"
       content="ProofBench benchmarks tools on your own labelled data, with grounded evidence."
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Pre-paint theme pin. External, not inline: the deployment's CSP is
+         `default-src 'self'` with no script 'unsafe-inline', so an inline
+         version is blocked in production and the pinned theme flashes. -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>
