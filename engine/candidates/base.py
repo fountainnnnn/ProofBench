@@ -17,6 +17,7 @@ class Candidate:
     adapter_code: str            # python source executed INSIDE the sandbox (see below)
     setup_complexity: int = 1    # 1 (trivial) .. 5 (painful); agent may worsen it on repairs
     pricing_url: str = ""        # where pricing was scraped from ("" if free/local)
+    batch_safe: bool = True       # False when the runtime cannot survive repeated inference
 
 
 # adapter_code contract (executed inside the sandbox, CWD contains the dataset):

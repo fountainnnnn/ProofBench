@@ -20,6 +20,24 @@ SETUP_COMPLEXITY = {
     "nosana_vlm": 2,
     "doubleword": 2,
 }
+MAX_CANDIDATES = 100
+MAX_DOCUMENTS = 10_000
+MAX_FIELD_CHARS = 2048
+MAX_IDENTIFIER_CHARS = 128
+MAX_RESULTS_BYTES = 16 * 1024 * 1024
+MAX_GROUND_TRUTH_BYTES = 8 * 1024 * 1024
+MAX_RESULT_RECORDS = 200_000
+MAX_LEVENSHTEIN_CELLS = 4_194_304
+MAX_EVALUATION_CELLS = 50_000_000
+
+
+def _checked_file_size(path: Path, limit: int, label: str) -> None:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if size > limit:
+        raise ValueError(f"{label} exceeds the allowed size")
 
 
 def normalize_text(s: str) -> str:
@@ -120,6 +138,8 @@ def cer(pred: str, gt: str) -> float:
     gt_value = "" if gt is None else str(gt)
     if not gt_value:
         return 0.0
+    if len(pred_value) * len(gt_value) > MAX_LEVENSHTEIN_CELLS:
+        raise ValueError("CER input exceeds the evaluation work limit")
 
     previous = list(range(len(gt_value) + 1))
     for pred_index, pred_char in enumerate(pred_value, start=1):
@@ -146,17 +166,42 @@ def _normalized_field(field: str, value: Any) -> str:
 
 
 def _read_ground_truth(path: str) -> dict[str, dict[str, str]]:
-    with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+    source = Path(path)
+    _checked_file_size(source, MAX_GROUND_TRUTH_BYTES, "ground truth")
+    try:
+        handle = source.open("r", encoding="utf-8-sig", newline="")
+    except OSError as exc:
+        raise ValueError("ground truth is unavailable") from exc
+    with handle:
         reader = csv.DictReader(handle)
         required = {"doc_id", *FIELDS}
         if reader.fieldnames is None or not required.issubset(reader.fieldnames):
             raise ValueError("ground truth CSV is missing required columns")
-        return {str(row["doc_id"]): row for row in reader}
+        rows: dict[str, dict[str, str]] = {}
+        for row in reader:
+            doc_id = str(row.get("doc_id") or "")
+            if not doc_id or len(doc_id) > MAX_IDENTIFIER_CHARS:
+                raise ValueError("invalid ground-truth document identifier")
+            if doc_id in rows:
+                raise ValueError("duplicate ground-truth document")
+            if any(len(str(row.get(field) or "")) > MAX_FIELD_CHARS for field in FIELDS):
+                raise ValueError("ground-truth field exceeds the allowed size")
+            rows[doc_id] = row
+            if len(rows) > MAX_DOCUMENTS:
+                raise ValueError("ground truth exceeds the document limit")
+        return rows
 
 
 def _read_results(path: str) -> dict[str, dict[str, dict[str, Any]]]:
     grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-    with Path(path).open("r", encoding="utf-8") as handle:
+    source = Path(path)
+    _checked_file_size(source, MAX_RESULTS_BYTES, "results")
+    record_count = 0
+    try:
+        handle = source.open("r", encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("results are unavailable") from exc
+    with handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
@@ -166,7 +211,34 @@ def _read_results(path: str) -> dict[str, dict[str, dict[str, Any]]]:
                 raise ValueError(f"invalid JSONL at line {line_number}: {exc.msg}") from exc
             if not isinstance(row, dict) or "candidate" not in row or "doc_id" not in row:
                 raise ValueError(f"invalid result record at line {line_number}")
-            grouped[str(row["candidate"])][str(row["doc_id"])] = row
+            candidate = str(row["candidate"])
+            doc_id = str(row["doc_id"])
+            if (
+                not candidate
+                or not doc_id
+                or len(candidate) > MAX_IDENTIFIER_CHARS
+                or len(doc_id) > MAX_IDENTIFIER_CHARS
+            ):
+                raise ValueError("invalid result identifier")
+            prediction = row.get("prediction")
+            if prediction is not None:
+                if not isinstance(prediction, dict):
+                    raise ValueError("invalid result prediction")
+                if any(
+                    len(str(prediction.get(field) or "")) > MAX_FIELD_CHARS
+                    for field in FIELDS
+                ):
+                    raise ValueError("result field exceeds the allowed size")
+            if len(str(row.get("error") or "")) > MAX_FIELD_CHARS:
+                raise ValueError("result error exceeds the allowed size")
+            if doc_id in grouped[candidate]:
+                raise ValueError("duplicate result record")
+            grouped[candidate][doc_id] = row
+            record_count += 1
+            if record_count > MAX_RESULT_RECORDS:
+                raise ValueError("results exceed the record limit")
+            if len(grouped) > MAX_CANDIDATES:
+                raise ValueError("results exceed the candidate limit")
     return grouped
 
 
@@ -186,6 +258,7 @@ def evaluate_results(
     n_docs = len(ground_truth)
     field_slots = n_docs * len(FIELDS)
     metrics: dict[str, dict[str, int | float]] = {}
+    evaluation_cells = 0
 
     for candidate_name in sorted(results):
         candidate_rows = results[candidate_name]
@@ -210,6 +283,9 @@ def evaluate_results(
             for field in FIELDS:
                 pred_value = _normalized_field(field, prediction.get(field, ""))
                 gt_value = _normalized_field(field, gt_row.get(field, ""))
+                evaluation_cells += max(len(pred_value), 1) * max(len(gt_value), 1)
+                if evaluation_cells > MAX_EVALUATION_CELLS:
+                    raise ValueError("evaluation exceeds the total work limit")
                 exact_matches += pred_value == gt_value
                 f1_total += token_f1(pred_value, gt_value)
                 cer_total += cer(pred_value, gt_value)

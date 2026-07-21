@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
+from engine.candidates.fallbacks._http_security import SECURE_OPENAI_TRANSPORT
 
 
-_ADAPTER_BODY = r'''
+_ADAPTER_BODY = SECURE_OPENAI_TRANSPORT + r'''
 import base64
 import json
 import os
@@ -31,8 +32,23 @@ def _json_object(content: str) -> dict:
 def extract(image_path: str) -> dict:
     encoded = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
     suffix = Path(image_path).suffix.casefold()
-    media_type = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(suffix)
+    if media_type is None:
+        raise ValueError(f"unsupported image format: {suffix or '<none>'}")
+    base_url, http_client = _secure_openai_transport(
+        "https://api.openai.com/v1", {"api.openai.com"}
+    )
+    client = OpenAI(
+        api_key=os.environ["OPENAI_API_KEY"],
+        base_url=base_url,
+        http_client=http_client,
+        max_retries=0,
+    )
     response = client.chat.completions.create(
         model=os.environ.get("OPENAI_VISION_MODEL", "gpt-4o"),
         messages=[

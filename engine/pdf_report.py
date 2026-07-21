@@ -7,6 +7,15 @@ import re
 from datetime import datetime
 from html import escape
 
+# Mirrors engine.tool_assessment.ASSESSMENT_BASES. States whether a row rests on
+# a real sandbox run or on documentation alone, so the PDF never implies that a
+# comparison-only product was executed.
+_BASIS_LABELS = {
+    "sandbox_execution": "Daytona run",
+    "documentation_evidence": "Documentation",
+    "unavailable": "Unavailable",
+}
+
 
 def _number(value: object, digits: int = 2) -> str:
     try:
@@ -18,6 +27,20 @@ def _number(value: object, digits: int = 2) -> str:
 def _percent(value: object) -> str:
     try:
         return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _score(value: object, suffix: str = "") -> str:
+    """Render a score, or a dash when the backend withheld it.
+
+    A withheld score means no assessment was produced. Printing 0 there would
+    fabricate a measurement the run never made.
+    """
+    if value is None:
+        return "-"
+    try:
+        return f"{int(value)}{suffix}"
     except (TypeError, ValueError):
         return "-"
 
@@ -114,7 +137,8 @@ def write_pdf_report(metrics: dict, markdown: str, out_path: str) -> str:
     ranked = sorted(
         metrics.items(),
         key=(
-            (lambda item: -float(item[1].get("rating", 0) or 0))
+            # A withheld rating sorts last without being rewritten as a zero.
+            (lambda item: -float(item[1].get("rating") if item[1].get("rating") is not None else -1))
             if generic_assessment
             else (lambda item: (-float(item[1].get("exact_accuracy", 0) or 0), -float(item[1].get("field_f1", 0) or 0)))
         ),
@@ -148,18 +172,19 @@ def write_pdf_report(metrics: dict, markdown: str, out_path: str) -> str:
     ]
 
     if generic_assessment:
-        data = [["Rank", "Tool", "Rating", "Implementable", "Docs", "Feasibility", "Auth", "Daytona", "Setup"]]
+        data = [["Rank", "Tool", "Suitability", "Basis", "Implementable", "Docs", "Feasibility", "Auth", "Setup"]]
         for rank, (name, values) in enumerate(ranked, 1):
+            implementable = values.get("implementable")
             data.append([
                 str(rank),
                 str(name).replace("_", " "),
-                f"{int(values.get('rating', 0))}/100",
-                "Yes" if values.get("implementable") else "No",
-                str(values.get("documentation_quality", 0)),
-                str(values.get("integration_feasibility", 0)),
-                str(values.get("auth_clarity", 0)),
-                "Used" if values.get("daytona_triggered") else "Skipped",
-                str(values.get("setup_complexity", "-")),
+                _score(values.get("rating"), "/100"),
+                _BASIS_LABELS.get(values.get("assessment_basis"), "Documentation"),
+                "-" if implementable is None else ("Yes" if implementable else "No"),
+                _score(values.get("documentation_quality")),
+                _score(values.get("integration_feasibility")),
+                _score(values.get("auth_clarity")),
+                _score(values.get("setup_complexity")),
             ])
     else:
         data = [["Rank", "Candidate", "Exact accuracy", "Field F1", "CER", "Latency", "Failure rate", "Cost / 1k", "Setup"]]

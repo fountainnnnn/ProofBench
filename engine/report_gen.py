@@ -82,29 +82,26 @@ def _build_prompt(metrics: dict, citations: list[dict]) -> str:
     )
 
 
-def write_report(metrics: dict, citations: list[dict], out_path: str) -> str:
+def write_report(
+    metrics: dict,
+    citations: list[dict],
+    out_path: str,
+    env: dict[str, str] | None = None,
+) -> str:
     """Generate a ranked markdown report, write it to out_path, return the markdown."""
     citations = citations or []
     markdown = None
+    runtime_env = dict(env or {})
     try:
-        from openai import OpenAI
+        from engine.llm_clients import chat_client, provider_model, resolve_provider
 
-        provider = os.environ.get("ORCHESTRATOR_PROVIDER", "auto").strip().casefold()
-        use_moonshot = provider in {"kimi", "moonshot"} or (
-            provider == "auto" and bool(os.environ.get("MOONSHOT_API_KEY", "").strip())
-        )
-        if use_moonshot:
-            client = OpenAI(
-                base_url="https://api.moonshot.ai/v1",
-                api_key=os.environ["MOONSHOT_API_KEY"],
-            )
-            model = os.environ.get("KIMI_MODEL", "kimi-k2-thinking")
-        else:
-            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-            model = os.environ.get(
-                "OPENAI_REPORT_MODEL",
-                os.environ.get("OPENAI_ORCHESTRATOR_MODEL", "gpt-4o"),
-            )
+        # Capability based: Moonshot, then OpenAI, then OpenRouter. A deployment
+        # holding only OPENROUTER_API_KEY writes its reports on OpenRouter.
+        provider = resolve_provider("report", runtime_env)
+        client = chat_client(provider, runtime_env)
+        model = provider_model(provider, runtime_env)
+        if provider == "openai":
+            model = runtime_env.get("OPENAI_REPORT_MODEL", "").strip() or model
         resp = client.chat.completions.create(
             model=model,
             messages=[
@@ -116,7 +113,7 @@ def write_report(metrics: dict, citations: list[dict], out_path: str) -> str:
         if not markdown or not markdown.strip():
             raise ValueError("empty completion")
     except Exception as e:
-        print(f"[report_gen] LLM report failed, using fallback: {type(e).__name__}: {e}",
+        print(f"[report_gen] LLM report failed, using fallback: {type(e).__name__}",
               file=sys.stderr)
         markdown = _fallback_report(metrics, citations)
 

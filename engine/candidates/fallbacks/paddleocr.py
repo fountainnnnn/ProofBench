@@ -1,4 +1,4 @@
-"""Built-in Tesseract OCR candidate."""
+"""Built-in PaddleOCR candidate using the supported 3.x pipeline API."""
 
 from __future__ import annotations
 
@@ -6,10 +6,32 @@ from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
 
 
 _ADAPTER_BODY = r'''
+import os
 import re
+from contextlib import redirect_stderr, redirect_stdout
 
-import pytesseract
-from PIL import Image
+# Avoid a network source probe on every short-lived benchmark invocation. Model
+# assets are still fetched by PaddleOCR itself when they are not cached yet.
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "BOS")
+os.environ.setdefault("GLOG_minloglevel", "2")
+
+from paddleocr import PaddleOCR
+
+_PIPELINE = None
+
+
+def _pipeline():
+    global _PIPELINE
+    if _PIPELINE is None:
+        with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
+            _PIPELINE = PaddleOCR(
+                lang="en",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
+    return _PIPELINE
 
 
 def _extract_fields(text: str) -> dict:
@@ -59,22 +81,35 @@ def _extract_fields(text: str) -> dict:
 
 
 def extract(image_path: str) -> dict:
-    text = pytesseract.image_to_string(Image.open(image_path))
-    return _extract_fields(text)
+    pipeline = _pipeline()
+    with open(os.devnull, "w") as sink, redirect_stdout(sink), redirect_stderr(sink):
+        results = pipeline.predict(image_path)
+    fragments = []
+    for result in results:
+        payload = result.json
+        if callable(payload):
+            payload = payload()
+        if isinstance(payload, dict):
+            data = payload.get("res", payload)
+            if isinstance(data, dict):
+                fragments.extend(str(item) for item in data.get("rec_texts", []) if item)
+    return _extract_fields("\n".join(fragments))
 '''
 
 
 def candidate() -> Candidate:
-    """Return the Tesseract fallback candidate."""
+    """Return the CPU PaddleOCR 3.x candidate."""
     return Candidate(
-        name="tesseract",
-        display_name="Tesseract OCR 5.x",
-        docs_url="https://tesseract-ocr.github.io/tessdoc/",
+        name="paddleocr",
+        display_name="PaddleOCR 3.x (CPU)",
+        docs_url="https://www.paddleocr.ai/latest/en/version3.x/pipeline_usage/OCR.html",
         kind="local_tool",
         build_commands=[
-            "apt-get update && apt-get install -y tesseract-ocr python3-pip",
-            "pip install pytesseract pillow",
+            "apt-get update && apt-get install -y libgl1 libglib2.0-0 libgomp1",
+            "python -m pip install paddlepaddle==3.2.0",
+            "python -m pip install paddleocr",
         ],
         adapter_code=_ADAPTER_BODY.strip() + "\n\n" + RESULT_JSON_WRAPPER,
-        setup_complexity=2,
+        setup_complexity=3,
+        batch_safe=False,
     )

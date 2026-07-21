@@ -9,12 +9,13 @@ import re
 from typing import Any
 
 from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
-from engine.llm_clients import deepseek_client, deepseek_model
+from engine.llm_clients import codegen_client
 
 
 FALLBACK_MODULES = {
     "tesseract": "engine.candidates.fallbacks.tesseract",
     "easyocr": "engine.candidates.fallbacks.easyocr",
+    "paddleocr": "engine.candidates.fallbacks.paddleocr",
     "nosana_vlm": "engine.candidates.fallbacks.nosana_vlm",
     "doubleword": "engine.candidates.fallbacks.doubleword",
     "openai_vision": "engine.candidates.fallbacks.openai_vision",
@@ -78,8 +79,8 @@ def _guess_kind(docs_md: str) -> str:
 
 
 def generate_adapter(tool_name: str, docs_md: str, model: str | None = None, env: dict | None = None) -> Candidate:
-    """Generate and validate a Candidate with DeepSeek V4 Pro."""
-    selected_model = model or deepseek_model(env)
+    """Generate and validate a Candidate with the configured codegen provider."""
+    selected_model = model
 
     prompt = f"""Build a Python extraction adapter for {tool_name!r} from the documentation below.
 Return STRICT JSON only with this exact shape:
@@ -96,9 +97,9 @@ setup_complexity must be an integer from 1 through 5. Do not include markdown fe
 Documentation:
 {docs_md}
 """
-    client = deepseek_client(env)
+    client, capability_model = codegen_client(env)
     response = client.chat.completions.create(
-        model=selected_model,
+        model=selected_model or capability_model,
         messages=[
             {
                 "role": "system",
@@ -123,12 +124,13 @@ Documentation:
         build_commands=build_commands,
         adapter_code=adapter_code,
         setup_complexity=setup_complexity,
+        batch_safe=False,
     )
 
 
 def repair_adapter(adapter_code: str, error_output: str, model: str | None = None, env: dict | None = None) -> str:
-    """Repair a generated adapter with DeepSeek and return validated source code."""
-    selected_model = model or deepseek_model(env)
+    """Repair a generated adapter and return validated source code."""
+    selected_model = model
     prompt = f"""Repair the Python adapter below using the runtime error.
 Return STRICT JSON only as {{"adapter_code":"..."}}.
 The code must define extract(image_path: str) -> dict, return exactly the string fields
@@ -142,8 +144,9 @@ ADAPTER:
 ERROR:
 {error_output}
 """
-    response = deepseek_client(env).chat.completions.create(
-        model=selected_model,
+    client, capability_model = codegen_client(env)
+    response = client.chat.completions.create(
+        model=selected_model or capability_model,
         messages=[
             {"role": "system", "content": "Repair Python integrations. Return strict JSON."},
             {"role": "user", "content": prompt},

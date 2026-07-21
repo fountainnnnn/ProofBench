@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""ProofBench smoke test — verifies all five sponsor APIs (CONTRACTS.md §13).
+"""ProofBench smoke test — verifies all five configured hackathon integration APIs
+(CONTRACTS.md §13).
 
 Checks:
   1. Daytona    — create sandbox, exec, code_run, apt-install tesseract, delete
