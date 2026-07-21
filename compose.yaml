@@ -1,0 +1,135 @@
+services:
+  api:
+    image: ${PROOFBENCH_API_IMAGE:-proofbench-api:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    mem_limit: ${PROOFBENCH_API_MEMORY_LIMIT:-2g}
+    cpus: ${PROOFBENCH_API_CPU_LIMIT:-2.0}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 45s
+    environment:
+      # Pick exactly one profile in .env; the API refuses to start with neither.
+      #   Local (default, loopback only): PROOFBENCH_INSECURE_DEV=1, no tokens.
+      #   Authenticated (any exposed deployment): PROOFBENCH_INSECURE_DEV=0 plus
+      #   PROOFBENCH_API_KEYS as a tenant-to-token JSON object.
+      PROOFBENCH_API_KEYS: ${PROOFBENCH_API_KEYS:-}
+      PROOFBENCH_INSECURE_DEV: ${PROOFBENCH_INSECURE_DEV:-1}
+      PROOFBENCH_DEV_TENANT: ${PROOFBENCH_DEV_TENANT:-local-dev}
+      PROOFBENCH_ALLOWED_ORIGINS: ${PROOFBENCH_ALLOWED_ORIGINS:-http://localhost:8080}
+      PROOFBENCH_COOKIE_SECURE: ${PROOFBENCH_COOKIE_SECURE:-auto}
+      PROOFBENCH_COOKIE_MAX_AGE: ${PROOFBENCH_COOKIE_MAX_AGE:-28800}
+      PROOFBENCH_STATE_DB: ${PROOFBENCH_STATE_DB:-/app/runs/proofbench.sqlite3}
+      PROOFBENCH_DATASET_ROOT: ${PROOFBENCH_DATASET_ROOT:-/app/data/uploads}
+      PROOFBENCH_MAX_CONCURRENT_RUNS_PER_TENANT: ${PROOFBENCH_MAX_CONCURRENT_RUNS_PER_TENANT:-2}
+      PROOFBENCH_RUNS_PER_DAY: ${PROOFBENCH_RUNS_PER_DAY:-100}
+      PROOFBENCH_MAX_CONCURRENT_CHATS_PER_TENANT: ${PROOFBENCH_MAX_CONCURRENT_CHATS_PER_TENANT:-4}
+      PROOFBENCH_CHATS_PER_DAY: ${PROOFBENCH_CHATS_PER_DAY:-500}
+      PROOFBENCH_REQUESTS_PER_MINUTE: ${PROOFBENCH_REQUESTS_PER_MINUTE:-600}
+      # 0 = no automatic expiry (local default). Positive values expire
+      # completed data after that many days; active runs are never expired.
+      PROOFBENCH_RETENTION_DAYS: ${PROOFBENCH_RETENTION_DAYS:-0}
+      PROOFBENCH_MAX_TENANT_DATASET_BYTES: ${PROOFBENCH_MAX_TENANT_DATASET_BYTES:-1073741824}
+      PROOFBENCH_MAX_EVENTS: ${PROOFBENCH_MAX_EVENTS:-1000}
+      PROOFBENCH_MAX_MESSAGES: ${PROOFBENCH_MAX_MESSAGES:-200}
+      PROOFBENCH_MAX_MESSAGE_CHARS: ${PROOFBENCH_MAX_MESSAGE_CHARS:-12000}
+      PROOFBENCH_MAX_EVENT_CHARS: ${PROOFBENCH_MAX_EVENT_CHARS:-12000}
+      PROOFBENCH_MAX_EVENT_BYTES: ${PROOFBENCH_MAX_EVENT_BYTES:-65536}
+      PROOFBENCH_MAX_UPLOAD_IMAGES: ${PROOFBENCH_MAX_UPLOAD_IMAGES:-100}
+      PROOFBENCH_MAX_IMAGE_BYTES: ${PROOFBENCH_MAX_IMAGE_BYTES:-10485760}
+      PROOFBENCH_MAX_UPLOAD_BYTES: ${PROOFBENCH_MAX_UPLOAD_BYTES:-104857600}
+      PROOFBENCH_MAX_CSV_BYTES: ${PROOFBENCH_MAX_CSV_BYTES:-2097152}
+      PROOFBENCH_MAX_IMAGE_PIXELS: ${PROOFBENCH_MAX_IMAGE_PIXELS:-40000000}
+      PROOFBENCH_RECONCILE_SANDBOXES_ON_STARTUP: ${PROOFBENCH_RECONCILE_SANDBOXES_ON_STARTUP:-1}
+      PROOFBENCH_DEPLOYMENT_ID: ${PROOFBENCH_DEPLOYMENT_ID:-proofbench-compose}
+      PROOFBENCH_JOB_LEASE_SECONDS: ${PROOFBENCH_JOB_LEASE_SECONDS:-90}
+      PROOFBENCH_ORPHAN_GRACE_SECONDS: ${PROOFBENCH_ORPHAN_GRACE_SECONDS:-120}
+      PROOFBENCH_MIGRATION_BACKUP: ${PROOFBENCH_MIGRATION_BACKUP:-1}
+      PROOFBENCH_SANDBOX_LEDGER: ${PROOFBENCH_SANDBOX_LEDGER:-/app/runs/sandbox_ledger.sqlite3}
+      PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS: ${PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS:-0}
+      PROOFBENCH_ALLOW_PROVIDER_NONSTANDARD_PORTS: ${PROOFBENCH_ALLOW_PROVIDER_NONSTANDARD_PORTS:-0}
+      PROOFBENCH_PROVIDER_HOST_ALLOWLIST: ${PROOFBENCH_PROVIDER_HOST_ALLOWLIST:-}
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
+      DAYTONA_API_URL: ${DAYTONA_API_URL:-https://app.daytona.io/api}
+      DAYTONA_TARGET: ${DAYTONA_TARGET:-us}
+      DAYTONA_SANDBOX_IMAGE: ${DAYTONA_SANDBOX_IMAGE:-python:3.12-slim}
+      ORCHESTRATOR_PROVIDER: ${ORCHESTRATOR_PROVIDER:-auto}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      KIMI_MODEL: ${KIMI_MODEL:-kimi-k2-thinking}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_ORCHESTRATOR_MODEL: ${OPENAI_ORCHESTRATOR_MODEL:-gpt-4o}
+      OPENAI_REPORT_MODEL: ${OPENAI_REPORT_MODEL:-gpt-4o}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o}
+      OXYLABS_USERNAME: ${OXYLABS_USERNAME:-}
+      OXYLABS_PASSWORD: ${OXYLABS_PASSWORD:-}
+      NOSANA_API_KEY: ${NOSANA_API_KEY:-}
+      NOSANA_BASE_URL: ${NOSANA_BASE_URL:-}
+      NOSANA_MODEL: ${NOSANA_MODEL:-}
+      DOUBLEWORD_API_KEY: ${DOUBLEWORD_API_KEY:-}
+      DOUBLEWORD_MODEL: ${DOUBLEWORD_MODEL:-}
+      DOUBLEWORD_BASE_URL: ${DOUBLEWORD_BASE_URL:-https://api.doubleword.ai/v1}
+      DOUBLEWORD_BATCH_SIZE: ${DOUBLEWORD_BATCH_SIZE:-500}
+      DOUBLEWORD_BATCH_WINDOW_SECONDS: ${DOUBLEWORD_BATCH_WINDOW_SECONDS:-5}
+      DOUBLEWORD_POLL_INTERVAL_SECONDS: ${DOUBLEWORD_POLL_INTERVAL_SECONDS:-5}
+      DOUBLEWORD_COMPLETION_WINDOW: ${DOUBLEWORD_COMPLETION_WINDOW:-1h}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+    volumes:
+      - proofbench-runs:/app/runs
+      - proofbench-data:/app/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    expose:
+      - "8000"
+
+  web:
+    image: ${PROOFBENCH_WEB_IMAGE:-proofbench-web:local}
+    build:
+      context: ./web
+      args:
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: ${PROOFBENCH_WEB_MEMORY_LIMIT:-256m}
+    cpus: ${PROOFBENCH_WEB_CPU_LIMIT:-0.5}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 15s
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/cache/nginx:size=64m,mode=0755,uid=101,gid=101
+      - /var/run:size=8m,mode=0755,uid=101,gid=101
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${PROOFBENCH_BIND_ADDRESS:-127.0.0.1}:${PROOFBENCH_BIND_PORT:-8080}:8080"
+
+volumes:
+  proofbench-runs:
+  proofbench-data:

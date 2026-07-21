@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-dev.txt
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Audit Python dependencies
+        run: python -m pip_audit -r requirements-dev.txt --require-hashes
+      - name: Compile Python sources
+        run: python -m compileall -q engine server make_dataset.py integration_test.py smoke_test.py
+      - name: Run unit and API tests
+        run: python -m pytest -q --basetemp=.pytest_ci_tmp --cov=server --cov=engine --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+      - name: Run offline integration test
+        run: python integration_test.py
+      - name: Generate Python SBOM
+        if: matrix.os == 'ubuntu-latest'
+        run: python -m pip_audit -r requirements.txt --format cyclonedx-json --output sbom-python.json
+      - name: Upload Python SBOM
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: sbom-python
+          path: sbom-python.json
+          retention-days: 30
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Audit all build dependencies
+        run: npm audit --audit-level=high
+      - name: Run static accessibility checks
+        run: npm run lint:a11y
+      - name: Run frontend unit tests
+        run: npm test
+      - name: Build production bundle
+        run: npm run build
+      - name: Enforce production bundle boundary
+        run: npm run check:bundle
+      - name: Generate npm SBOM
+        run: npm sbom --sbom-format cyclonedx > sbom-node.json
+      - name: Upload npm SBOM
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: sbom-node
+          path: web/sbom-node.json
+          retention-days: 30
+
+  containers:
+    name: Container build, scan, and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [backend, frontend]
+    permissions:
+      contents: read
+    env:
+      PROOFBENCH_INSECURE_DEV: "0"
+      PROOFBENCH_API_KEYS: '{"ci-tenant":"pb-ci-7Jc9mQ2vX8rL5sN1kD6hW3tZ4aB8cF2p"}'
+      PROOFBENCH_API_IMAGE: proofbench-api:ci
+      PROOFBENCH_WEB_IMAGE: proofbench-web:ci
+      PROOFBENCH_COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Install browser test dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Scan repository dependencies and secrets
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          version: v0.72.0
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+      - name: Scan deployment configuration
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: true
+      - name: Build API image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.api
+          load: true
+          tags: proofbench-api:ci
+      - name: Build web image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          load: true
+          tags: proofbench-web:ci
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: proofbench-api:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: true
+      - name: Scan web image
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: proofbench-web:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          skip-setup-trivy: true
+      - name: Record tested image digests
+        run: |
+          echo "proofbench-api:ci@$(docker image inspect proofbench-api:ci --format '{{index .RepoDigests 0}}' 2>/dev/null || docker image inspect proofbench-api:ci --format '{{.Id}}')" > image-digests.txt
+          echo "proofbench-web:ci@$(docker image inspect proofbench-web:ci --format '{{index .RepoDigests 0}}' 2>/dev/null || docker image inspect proofbench-web:ci --format '{{.Id}}')" >> image-digests.txt
+      - name: Upload tested image digests
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: tested-image-digests
+          path: image-digests.txt
+          retention-days: 90
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Start production stack
+        run: docker compose up -d --no-build --wait
+      - name: Probe web, liveness, and authenticated readiness
+        run: |
+          curl --fail --retry 10 --retry-delay 2 http://127.0.0.1:8080/
+          curl --fail --retry 10 --retry-delay 2 http://127.0.0.1:8080/api/live
+          curl --fail --retry 10 --retry-delay 2 -H "Authorization: Bearer pb-ci-7Jc9mQ2vX8rL5sN1kD6hW3tZ4aB8cF2p" http://127.0.0.1:8080/api/ready
+      - name: Run production browser and accessibility tests
+        working-directory: web
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:8080
+          PROOFBENCH_E2E_TOKEN: pb-ci-7Jc9mQ2vX8rL5sN1kD6hW3tZ4aB8cF2p
+        run: npm run test:e2e
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop production stack
+        if: always()
+        run: docker compose down --volumes

@@ -1,0 +1,125 @@
+name: Release images (manual, pre-release)
+
+# ProofBench is pre-release and solo-operated. There is no automatic release:
+# pushing a `v*` tag deliberately does NOT publish images. Publishing is a
+# manual, deliberate act until the project has a stable release process.
+# Images produced here are development/pre-release builds. They are not a
+# supported distribution, and no availability or support commitment attaches to
+# them. Build hardening (SBOM plus maximum provenance attestation, pinned
+# actions, immutable digests) is preserved so the procedure stays testable.
+#
+# Publishing is additionally gated: the operator must acknowledge
+# docs/DISTRIBUTION_CHECKLIST.md, the LICENSE legal-name placeholder must be
+# resolved, and a reviewed THIRD_PARTY_NOTICES.md must exist. None of that is
+# satisfied yet, so this workflow is expected to fail until it is. Local builds
+# and the CI workflow are unaffected.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Pre-release version tag for the images (e.g. v0.1.0-dev.1)"
+        required: true
+        type: string
+      distribution_checklist_acknowledged:
+        description: "I have worked through docs/DISTRIBUTION_CHECKLIST.md and these images may be published"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Require distribution preconditions
+        shell: bash
+        env:
+          ACKNOWLEDGED: ${{ inputs.distribution_checklist_acknowledged }}
+        run: |
+          set -euo pipefail
+          failed=0
+
+          if [[ "$ACKNOWLEDGED" != "true" ]]; then
+            echo "::error::Publishing requires distribution_checklist_acknowledged=true. Work through docs/DISTRIBUTION_CHECKLIST.md first." >&2
+            failed=1
+          fi
+
+          if grep -qF 'LEGAL NAME NOT YET SET' LICENSE; then
+            echo "::error::LICENSE still contains the [LEGAL NAME NOT YET SET] placeholder. Resolve the copyright holder's legal name before publishing (checklist section 1)." >&2
+            failed=1
+          fi
+
+          if [[ ! -s THIRD_PARTY_NOTICES.md ]]; then
+            echo "::error::THIRD_PARTY_NOTICES.md is missing or empty. Generate and human-review third-party licenses and notices before publishing (checklist section 3). Do not commit a placeholder to pass this check." >&2
+            failed=1
+          fi
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo "::error::Refusing to publish. See docs/DISTRIBUTION_CHECKLIST.md." >&2
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Resolve immutable image names
+        id: names
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version must look like v0.1.0 or v0.1.0-dev.1" >&2
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "api=ghcr.io/${owner}/proofbench-api" >> "$GITHUB_OUTPUT"
+          echo "web=ghcr.io/${owner}/proofbench-web" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Authenticate to GHCR
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Publish API image with SBOM and provenance
+        id: api
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: ${{ steps.names.outputs.api }}:${{ steps.names.outputs.version }}
+          sbom: true
+          provenance: mode=max
+      - name: Publish web image with SBOM and provenance
+        id: web
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          push: true
+          tags: ${{ steps.names.outputs.web }}:${{ steps.names.outputs.version }}
+          sbom: true
+          provenance: mode=max
+      - name: Record immutable deployment references
+        shell: bash
+        run: |
+          echo "PROOFBENCH_API_IMAGE=${{ steps.names.outputs.api }}@${{ steps.api.outputs.digest }}" > release-image-digests.env
+          echo "PROOFBENCH_WEB_IMAGE=${{ steps.names.outputs.web }}@${{ steps.web.outputs.digest }}" >> release-image-digests.env
+      # The digest manifest and the reviewed third-party notices ship as one
+      # artifact: the notices are a condition of publishing, so whoever deploys
+      # these digests must receive them alongside. `if-no-files-found: error`
+      # keeps the bundle from silently losing a member after the precondition
+      # check above has already passed.
+      - name: Upload release digest manifest and third-party notices
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: proofbench-release-${{ steps.names.outputs.version }}
+          path: |
+            release-image-digests.env
+            THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+          retention-days: 90

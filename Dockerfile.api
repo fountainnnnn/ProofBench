@@ -1,0 +1,34 @@
+FROM python:3.12-alpine3.23@sha256:601d3d3797e90e2534782e69c85fafb7971b43f24c7b1b079b7e48dd435e458d
+
+# Proprietary image. The label covers ProofBench's own code only; bundled
+# third-party packages stay under their own licenses (see the image SBOM).
+LABEL org.opencontainers.image.title="proofbench-api" \
+      org.opencontainers.image.licenses="LicenseRef-Proprietary" \
+      org.opencontainers.image.description="ProofBench API. Proprietary, all rights reserved. Use requires written permission."
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.txt
+
+COPY engine ./engine
+COPY server ./server
+COPY make_dataset.py ./
+
+RUN addgroup -S -g 10001 proofbench \
+    && adduser -S -D -u 10001 -G proofbench -h /app proofbench \
+    && mkdir -p /app/runs /app/data/uploads /app/data/demo \
+    && chown -R proofbench:proofbench /app
+
+USER proofbench
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD python -c "import json,os,urllib.request; local=os.environ.get('PROOFBENCH_INSECURE_DEV')=='1'; keys=json.loads(os.environ.get('PROOFBENCH_API_KEYS') or '{}'); token=next(iter(keys.values()),''); headers={} if local else {'Authorization':'Bearer '+token}; request=urllib.request.Request('http://127.0.0.1:8000/api/ready',headers=headers); urllib.request.urlopen(request,timeout=3)" || exit 1
+
+CMD ["python", "-m", "uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]

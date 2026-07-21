@@ -1,0 +1,125 @@
+ProofBench proprietary notice (source-visible, no license granted)
+==================================================================
+
+Copyright (c) 2026 the ProofBench copyright holder. All rights reserved.
+
+Copyright holder legal name: [LEGAL NAME NOT YET SET]
+    ^ TODO (ownership metadata): replace this placeholder with the copyright
+      holder's legal name. This is a record-keeping item for the copyright
+      holder. It does not limit, expand, or condition anything stated below,
+      and the terms of this notice apply as written whether or not it is filled
+      in.
+
+ProofBench was written by one individual developer, who is the sole copyright
+holder. No company, partnership, or other legal entity currently holds rights in
+this software or operates it as a service.
+
+
+1. No license is granted
+------------------------
+
+This software is proprietary. It is NOT open source, and no open-source or
+source-available license applies to it.
+
+The source code of ProofBench may be publicly visible, including in a public
+repository. Public visibility is not a license. Being able to read, browse,
+fetch, clone, fork, or otherwise obtain a copy of this software does not grant
+any permission to use it, and no permission is implied by the absence of access
+controls.
+
+Except as stated in section 2, no permission is granted to any person to use,
+run, copy, reproduce, modify, adapt, translate, create derivative works from,
+merge, publish, distribute, sublicense, rent, lease, lend, sell, host, or make
+this software available to any third party, in source or object form, in whole
+or in part.
+
+Any such use requires the prior written permission of the copyright holder.
+Permission may be granted, withheld, conditioned, or revoked at the copyright
+holder's sole discretion. Written permission for one purpose is not permission
+for any other purpose.
+
+
+2. Rights that this notice does not restrict
+--------------------------------------------
+
+Nothing in this notice purports to restrict:
+
+- any right that applicable law grants and does not allow to be waived or
+  overridden by this notice, including any mandatory exception or limitation to
+  copyright; or
+- any right granted by the license of a third-party component, as described in
+  section 4; or
+- any right granted separately in writing by the copyright holder; or
+- the terms of the platform on which this repository is hosted, to the limited
+  extent those terms attach to publishing it there. Those platform terms govern
+  hosting and platform features only, and grant no license to use ProofBench
+  beyond what they mandate.
+
+
+3. Reserved rights of the copyright holder
+------------------------------------------
+
+The copyright holder retains every right in this software, including the right
+to use, modify, and run it, and the right to license or sell it to others on any
+terms, including as a hosted service or under a separate negotiated agreement.
+Nothing in this file is a commitment to offer, publish, support, or continue any
+such service or agreement.
+
+
+4. Third-party components
+-------------------------
+
+This notice covers only the ProofBench source code in this repository. It does
+NOT cover, relicense, or otherwise change the terms of any third-party
+dependency, library, container base image, model, or service used by or with
+ProofBench.
+
+Each third-party component remains subject to its own license, held by its own
+copyright holders. The Python and npm dependency manifests in this repository
+(`requirements*.txt`, `web/package.json`, `web/package-lock.json`) and the SBOMs
+produced by CI identify the components in use. Those manifests and SBOMs are an
+inventory only. They are not third-party license texts, notices, or
+attributions, and their presence does not mean any required notice has been
+generated, reviewed, or delivered.
+
+The ProofBench source has been publicly disclosed and is source-visible, so this
+notice does not treat it as confidential. What does not exist today is any
+supported or authorized binary, container, commercial, or hosted distribution of
+ProofBench. Before any further binary or container distribution, sale, enterprise
+handoff, or hosted launch, the required third-party licenses, notices, and
+attributions must be generated for the exact artifact and reviewed by a person.
+See `docs/DISTRIBUTION_CHECKLIST.md`.
+
+Nothing in this file grants any right in a third-party component, and nothing in
+this file may be read as placing a third-party component under proprietary terms
+or as restricting a right its license grants.
+
+
+5. No warranty
+--------------
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT.
+
+
+6. No liability
+---------------
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER SHALL
+NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH
+THIS SOFTWARE OR ITS USE OR OTHER DEALINGS.
+
+ProofBench produces benchmark measurements and reports. Those outputs are
+evidence about the tools and data supplied to it, not advice, certification, or
+any assurance about a third-party product's fitness for a purpose.
+
+
+7. Status of this notice
+------------------------
+
+This file states the copyright holder's position on permissions. It is not legal
+advice, and it is not a substitute for a negotiated agreement. A sale, an
+enterprise license, or a hosted offering should be governed by a separate
+written contract prepared with legal counsel.
