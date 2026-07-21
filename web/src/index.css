@@ -86,7 +86,10 @@
   --radius-dialog: 28px;
 
   /* Layout rhythm */
-  --canvas: 1280px;
+  /* Wide enough that a data-dense console fills a large display instead of
+     sitting in a narrow column with empty gutters. Prose columns cap
+     themselves separately (the chat thread reads at 840px). */
+  --canvas: 1600px;
   --sidebar: 248px;
   --gap: 24px;
 

@@ -57,7 +57,7 @@ export default {
         sidebar: "240px",
       },
       maxWidth: {
-        canvas: "1280px",
+        canvas: "1600px",
       },
       boxShadow: {
         // Soft diffuse layers over a 1px border: cards rest, overlays float.

@@ -231,14 +231,13 @@ export default function Datasets() {
       </header>
 
       <div className="mx-auto grid w-full max-w-canvas grid-cols-1 gap-x-[24px] gap-y-10 px-4 pb-12 pt-8 sm:px-8 lg:grid-cols-12">
-        <section className="lg:col-span-5" aria-labelledby="add-data-heading">
-          <h2 id="add-data-heading" className="text-[16px] font-semibold text-[var(--ink)]">
-            Add data
-          </h2>
-
+        {/* Every card on this page titles itself from inside, so this column
+            carries no heading of its own: an "Add data" label outside the cards
+            put one column's title outside its container and the other's inside. */}
+        <section className="lg:col-span-5" aria-label="Add data">
           {/* Fastest path first: a new operator can have scoreable data in one
               click before ever preparing an upload. */}
-          <div className={`mt-3 ${PANEL} p-5`}>
+          <div className={`${PANEL} p-5`}>
             <div className="mb-3 flex items-center gap-3">
               <span
                 aria-hidden="true"
