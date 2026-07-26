@@ -3,11 +3,18 @@
    block, one inline error, one disclosure. Kept in a single module so the
    vocabulary stays small and every route spells these the same way. */
 
-import { useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
+import StatusIcon from "./StatusIcon.jsx";
+
+/* `active:scale` gives a press something to answer with. 0.97 is deliberately
+   small: the button must acknowledge the click without appearing to move on the
+   page. Paired with transition-transform so the release eases back rather than
+   snapping, and excluded while disabled so a dead control stays dead. */
 const BTN_BASE =
   "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-full px-5 text-[13px] font-medium " +
-  "transition-colors duration-150 ease-out-quart focus-visible:outline-none focus-visible:outline-2 " +
+  "transition-[colors,transform] duration-150 ease-out-quart active:scale-[0.97] disabled:active:scale-100 " +
+  "focus-visible:outline-none focus-visible:outline-2 " +
   "focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:cursor-not-allowed";
 
 // Disabled controls are styled states, not opacity washes: a solid surface-2
@@ -21,7 +28,7 @@ export const BTN_PRIMARY =
   `${BTN_BASE} ${DISABLED_FILL} bg-[var(--ink)] text-[var(--surface)] hover:bg-[var(--btn-primary-hover)]`;
 
 export const BTN_SECONDARY =
-  `${BTN_BASE} ${DISABLED_FILL} bg-[var(--blue-tint)] text-[var(--ink)] hover:bg-[color-mix(in_oklab,var(--blue)_12%,var(--blue-tint))]`;
+  `${BTN_BASE} ${DISABLED_FILL} bg-[var(--stone-tint)] text-[var(--ink)] hover:bg-[color-mix(in_oklab,var(--stone)_12%,var(--stone-tint))]`;
 
 export const BTN_GHOST =
   `${BTN_BASE} ${DISABLED_GHOST} text-[var(--ink-2)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]`;
@@ -39,10 +46,36 @@ export const INPUT =
   "focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:opacity-50";
 
 /** White borderless surface resting on the tinted canvas. Never nested. */
-export const PANEL = "rounded-[24px] bg-[var(--surface)] shadow-[var(--shadow-card)]";
+export const PANEL = "pb-glass rounded-[24px] shadow-[var(--shadow-card)]";
 
 /** Touch targets stay at or above 40px on small screens. */
 export const TAP = "min-h-10";
+
+/** The class that sweeps one pass of light across a freshly selected segment. */
+export const SHEEN_SWIPE = "pb-sheen-swipe";
+
+/**
+ * Gate for SHEEN_SWIPE: false until the user actually changes `value`, so the
+ * swipe answers a click and does not fire on every page load — four segmented
+ * controls all flashing at once on mount would read as decoration rather than
+ * as feedback. Stays true afterwards; the animation itself only replays because
+ * the class moves from the old segment to the new one.
+ *
+ * Compares against the mounted value rather than counting effect runs: React
+ * StrictMode invokes effects twice in development, so a "skip the first call"
+ * ref reports a change that never happened and the sheen fires on load. This
+ * form is idempotent — running it twice with the same value does nothing.
+ */
+export function useSelectionSheen(value) {
+  const mounted = useRef(value);
+  const [changed, setChanged] = useState(false);
+
+  useEffect(() => {
+    if (value !== mounted.current) setChanged(true);
+  }, [value]);
+
+  return changed;
+}
 
 /**
  * Backend markdown (agent replies, generated reports) carries its own heading
@@ -96,7 +129,9 @@ export function Collapse({ title, summary, defaultOpen = false, children, id: pr
       <button
         type="button"
         aria-expanded={open}
-        aria-controls={open ? `${id}-body` : undefined}
+        /* The body is now always in the DOM (it has to be, to animate shut), so
+           it always has an id to point at. */
+        aria-controls={`${id}-body`}
         onClick={() => setOpen((value) => !value)}
         className="flex min-h-10 w-full items-center justify-between gap-3 rounded-[8px] text-left focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
       >
@@ -119,13 +154,186 @@ export function Collapse({ title, summary, defaultOpen = false, children, id: pr
         </span>
         {summary && <span className="shrink-0 text-[12px] text-[var(--ink-2)]">{summary}</span>}
       </button>
-      {open && (
-        <div id={`${id}-body`} className="mt-3">
-          {children}
+      {/* grid-template-rows 1fr -> 0fr animates to the content's own height with
+          no JS measurement and no magic max-height that clips tall bodies. The
+          inner element owns `overflow: hidden` so the collapsing row actually
+          crops rather than spilling.
+
+          `inert` is load-bearing, not decoration: animating shut requires the
+          body to stay in the DOM, and a zero-height box with overflow hidden is
+          still focusable and still read by screen readers. Without this, every
+          collapsed panel would silently add its controls to the tab order. */}
+      <div
+        id={`${id}-body`}
+        inert={open ? undefined : ""}
+        className={`grid transition-[grid-template-rows] duration-[260ms] ease-out-quart ${
+          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="mt-3">{children}</div>
         </div>
-      )}
+      </div>
     </div>
   );
+}
+
+/**
+ * The moving "you are here" mark. One pill per list, translated to whichever
+ * row is selected, so the highlight travels between rows instead of blinking
+ * out in one place and in somewhere else — the reader's eye is carried to the
+ * new position rather than having to re-find it.
+ *
+ * The container gets the returned ref; the selected row gets
+ * `data-flow-active="true"`. Anything else is up to the caller, so the same
+ * primitive serves the nav rail and the session list.
+ */
+export function useFlowHighlight(activeKey) {
+  /* A callback ref held in state, not a useRef: the shell early-returns a
+     loading screen while auth resolves, so the list mounts on a LATER render
+     than the one this hook first ran on. With a plain ref the measuring effect
+     had already run against a null container and never re-ran, and the pill
+     silently never appeared. Storing the node in state re-runs the effect the
+     moment the container actually exists. */
+  const [container, setContainer] = useState(null);
+  const [box, setBox] = useState(null);
+  /* First placement must not animate: a pill sliding in from the top of the
+     list on every page load is an entrance, not feedback. */
+  const placed = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!container) return undefined;
+
+    const measure = () => {
+      const active = container.querySelector('[data-flow-active="true"]');
+      if (!active) {
+        setBox(null);
+        placed.current = false;
+        return;
+      }
+      /* Rect difference plus scrollTop rather than offsetTop: the session list
+         is itself a scrolling box, and offsetTop would be read against whatever
+         the nearest positioned ancestor happens to be. */
+      const c = container.getBoundingClientRect();
+      const a = active.getBoundingClientRect();
+      setBox({
+        top: a.top - c.top + container.scrollTop,
+        height: a.height,
+        animate: placed.current,
+      });
+      placed.current = true;
+    };
+
+    measure();
+
+    /* Rows resize when the rail is dragged and the list reflows when sessions
+       arrive, and either moves the target out from under the pill.
+
+       Guarded rather than assumed: ResizeObserver does not exist in jsdom, and
+       an unguarded constructor threw during render and took the whole Shell
+       down in the test environment. The pill still measures on every activeKey
+       change without it; the observer only adds re-measurement on resize. */
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    for (const child of container.children) observer.observe(child);
+    return () => observer.disconnect();
+  }, [container, activeKey]);
+
+  return { containerRef: setContainer, box };
+}
+
+/** The pill itself. Renders nothing when no row is selected. */
+export function FlowHighlight({ box, className = "" }) {
+  if (!box) return null;
+  return (
+    <span
+      aria-hidden="true"
+      className={`pb-flow-highlight ${className}`}
+      style={{
+        transform: `translateY(${box.top}px)`,
+        height: `${box.height}px`,
+        transition: box.animate ? undefined : "none",
+      }}
+    />
+  );
+}
+
+/**
+ * Fit a list to the height it is given instead of scrolling inside it. Renders
+ * every row (so the overflow can be measured), then caps the visible height at
+ * the last row that fits whole and reports how many were left over, for the
+ * caller to summarise as a "see all" footer.
+ *
+ * This is the alternative to an inner scrollbar on a dashboard card: the card
+ * keeps its place in a non-scrolling page and shows as much as the viewport
+ * allows, rather than becoming a tiny scroll port. What overflows is not hidden
+ * silently — the returned `hidden` count must be surfaced, or the card would
+ * quietly under-report.
+ *
+ * The list element gets `listRef` and `overflow: hidden` with the returned
+ * `maxHeight`; each row carries `data-fit-item`; the footer, if any, gets
+ * `footerRef` so its height is reserved. All three share one outer box via
+ * `outerRef`, whose measured height is the budget.
+ */
+export function useFitList(depsKey) {
+  const [outer, setOuter] = useState(null);
+  const [list, setList] = useState(null);
+  const footerRef = useRef(null);
+  const [fit, setFit] = useState({ maxHeight: undefined, hidden: 0 });
+
+  useLayoutEffect(() => {
+    if (!outer || !list) return undefined;
+
+    const measure = () => {
+      const items = list.querySelectorAll("[data-fit-item]");
+      if (!items.length) {
+        setFit((prev) => (prev.maxHeight === undefined && prev.hidden === 0 ? prev : { maxHeight: undefined, hidden: 0 }));
+        return;
+      }
+      const listTop = list.getBoundingClientRect().top;
+      const bottoms = Array.from(items, (el) => el.getBoundingClientRect().bottom - listTop);
+      const total = bottoms.length;
+      const countWithin = (budget) => {
+        let n = 0;
+        for (const b of bottoms) {
+          if (b <= budget + 0.5) n += 1;
+          else break;
+        }
+        return n;
+      };
+
+      const full = outer.clientHeight;
+      const apply = (maxHeight, hidden) =>
+        setFit((prev) => (prev.maxHeight === maxHeight && prev.hidden === hidden ? prev : { maxHeight, hidden }));
+
+      if (countWithin(full) >= total) {
+        apply(undefined, 0);
+        return;
+      }
+      // Something overflows, so a footer will show; reserve its height before
+      // deciding how many rows fit above it. The cut is always a row boundary
+      // (bottoms[n-1]).
+      const footerH = footerRef.current ? footerRef.current.offsetHeight : 40;
+      let n = countWithin(full - footerH);
+      // Prefer one row over an all-footer card, but only when a whole row fits
+      // in the budget without the footer reserve. If even one row is taller than
+      // the card, show none rather than clip a row mid-content — the footer then
+      // stands in for the whole list.
+      if (n === 0 && bottoms[0] <= full + 0.5) n = 1;
+      apply(n > 0 ? bottoms[n - 1] : 0, total - n);
+    };
+
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(outer);
+    observer.observe(list);
+    for (const child of list.children) observer.observe(child);
+    return () => observer.disconnect();
+  }, [outer, list, depsKey]);
+
+  return { outerRef: setOuter, listRef: setList, footerRef, maxHeight: fit.maxHeight, hidden: fit.hidden };
 }
 
 /** Contextual inline error, rendered where the failing thing lives. */
@@ -189,10 +397,7 @@ export function BasisTag({ basis, dark = false }) {
           <path d="M2.5 6.5 5 9l4.5-6" />
         </svg>
       ) : (
-        <span
-          aria-hidden="true"
-          className="h-1.5 w-1.5 shrink-0 rounded-full border border-current"
-        />
+        <StatusIcon tone="docs" size={12} />
       )}
       {basis}
     </span>

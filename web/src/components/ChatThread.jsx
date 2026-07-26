@@ -5,6 +5,8 @@ import AgentTraceCard from "./AgentTraceCard.jsx";
 import ResultsCard from "./ResultsCard.jsx";
 import { MARKDOWN_HEADINGS_IN_THREAD, PANEL } from "./ui.jsx";
 import { safeVisibleText } from "../displaySafety.js";
+import { phaseLabel } from "../phaseLabel.js";
+import StatusIcon from "./StatusIcon.jsx";
 import { safeHttpUrl } from "../linkSafety.js";
 import {
   canRenderMetrics,
@@ -53,15 +55,12 @@ function Bubble({ role, streaming, children }) {
 
 function TypingIndicator({ phase }) {
   const label = phase?.phase
-    ? `Agent is working: ${safeVisibleText(phase.phase).toLowerCase().replaceAll("_", " ")}`
+    ? `Agent is working: ${phaseLabel(safeVisibleText(phase.phase))}`
     : "Agent is thinking";
   return (
     <div className="flex justify-start" aria-live="polite">
       <div className="flex min-h-6 items-center gap-2 text-[12px] text-[var(--ink-2)]">
-        <span
-          className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--accent)]"
-          aria-hidden="true"
-        />
+        <StatusIcon tone="running" size={13} pulse className="text-[var(--accent)]" />
         {label}
       </div>
     </div>
@@ -74,7 +73,7 @@ function Disclosure({ title, summary, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   const id = useId();
   return (
-    <section className={`${PANEL} p-4`} aria-labelledby={`${id}-title`}>
+    <section className="pb-glass rounded-[24px] p-4 shadow-[var(--shadow-card)]" aria-labelledby={`${id}-title`}>
       <button
         type="button"
         aria-expanded={open}
@@ -206,7 +205,7 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
                 ? "Name the tools to compare. Your labelled dataset is attached and ready to score against."
                 : "Name the tools to compare and attach a labelled dataset, or start from the sample labelled dataset."}
             </p>
-            <div className={`${PANEL} mx-auto mt-6 w-full max-w-[560px] divide-y divide-[var(--line)] overflow-hidden text-left`}>
+            <div className="pb-glass mx-auto mt-6 w-full max-w-[560px] divide-y divide-[var(--line)] overflow-hidden rounded-[24px] text-left shadow-[var(--shadow-card)]">
               {EXAMPLE_PROMPTS.map((example, index) => (
                 <button
                   key={example}
@@ -220,7 +219,7 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
                       index === 0
                         ? "bg-[var(--ok-tint)] text-[var(--ok)]"
                         : index === 1
-                          ? "bg-[var(--blue-tint)] text-[var(--blue)]"
+                          ? "bg-[var(--stone-tint)] text-[var(--stone)]"
                           : "bg-[var(--danger-tint)] text-[var(--danger)]"
                     }`}
                   >

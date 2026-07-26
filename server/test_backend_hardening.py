@@ -165,6 +165,41 @@ def test_local_mode_still_refuses_runtime_provider_credential_writes(local_clien
     assert all(item["env"] != "CUSTOM_API_KEY" for item in settings["keys"])
 
 
+def test_local_runtime_credentials_accept_only_the_exact_oxylabs_pair(local_client, monkeypatch):
+    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
+
+    username = local_client.post(
+        "/api/settings/provider-keys",
+        json={"env": "OXYLABS_USERNAME", "value": "local-operator"},
+    )
+    password = local_client.post(
+        "/api/settings/provider-keys",
+        json={"env": "OXYLABS_PASSWORD", "value": "provider-password-value"},
+    )
+    assert username.status_code == 200
+    assert password.status_code == 200
+    assert "local-operator" not in username.text
+    assert "provider-password-value" not in password.text
+
+    listed_response = local_client.get("/api/settings/provider-keys")
+    listed = listed_response.json()
+    assert listed["runtime_writes_enabled"] is True
+    assert {item["env"] for item in listed["keys"]} >= {
+        "OXYLABS_USERNAME",
+        "OXYLABS_PASSWORD",
+    }
+    assert "local-operator" not in listed_response.text
+    assert "provider-password-value" not in listed_response.text
+
+    for invalid in ("VENDOR_USERNAME", "VENDOR_PASSWORD"):
+        rejected = local_client.post(
+            "/api/settings/provider-keys",
+            json={"env": invalid, "value": "not-stored-value"},
+        )
+        assert rejected.status_code == 422
+        assert "not-stored-value" not in rejected.text
+
+
 def test_authenticated_mode_rejects_the_missing_token_local_mode_would_accept(client):
     # The exact requests the local profile serves must still fail closed here.
     assert client.get("/api/sessions").status_code == 401
@@ -268,7 +303,10 @@ def test_sessions_and_results_are_tenant_isolated(client):
     assert client.get(f"/api/runs/{session_id}/results", headers=headers("token-a")).status_code == 404
 
 
-def test_runtime_provider_credentials_are_disabled_in_production(client):
+def test_runtime_provider_credentials_are_disabled_in_production(client, monkeypatch):
+    # The runtime flag alone is insufficient. Authenticated/production mode
+    # remains locked unless the separate local-only bypass is also active.
+    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
     response = client.post("/api/settings/provider-keys", headers=headers("token-a"),
                            json={"env": "CUSTOM_API_KEY", "value": "secret-value"})
     assert response.status_code == 503

@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { PANEL } from "./ui.jsx";
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
 import { safeHttpUrl } from "../linkSafety.js";
+import { phaseLabel, phaseTone as phaseToneKey } from "../phaseLabel.js";
+import StatusIcon from "./StatusIcon.jsx";
 import {
   DETAIL_EXPANDED_CHARS,
   DETAIL_PREVIEW_CHARS,
@@ -37,9 +39,9 @@ function phaseDot(phase) {
 }
 
 const TRACE_STATUS = {
-  start: { color: "var(--accent)", pulse: true },
-  ok: { color: "var(--ok)", pulse: false },
-  error: { color: "var(--danger)", pulse: false },
+  start: { color: "var(--accent)", tone: "running", pulse: true },
+  ok: { color: "var(--ok)", tone: "ok", pulse: false },
+  error: { color: "var(--danger)", tone: "danger", pulse: false },
 };
 
 const disclosureButton = "flex w-full items-center gap-2 text-left";
@@ -58,8 +60,8 @@ function PhaseBadge({ label }) {
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-medium ${phaseTone(safeLabel)}`}
     >
-      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
-      {safeLabel.toLowerCase()}
+      <StatusIcon tone={phaseToneKey(safeLabel)} size={12} />
+      {phaseLabel(safeLabel)}
     </span>
   );
 }
@@ -200,11 +202,9 @@ function TraceGroup({ group, defaultOpen }) {
       >
         <span className="flex min-w-0 items-center gap-2">
           <Caret open={open} />
-          <span
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.pulse ? "animate-pulse" : ""}`}
-            style={{ backgroundColor: st.color }}
-            aria-hidden="true"
-          />
+          <span className="shrink-0" style={{ color: st.color }}>
+            <StatusIcon tone={st.tone} size={13} pulse={st.pulse} />
+          </span>
           <span className="pb-mono truncate text-[13px] text-[var(--ink)]">
             {safeVisibleText(group.tool)}
           </span>
@@ -222,11 +222,9 @@ function TraceGroup({ group, defaultOpen }) {
             const itemStatus = TRACE_STATUS[item.status] || TRACE_STATUS.start;
             return (
               <div key={item.index} className="pb-long-list-item flex items-start gap-2">
-                <span
-                  className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${itemStatus.pulse ? "animate-pulse" : ""}`}
-                  style={{ backgroundColor: itemStatus.color }}
-                  aria-hidden="true"
-                />
+                <span className="mt-0.5 shrink-0" style={{ color: itemStatus.color }}>
+                  <StatusIcon tone={itemStatus.tone} size={12} pulse={itemStatus.pulse} />
+                </span>
                 <div className="min-w-0 flex-1">
                   {item.args_summary && (
                     <div className="pb-contain text-[12px] text-[var(--ink)]">
@@ -292,11 +290,9 @@ export default function AgentTraceCard({
             <ul className="flex flex-wrap gap-x-4 gap-y-1">
               {Object.entries(safePhase.candidates).map(([name, st]) => (
                 <li key={name} className="inline-flex items-center gap-1.5 text-[12px] text-[var(--ink-2)]">
-                  <span
-                    className="h-1.5 w-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: phaseDot(st) }}
-                    aria-hidden="true"
-                  />
+                  <span className="shrink-0" style={{ color: phaseDot(st) }}>
+                    <StatusIcon tone={phaseToneKey(st)} size={12} />
+                  </span>
                   <span className="pb-contain">
                     {safeVisibleText(name)}: {safeVisibleText(st)}
                   </span>

@@ -94,12 +94,22 @@ No argument means: sweep every console page plus the landing page.
   owning container's `scrollTop` only, with a jsdom fallback.
 - **Motion:** conveys state only; transform/opacity; 150–250ms ease-out;
   ambient atmosphere (`.pb-atmosphere`) must stay transform-only — NO CSS
-  `filter: blur` on animated layers (measured: blur dropped 60fps → 16fps);
-  bake softness into gradient stops. `prefers-reduced-motion` always honored.
-- **Bans:** side-stripe borders, gradient text, glassmorphism, hero-metric
-  template, identical icon-card grids, repeated uppercase eyebrows, 01/02/03
-  scaffolds, nested cards, duplicate brand marks (logo lives top-left only),
-  custom scrollbars/form controls, emojis in UI copy, em dashes in copy.
+  `filter: blur` on an ANIMATED layer (measured: 60fps → 16fps), because it
+  re-rasterises every frame; bake softness into gradient stops instead.
+  `backdrop-filter` on a STATIC element is a different cost and is fine even
+  over the drifting atmosphere (measured: 59fps vs 60fps control).
+  `prefers-reduced-motion` always honored.
+- **Glass (`.pb-glass`, `.pb-glass-float`):** allowed, but only where content
+  genuinely passes BEHIND the surface — the sticky page header, the composer
+  the thread scrolls under, floating menus, drawers, and dialogs. Never on a
+  card resting against a flat canvas: there is nothing behind it, so the blur
+  costs a compositor layer to show a blurred copy of a solid colour. Always
+  ship the `@supports not (backdrop-filter)` opaque fallback, and keep text on
+  glass at full contrast.
+- **Bans:** side-stripe borders, gradient text, hero-metric template, identical
+  icon-card grids, repeated uppercase eyebrows, 01/02/03 scaffolds, nested
+  cards, duplicate brand marks (logo lives top-left only), custom scrollbars/
+  form controls, emojis in UI copy, em dashes in copy.
 
 ## Constraints
 

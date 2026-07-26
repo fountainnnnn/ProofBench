@@ -2,82 +2,124 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ProofBench design tokens (OKLCH). The whole neutral family is tinted toward
-   one petrol hue (210-220): the canvas, the ink, the accent, and the verdict
-   hero are all the same colour at different lightness, so the brand is the
-   verdict rather than a decoration. Names stay stable so existing markup keeps
-   working; only the values define the look. */
+/* ProofBench design tokens (OKLCH), built from a six-step palette:
+     #191D23 ink · #57707A teal · #7E919F steel · #979DAB slate
+     · #C5BAC4 mauve · #DEDCDC mist
+
+   Unlike the neutral set this replaces, this one has a usable accent. Measured:
+   teal clears 5.07:1 as text on a card AND 5.24:1 with white text on it as a
+   fill, so one value serves both roles — no darkened text-only twin the way the
+   old coral needed. The palette runs cool (224-268deg) with mauve at 328deg as
+   the single warm counterpoint, which is what the ambient wash is built from.
+
+   The set has no near-white, so the two lightest surfaces are derived: the
+   palette's own mist (#DEDCDC, 0.896) is the deepest LIGHT step, used for
+   recessed fills and hairlines, with cards and canvas tinted up from it.
+
+   Names stay stable so existing markup keeps working; only the values change. */
 :root {
-  /* Canvas: Mindora light gray (#F1F5F4 family). White cards rest on it with
-     soft diffuse shadows. */
-  --paper: oklch(0.966 0.006 175);
+  --paper: oklch(0.958 0.005 280);
   --bg: var(--paper);
-  --surface: oklch(0.998 0.001 175);
-  --surface-2: oklch(0.945 0.008 165);
+  --surface: oklch(0.988 0.003 270);
+  /* Mist #DEDCDC: recessed fills, inputs, tracks. */
+  --surface-2: oklch(0.896 0.006 300);
 
-  /* Canvas atmosphere: a whisper-low vertical wash so large empty regions read
-     as air rather than dead gray. --paper stays the solid mid-tone that
-     component fills reference; these two are only the gradient stops. */
-  --canvas-top: oklch(0.975 0.006 165);
-  --canvas-bottom: oklch(0.957 0.008 190);
-  /* The left frame: a near-canvas tone, distinct from both the wash and the
-     white cards, so the shell reads as an intentional frame. */
-  --sidebar-bg: oklch(0.951 0.008 182);
+  /* Canvas wash: cool at the head, settling toward mist at the foot.
+     --paper stays the solid mid-tone components reference. */
+  --canvas-top: oklch(0.984 0.002 275);
+  --canvas-bottom: oklch(0.958 0.004 305);
+  /* The left frame, carrying mauve's 328deg so the rail reads warm against a
+     cool canvas rather than relying on lightness alone. */
+  --sidebar-bg: oklch(0.940 0.009 322);
 
-  /* Ink: Mindora dark slate (#2F3E46 family), never pure black. */
-  --ink: oklch(0.36 0.023 215);
-  --ink-2: oklch(0.44 0.02 210);
-  --ink-3: oklch(0.48 0.018 205);
+  /* Ink #191D23: cool near-black, 16.4:1 on a card. */
+  --ink: oklch(0.229 0.013 258);
+  --ink-2: oklch(0.500 0.026 245);
+  /* Steel-derived muted step. The palette's own #7E919F clears 3:1 on a card
+     but only 2.73:1 on the rail, which is a surface it has to work on, so it is
+     pulled down until the worst case passes. */
+  --ink-3: oklch(0.618 0.030 240);
   --text: var(--ink);
   --text-2: var(--ink-2);
   --text-3: var(--ink-3);
 
-  /* Hairlines: Mindora inputs and dividers carry a visible 1px border. */
-  --line: oklch(0.905 0.008 170);
+  /* Hairlines derived from mist. */
+  --line: oklch(0.882 0.007 300);
   --border: var(--line);
-  --line-strong: oklch(0.845 0.01 170);
+  --line-strong: oklch(0.800 0.012 290);
   --border-strong: var(--line-strong);
 
-  /* Accent: sage green (#5EBB7E family), darkened to stay readable as text.
-     Links, focus, selection, live state. */
-  --accent: oklch(0.48 0.10 152);
-  --accent-ink: oklch(0.42 0.10 152);
-  --accent-hover: var(--accent-ink);
-  --accent-tint: oklch(0.93 0.035 152);
+  /* Teal #57707A: the accent, legible as text and as a fill under white. */
+  --accent: oklch(0.529 0.033 224);
+  --accent-ink: var(--accent);
+  --accent-hover: oklch(0.448 0.036 224);
+  --accent-tint: oklch(0.918 0.017 230);
   --accent-soft: var(--accent-tint);
 
-  /* The signature Mindora button: dark slate at rest, sage green on hover. */
-  --btn-primary-hover: oklch(0.56 0.105 152);
+  /* Primary action: ink at rest, settling into the accent on hover — white
+     text holds 5.2:1 there, so the hover is a real state and not a tease. */
+  --btn-primary-hover: oklch(0.448 0.036 224);
 
-  /* Semantic pairs. Each is an accessible text colour plus its own tint, so a
-     small label on the tint clears 4.5:1. Danger leans dusty pink (#EBAEB1). */
-  --ok: oklch(0.46 0.11 152);
-  --ok-tint: oklch(0.94 0.035 152);
-  --warn: oklch(0.45 0.10 75);
-  --warn-tint: oklch(0.95 0.04 85);
-  --danger: oklch(0.46 0.14 20);
-  --danger-tint: oklch(0.93 0.035 15);
-  /* Mindora soft blue (#A7C7E7 family): the secondary-action pastel. */
-  --blue: oklch(0.47 0.08 250);
-  --blue-tint: oklch(0.93 0.03 250);
+  /* The second categorical series, on mauve's 328deg rather than slate's 267.
+     Slate as given (0.696) reads only 2.62:1 on a card and 1.28:1 against the
+     accent — two chart series that neither hold their own on the surface nor
+     separate from each other. This sits darker and on the opposite side of the
+     hue circle from the teal accent, so the two series differ in both axes. */
+  --stone: oklch(0.415 0.026 328);
+  --stone-tint: oklch(0.912 0.010 300);
+
+  /* Status is the loudest thing in the product, and deliberately so. Everything
+     else lives between 224 and 328 degrees at chroma 0.03 or less, so a signal
+     that has to interrupt cannot do it by being a slightly different grey — the
+     surrounding restraint is exactly what buys these three the room to shout.
+     Chroma here is 3-6x the palette's, and the tints carry it too so a status
+     chip reads as coloured rather than as a white pill with tinted text. */
+  --ok: oklch(0.472 0.165 150);
+  --ok-tint: oklch(0.914 0.075 152);
+  --warn: oklch(0.492 0.150 76);
+  --warn-tint: oklch(0.918 0.082 82);
+  --danger: oklch(0.492 0.205 27);
+  --danger-tint: oklch(0.912 0.072 24);
   /* Legacy names kept so existing markup and pinned regression tests hold. */
   --err: var(--danger);
   --err-strong: var(--danger);
   --err-soft: var(--danger-tint);
-  --info: var(--accent);
+  --info: var(--accent-ink);
 
-  /* Terminal panels are dark slate because their content is logs. */
-  --code-bg: oklch(0.30 0.022 215);
-  --code-text: oklch(0.87 0.02 152);
+  /* Terminal panels: a step below ink so a console reads as recessed. */
+  --code-bg: oklch(0.188 0.011 258);
+  --code-text: oklch(0.898 0.012 262);
 
-  /* The verdict hero: the single dark card, in the brand slate. */
-  --hero-ink: oklch(0.36 0.023 215);
-  --hero-ink-2: oklch(0.78 0.02 190);
-  --hero-text: oklch(0.985 0.003 175);
+  /* The verdict hero: the one ink card in the product, at the palette's #191D23
+     exactly — it is the darkest thing on screen, which is the whole point. */
+  --hero-ink: oklch(0.229 0.013 258);
+  --hero-ink-2: oklch(0.745 0.020 265);
+  --hero-text: oklch(0.988 0.003 270);
 
-  /* Elevation: Mindora soft/medium/strong diffuse shadows, tinted slate. */
-  --shadow-card: 0 1px 2px oklch(0.36 0.03 200 / 0.05), 0 6px 22px oklch(0.36 0.03 200 / 0.10);
-  --shadow-lift: 0 8px 30px oklch(0.36 0.03 200 / 0.14), 0 24px 60px oklch(0.36 0.03 200 / 0.11);
+  /* The operator's mark: palette ink. */
+  --profile: oklch(0.229 0.013 258);
+  --profile-ink: oklch(0.988 0.003 270);
+  --profile-tint: oklch(0.930 0.012 322);
+  /* The lit edge that makes a translucent panel read as glass rather than as
+     a faded card: near-white in light, a lifted step in dark. */
+  --glass-edge: oklch(1 0 0 / 0.55);
+  /* Specular fall from the top edge — the cue that reads as "lit pane". */
+  --glass-sheen: oklch(1 0 0 / 0.42);
+  /* Directional rim: light strikes from above-left, so the top and left edges
+     catch it and the bottom edge falls into shade. Carried on border-*-color
+     rather than an inset shadow because callers own `box-shadow`, and because
+     borders follow the corner radius exactly where a 1px gradient band would
+     break across it. */
+  --gloss-rim: oklch(1 0 0 / 0.92);
+  --gloss-rim-soft: oklch(1 0 0 / 0.62);
+  /* The selection swipe rides over a filled --ink pill, so it inverts with the
+     theme: light-on-black here, dark-on-near-white in dark mode. */
+  --sheen-swipe: oklch(1 0 0 / 0.30);
+
+  /* Elevation: cool-tinted diffuse shadows, matching the canvas rather than
+     warming against it. */
+  --shadow-card: 0 1px 2px oklch(0.24 0.014 255 / 0.07), 0 3px 8px oklch(0.24 0.014 255 / 0.07), 0 12px 30px oklch(0.24 0.014 255 / 0.10);
+  --shadow-lift: 0 8px 30px oklch(0.24 0.014 255 / 0.14), 0 24px 60px oklch(0.24 0.014 255 / 0.11);
   --shadow-btn: none;
 
   /* Shape: generous, consistent. */
@@ -86,9 +128,6 @@
   --radius-dialog: 28px;
 
   /* Layout rhythm */
-  /* Wide enough that a data-dense console fills a large display instead of
-     sitting in a narrow column with empty gutters. Prose columns cap
-     themselves separately (the chat thread reads at 840px). */
   --canvas: 1600px;
   --sidebar: 248px;
   --gap: 24px;
@@ -98,79 +137,108 @@
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* Dark theme: the same petrol family inverted. Auto-follows the system unless
+
+/* Dark theme: the same five steps, inverted. #1c1c1c becomes the CARD rather
+   than the ink, the canvas drops below it, and #fafaff takes over as the ink —
+   so the palette's own darkest and lightest members swap roles rather than the
+   theme borrowing colours from outside the set. Auto-follows the system unless
    the operator pins a theme in Settings (html[data-theme]). Every token keeps
    its role: --ink stays "the strong colour" (light on dark), --surface stays
-   "the card colour", so component markup is theme-blind. */
+   "the card colour", so component markup is theme-blind.
+
+   NOTE: this block and :root[data-theme="dark"] below must declare an identical
+   token set. They already drifted once — the gloss tokens landed here only, so
+   operators who had pinned dark got light-mode white rims at 0.92 alpha on dark
+   cards. index.test.js now fails if the two lists diverge. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: oklch(0.215 0.018 215);
-    --surface: oklch(0.265 0.02 215);
-    --surface-2: oklch(0.315 0.02 212);
-    --canvas-top: oklch(0.238 0.02 215);
-    --canvas-bottom: oklch(0.198 0.017 215);
-    --sidebar-bg: oklch(0.242 0.02 214);
-    --ink: oklch(0.94 0.006 170);
-    --ink-2: oklch(0.74 0.015 190);
-    --ink-3: oklch(0.72 0.015 195);
-    --line: oklch(0.345 0.02 213);
-    --line-strong: oklch(0.43 0.02 210);
-    --accent: oklch(0.76 0.10 152);
-    --accent-ink: oklch(0.82 0.09 152);
-    --accent-tint: oklch(0.345 0.05 152);
-    --btn-primary-hover: oklch(0.70 0.10 152);
-    --ok: oklch(0.78 0.12 152);
-    --ok-tint: oklch(0.335 0.05 152);
-    --warn: oklch(0.80 0.10 80);
-    --warn-tint: oklch(0.34 0.05 80);
-    --danger: oklch(0.76 0.10 20);
-    --danger-tint: oklch(0.335 0.05 15);
-    --blue: oklch(0.78 0.08 250);
-    --blue-tint: oklch(0.34 0.045 250);
-    --code-bg: oklch(0.175 0.016 215);
-    --code-text: oklch(0.87 0.02 152);
-    --hero-ink: oklch(0.315 0.022 215);
-    --hero-ink-2: oklch(0.77 0.018 190);
-    --hero-text: oklch(0.965 0.005 175);
-    --shadow-card: 0 1px 2px oklch(0 0 0 / 0.25), 0 4px 20px oklch(0 0 0 / 0.22);
-    --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.35), 0 24px 60px oklch(0 0 0 / 0.35);
+    --paper: oklch(0.176 0.011 258);
+    --surface: oklch(0.229 0.013 258);
+    --surface-2: oklch(0.300 0.016 254);
+    --canvas-top: oklch(0.202 0.012 258);
+    --canvas-bottom: oklch(0.156 0.011 262);
+    --sidebar-bg: oklch(0.200 0.013 268);
+    --ink: oklch(0.960 0.004 275);
+    --ink-2: oklch(0.782 0.014 265);
+    --ink-3: oklch(0.668 0.020 262);
+    --line: oklch(0.332 0.015 256);
+    --line-strong: oklch(0.432 0.018 252);
+    --accent: oklch(0.760 0.045 226);
+    --accent-ink: var(--accent);
+    --accent-hover: oklch(0.828 0.040 228);
+    --accent-tint: oklch(0.318 0.030 226);
+    --btn-primary-hover: oklch(0.828 0.040 228);
+    --stone: oklch(0.575 0.032 328);
+    --stone-tint: oklch(0.302 0.015 268);
+    --ok: oklch(0.828 0.185 150);
+    --ok-tint: oklch(0.335 0.095 152);
+    --warn: oklch(0.858 0.165 82);
+    --warn-tint: oklch(0.340 0.090 78);
+    --danger: oklch(0.742 0.190 25);
+    --danger-tint: oklch(0.330 0.108 22);
+    --code-bg: oklch(0.140 0.010 258);
+    --code-text: oklch(0.898 0.012 262);
+    --hero-ink: oklch(0.255 0.014 258);
+    --hero-ink-2: oklch(0.768 0.018 265);
+    --hero-text: oklch(0.960 0.004 275);
+    --profile: oklch(0.905 0.012 322);
+    --profile-ink: oklch(0.176 0.011 258);
+    --profile-tint: oklch(0.226 0.014 300);
+    --glass-edge: oklch(1 0 0 / 0.09);
+    --glass-sheen: oklch(1 0 0 / 0.07);
+    --gloss-rim: oklch(1 0 0 / 0.16);
+    --gloss-rim-soft: oklch(1 0 0 / 0.10);
+    --sheen-swipe: oklch(0 0 0 / 0.22);
+    --shadow-card: 0 1px 2px oklch(0 0 0 / 0.32), 0 3px 10px oklch(0 0 0 / 0.28), 0 14px 34px oklch(0 0 0 / 0.32);
+    --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.38), 0 24px 60px oklch(0 0 0 / 0.38);
     color-scheme: dark;
   }
 }
 
+/* Must stay token-for-token identical to the @media block above. */
 :root[data-theme="dark"] {
-  --paper: oklch(0.215 0.018 215);
-  --surface: oklch(0.265 0.02 215);
-  --surface-2: oklch(0.315 0.02 212);
-  --canvas-top: oklch(0.238 0.02 215);
-  --canvas-bottom: oklch(0.198 0.017 215);
-  --sidebar-bg: oklch(0.242 0.02 214);
-  --ink: oklch(0.94 0.006 170);
-  --ink-2: oklch(0.74 0.015 190);
-  --ink-3: oklch(0.72 0.015 195);
-  --line: oklch(0.345 0.02 213);
-  --line-strong: oklch(0.43 0.02 210);
-  --accent: oklch(0.76 0.10 152);
-  --accent-ink: oklch(0.82 0.09 152);
-  --accent-tint: oklch(0.345 0.05 152);
-  --btn-primary-hover: oklch(0.70 0.10 152);
-  --ok: oklch(0.78 0.12 152);
-  --ok-tint: oklch(0.335 0.05 152);
-  --warn: oklch(0.80 0.10 80);
-  --warn-tint: oklch(0.34 0.05 80);
-  --danger: oklch(0.76 0.10 20);
-  --danger-tint: oklch(0.335 0.05 15);
-  --blue: oklch(0.78 0.08 250);
-  --blue-tint: oklch(0.34 0.045 250);
-  --code-bg: oklch(0.175 0.016 215);
-  --code-text: oklch(0.87 0.02 152);
-  --hero-ink: oklch(0.315 0.022 215);
-  --hero-ink-2: oklch(0.77 0.018 190);
-  --hero-text: oklch(0.965 0.005 175);
-  --shadow-card: 0 1px 2px oklch(0 0 0 / 0.25), 0 4px 20px oklch(0 0 0 / 0.22);
-  --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.35), 0 24px 60px oklch(0 0 0 / 0.35);
+  --paper: oklch(0.176 0.011 258);
+  --surface: oklch(0.229 0.013 258);
+  --surface-2: oklch(0.300 0.016 254);
+  --canvas-top: oklch(0.202 0.012 258);
+  --canvas-bottom: oklch(0.156 0.011 262);
+  --sidebar-bg: oklch(0.200 0.013 268);
+  --ink: oklch(0.960 0.004 275);
+  --ink-2: oklch(0.782 0.014 265);
+  --ink-3: oklch(0.668 0.020 262);
+  --line: oklch(0.332 0.015 256);
+  --line-strong: oklch(0.432 0.018 252);
+  --accent: oklch(0.760 0.045 226);
+  --accent-ink: var(--accent);
+  --accent-hover: oklch(0.828 0.040 228);
+  --accent-tint: oklch(0.318 0.030 226);
+  --btn-primary-hover: oklch(0.828 0.040 228);
+  --stone: oklch(0.575 0.032 328);
+  --stone-tint: oklch(0.302 0.015 268);
+  --ok: oklch(0.828 0.185 150);
+  --ok-tint: oklch(0.335 0.095 152);
+  --warn: oklch(0.858 0.165 82);
+  --warn-tint: oklch(0.340 0.090 78);
+  --danger: oklch(0.742 0.190 25);
+  --danger-tint: oklch(0.330 0.108 22);
+  --code-bg: oklch(0.140 0.010 258);
+  --code-text: oklch(0.898 0.012 262);
+  --hero-ink: oklch(0.255 0.014 258);
+  --hero-ink-2: oklch(0.768 0.018 265);
+  --hero-text: oklch(0.960 0.004 275);
+  --profile: oklch(0.905 0.012 322);
+  --profile-ink: oklch(0.176 0.011 258);
+  --profile-tint: oklch(0.226 0.014 300);
+  --glass-edge: oklch(1 0 0 / 0.09);
+  --glass-sheen: oklch(1 0 0 / 0.07);
+  --gloss-rim: oklch(1 0 0 / 0.16);
+  --gloss-rim-soft: oklch(1 0 0 / 0.10);
+  --sheen-swipe: oklch(0 0 0 / 0.22);
+  --shadow-card: 0 1px 2px oklch(0 0 0 / 0.32), 0 3px 10px oklch(0 0 0 / 0.28), 0 14px 34px oklch(0 0 0 / 0.32);
+  --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.38), 0 24px 60px oklch(0 0 0 / 0.38);
   color-scheme: dark;
 }
+
 
 /* min-height, not height. The console shell sets its own viewport height
    (.pb-viewport-height), so it does not need a fixed-height ancestor; but a
@@ -266,8 +334,106 @@ body {
   box-shadow: var(--shadow-lift);
 }
 
+/* The rail is glass too, so the atmosphere drifting behind it keeps the whole
+   console on one material instead of a translucent canvas bolted to an opaque
+   slab. Held denser than a card (72% vs 52%): this is a persistent surface
+   carrying 13px secondary-ink labels, and it must stay readable while the
+   coral blob passes under it. */
 .pb-sidebar-shell {
-  background: var(--sidebar-bg);
+  background:
+    linear-gradient(168deg, var(--glass-sheen) 0%, transparent 22%),
+    color-mix(in oklab, var(--sidebar-bg) 72%, transparent);
+  backdrop-filter: blur(28px) saturate(1.5);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  border-right-color: var(--gloss-rim-soft);
+}
+
+/* The rail is the one surface tall enough for a travelling highlight to read as
+   light moving over glass rather than as a blinking element, and it is a single
+   layer rather than the twenty-odd cards — so the flow lives here and the cards
+   take their movement from the atmosphere drifting behind them. Transform-only,
+   and the global prefers-reduced-motion rule freezes it. */
+.pb-sidebar-shell {
+  isolation: isolate;
+}
+
+.pb-sidebar-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Negative z-index inside an isolated stacking context paints above the
+     rail's own background but beneath every child, so the sheen passes UNDER
+     the labels instead of washing over them. It also means the pseudo needs no
+     `overflow: hidden` on the rail — which would have clipped the profile menu
+     and the drag resizer. */
+  z-index: -1;
+  background: linear-gradient(
+    172deg,
+    transparent 34%,
+    var(--glass-sheen) 50%,
+    transparent 66%
+  );
+  background-size: 100% 250%;
+  background-repeat: no-repeat;
+  animation: pb-sheen-travel 19s ease-in-out infinite alternate;
+}
+
+/* Position, not transform: a transform on the pseudo cannot be clipped by its
+   own box, so the sheen would spill across the canvas. One slow repaint on one
+   element is the cheaper trade. */
+@keyframes pb-sheen-travel {
+  from {
+    background-position: 0 -55%;
+  }
+  to {
+    background-position: 0 155%;
+  }
+}
+
+/* The same light, once, across a segment that has just become the selected one.
+   In a row of adjacent buttons the change of state is the whole message, and a
+   colour swap alone is easy to miss when the pointer is still over the segment
+   you left. The sheen says WHICH one took the selection.
+
+   It fires on selection change only, never on mount — see useSelectionSheen.
+   The 620ms is one beat under Doherty's threshold: felt, not waited on. */
+.pb-sheen-swipe {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.pb-sheen-swipe::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    104deg,
+    transparent 32%,
+    var(--sheen-swipe) 50%,
+    transparent 68%
+  );
+  background-size: 260% 100%;
+  background-repeat: no-repeat;
+  animation: pb-sheen-swipe 620ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+
+@keyframes pb-sheen-swipe {
+  from {
+    background-position: -130% 0;
+  }
+  to {
+    background-position: 130% 0;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .pb-sidebar-shell {
+    background: var(--sidebar-bg);
+  }
 }
 
 .pb-nav-item {
@@ -278,9 +444,46 @@ body {
 }
 
 /* Selected navigation is the black pill: the one strong element in the bar. */
+/* The selected row's FILL is drawn by .pb-flow-highlight, which travels; this
+   only carries the colour change, so the two halves of the state must run at
+   the same tempo or the label flips before the pill arrives. */
 .pb-nav-item-active {
-  background: var(--ink);
   color: var(--surface);
+}
+
+/* The travelling selection mark. Absolutely positioned inside a list, sized and
+   offset from the active row by useFlowHighlight.
+
+   transform + height rather than top/height: transform is composited, and the
+   list can be long. 320ms with a decelerating curve is fast enough to feel like
+   a response (Doherty) and slow enough that the eye can follow the travel,
+   which is the entire reason it moves at all. Frozen by the global
+   prefers-reduced-motion rule. */
+.pb-flow-highlight {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 0;
+  border-radius: var(--radius-control);
+  background: var(--ink);
+  will-change: transform;
+  transition:
+    transform 320ms var(--ease),
+    height 320ms var(--ease);
+}
+
+/* Rows must sit above the pill or it paints over their labels. */
+.pb-flow-row {
+  position: relative;
+  z-index: 1;
+}
+
+/* A session is selected, not navigated to: it gets the soft recessed fill the
+   rows already used, not the nav rail's full ink. Same travel, lower voice. */
+.pb-session-highlight {
+  border-radius: 10px;
+  background: var(--surface-2);
 }
 
 .pb-stat-chip {
@@ -323,7 +526,7 @@ body {
      under something, not under the bare canvas. Falls back to an opaque
      surface where backdrop-filter is unsupported. */
   background: var(--surface);
-  background: color-mix(in oklab, var(--surface) 82%, transparent);
+  background: color-mix(in oklab, var(--surface) 72%, transparent);
   backdrop-filter: blur(10px) saturate(1.05);
   -webkit-backdrop-filter: blur(10px) saturate(1.05);
   border-bottom: 1px solid var(--line);
@@ -593,16 +796,32 @@ body {
   }
 }
 
-/* Ambient chat atmosphere: two blurred sage/white blobs drifting very slowly
-   behind the benchmark thread. Transform-only animation (GPU-cheap), opaque
-   cards float above it, and the global prefers-reduced-motion rule freezes it.
-   It is air, not decoration: chroma stays whisper-low in both themes. */
+/* Ambient atmosphere: two soft mauve/teal blobs drifting behind the console.
+   Transform-only animation (GPU-cheap), glass cards float above it, and the
+   global prefers-reduced-motion rule freezes it. It is air, not decoration:
+   chroma stays low, and the drift is wide enough to actually read as motion. */
 .pb-atmosphere {
-  position: absolute;
+  /* Fixed, not absolute: it belongs to the shell, so every route has something
+     behind its glass. Content scrolls across a stationary wash, which is what
+     makes a translucent card visibly change colour as it moves. */
+  position: fixed;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
+  /* Two corner blobs left a pale dead zone straight down the middle — exactly
+     where every card sits. Glass over nothing renders as flat white, which is
+     why the effect was invisible. This wash gives the centre column a backdrop. */
+  /* The palette's one warm/cool opposition: mauve (328deg) at the head against
+     teal (224deg) at the foot. Both are pulled below the canvas in lightness as
+     well, so the glass has BOTH a hue shift and a value step to reveal — which
+     is why this reads more than the hueless set it replaces. */
+  /* Held light and faint: a strong static wash of the same hue as the drifting
+     blobs masks their motion. Keeping it thin lets the moving blobs read as the
+     thing that actually moves, and keeps the canvas whiter. */
+  background:
+    radial-gradient(155% 85% at 50% -5%, oklch(0.895 0.015 328 / 0.30) 0%, transparent 62%),
+    radial-gradient(145% 80% at 50% 105%, oklch(0.905 0.017 226 / 0.28) 0%, transparent 58%);
 }
 
 .pb-atmosphere::before,
@@ -619,52 +838,64 @@ body {
 }
 
 .pb-atmosphere::before {
-  top: -22%;
-  left: -12%;
-  background: radial-gradient(closest-side, oklch(0.88 0.055 152 / 0.42) 0%, oklch(0.88 0.055 152 / 0.18) 45%, transparent 72%);
-  animation: pb-drift-a 16s ease-in-out infinite alternate;
+  top: -10%;
+  left: 16%;
+  background: radial-gradient(closest-side, oklch(0.855 0.030 328 / 0.56) 0%, oklch(0.855 0.030 328 / 0.24) 45%, transparent 72%);
+  animation: pb-drift-a 12s ease-in-out infinite alternate;
 }
 
 .pb-atmosphere::after {
-  bottom: -25%;
-  right: -15%;
-  background: radial-gradient(closest-side, oklch(0.985 0.006 165 / 0.85) 0%, oklch(0.985 0.006 165 / 0.35) 45%, transparent 72%);
-  animation: pb-drift-b 21s ease-in-out infinite alternate;
+  bottom: -16%;
+  right: 12%;
+  background: radial-gradient(closest-side, oklch(0.868 0.032 226 / 0.56) 0%, oklch(0.868 0.032 226 / 0.24) 45%, transparent 72%);
+  animation: pb-drift-b 15s ease-in-out infinite alternate;
+}
+
+:root[data-theme="dark"] .pb-atmosphere {
+  background:
+    radial-gradient(155% 85% at 50% -5%, oklch(0.300 0.032 328 / 0.62) 0%, transparent 62%),
+    radial-gradient(145% 80% at 50% 105%, oklch(0.288 0.036 226 / 0.66) 0%, transparent 58%);
 }
 
 :root[data-theme="dark"] .pb-atmosphere::before {
-  background: radial-gradient(closest-side, oklch(0.38 0.06 152 / 0.34) 0%, oklch(0.38 0.06 152 / 0.14) 45%, transparent 72%);
+  background: radial-gradient(closest-side, oklch(0.336 0.038 328 / 0.75) 0%, oklch(0.336 0.038 328 / 0.32) 45%, transparent 72%);
 }
 
 :root[data-theme="dark"] .pb-atmosphere::after {
-  background: radial-gradient(closest-side, oklch(0.30 0.03 200 / 0.48) 0%, oklch(0.30 0.03 200 / 0.20) 45%, transparent 72%);
+  background: radial-gradient(closest-side, oklch(0.318 0.042 226 / 0.78) 0%, oklch(0.318 0.042 226 / 0.34) 45%, transparent 72%);
 }
 
 @media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .pb-atmosphere {
+    background:
+      radial-gradient(155% 85% at 50% -5%, oklch(0.300 0.032 328 / 0.62) 0%, transparent 62%),
+      radial-gradient(145% 80% at 50% 105%, oklch(0.288 0.036 226 / 0.66) 0%, transparent 58%);
+  }
+
   :root:not([data-theme="light"]) .pb-atmosphere::before {
-    background: radial-gradient(closest-side, oklch(0.38 0.06 152 / 0.34) 0%, oklch(0.38 0.06 152 / 0.14) 45%, transparent 72%);
+    background: radial-gradient(closest-side, oklch(0.336 0.038 328 / 0.75) 0%, oklch(0.336 0.038 328 / 0.32) 45%, transparent 72%);
   }
 
   :root:not([data-theme="light"]) .pb-atmosphere::after {
-    background: radial-gradient(closest-side, oklch(0.30 0.03 200 / 0.48) 0%, oklch(0.30 0.03 200 / 0.20) 45%, transparent 72%);
+    background: radial-gradient(closest-side, oklch(0.318 0.042 226 / 0.78) 0%, oklch(0.318 0.042 226 / 0.34) 45%, transparent 72%);
   }
 }
 
 @keyframes pb-drift-a {
   from {
-    transform: translate3d(-6%, -4%, 0) scale(0.95);
+    transform: translate3d(-18%, -12%, 0) scale(0.88);
   }
   to {
-    transform: translate3d(34%, 22%, 0) scale(1.3);
+    transform: translate3d(44%, 30%, 0) scale(1.4);
   }
 }
 
 @keyframes pb-drift-b {
   from {
-    transform: translate3d(6%, 4%, 0) scale(1.2);
+    transform: translate3d(16%, 12%, 0) scale(1.32);
   }
   to {
-    transform: translate3d(-30%, -20%, 0) scale(0.85);
+    transform: translate3d(-42%, -28%, 0) scale(0.8);
   }
 }
 
@@ -683,5 +914,58 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Glass: a translucent surface that lets what is BEHIND it show through.
+   It only means something where content actually passes underneath — the
+   sticky page header, the composer the thread scrolls beneath, floating menus
+   and dialogs, and the chat cards that sit over the drifting atmosphere. On a
+   card resting against a flat canvas there is nothing behind to reveal, so it
+   would cost a compositor layer to show a blurred copy of a solid colour.
+
+   Note the deliberate asymmetry with .pb-atmosphere: `filter: blur` on an
+   ANIMATED element re-rasterises every frame (measured here at 60fps -> 16fps),
+   which is why the drifting blobs bake their softness into gradient stops
+   instead. `backdrop-filter` on a STATIC element is a different cost: the blur
+   is recomputed when the backdrop moves, but the element itself is not being
+   animated, and it is GPU-composited. Measured, not assumed.
+
+   The lift is a single thin highlight along the top edge, not a diagonal
+   light-to-shadow sweep across the whole face. The full raking gloss painted a
+   visible gradient onto every card — bright top-left corner, shaded
+   bottom-right — which read as a gradient FILL rather than as glass. A frosted
+   pane is defined by its even body and its lit edge, so that is all this is. */
+.pb-glass {
+  background:
+    linear-gradient(180deg, var(--glass-sheen) 0%, transparent 32%),
+    color-mix(in oklab, var(--surface) 72%, transparent);
+  /* More opaque than before (72% vs 52%): at high translucency the moving
+     coloured atmosphere bled through and tinted each card unevenly, which also
+     read as a gradient. Saturate stays modest for the same reason. */
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  border: 1px solid var(--glass-edge);
+  border-top-color: var(--gloss-rim);
+}
+
+/* Floating surfaces sit further from the page, so they carry more blur and a
+   brighter edge to read as lifted rather than merely tinted. */
+.pb-glass-float {
+  background:
+    linear-gradient(180deg, var(--glass-sheen) 0%, transparent 32%),
+    color-mix(in oklab, var(--surface) 80%, transparent);
+  backdrop-filter: blur(26px) saturate(1.25);
+  -webkit-backdrop-filter: blur(26px) saturate(1.25);
+  border: 1px solid var(--glass-edge);
+  border-top-color: var(--gloss-rim);
+}
+
+/* No backdrop-filter support: fall back to the opaque surface rather than a
+   washed-out translucent panel with unreadable text behind it. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .pb-glass,
+  .pb-glass-float {
+    background: var(--surface);
   }
 }

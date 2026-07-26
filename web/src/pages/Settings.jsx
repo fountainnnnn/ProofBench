@@ -5,9 +5,39 @@ import {
   listProviderKeys,
   saveProviderKey,
 } from "../api.js";
-import { BTN_DANGER, BTN_PRIMARY, BTN_SECONDARY, Collapse, INPUT, PAGE_HEADER, PAGE_TITLE, PANEL, Skeleton } from "../components/ui.jsx";
+import { BTN_DANGER, BTN_PRIMARY, BTN_SECONDARY, Collapse, INPUT, PAGE_HEADER, PAGE_TITLE, PANEL, SHEEN_SWIPE, Skeleton, useSelectionSheen } from "../components/ui.jsx";
 import HeaderActions from "../components/HeaderActions.jsx";
+import StatusIcon from "../components/StatusIcon.jsx";
 import { THEME_CHOICES, applyTheme, storedTheme } from "../theme.js";
+import daytonaLogo from "../assets/provider-logos/daytona.svg";
+import deepseekLogo from "../assets/provider-logos/deepseek.svg";
+import doublewordLogo from "../assets/provider-logos/doubleword.svg";
+import kimiLogo from "../assets/provider-logos/kimi.svg";
+import nosanaLogo from "../assets/provider-logos/nosana.svg";
+import openaiLogo from "../assets/provider-logos/openai.svg";
+import openrouterLogo from "../assets/provider-logos/openrouter.svg";
+import oxylabsLogo from "../assets/provider-logos/oxylabs.svg";
+
+/* Banner glyphs. Same 16px box and 1.7 stroke as the console's nav icons, so
+   the icon family stays one family. */
+function ReadyIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.2 2.4 2.4 4.6-5.2" />
+    </svg>
+  );
+}
+
+function BlockedIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10.6 3.9 2.5 18a1.6 1.6 0 0 0 1.4 2.4h16.2a1.6 1.6 0 0 0 1.4-2.4L13.4 3.9a1.6 1.6 0 0 0-2.8 0Z" />
+      <path d="M12 9.5v4" />
+      <path d="M12 17.1h.01" />
+    </svg>
+  );
+}
 
 // Readiness is a configuration check the server performs without contacting a
 // provider, so opening Settings never issues a billable request.
@@ -17,15 +47,20 @@ const READINESS = {
   missing: { word: "text-[var(--danger)]", label: "not configured" },
 };
 
-// Monogram tint pairs, cycled so adjacent services differ. Assignment is keyed
-// on the provider id (a fixed identity), not render order, so a service keeps
-// the same tile even when the list reorders as its status changes.
-const TILE_TINTS = [
-  "bg-[var(--ok-tint)] text-[var(--ok)]",
-  "bg-[var(--blue-tint)] text-[var(--blue)]",
-  "bg-[var(--warn-tint)] text-[var(--warn)]",
-  "bg-[var(--danger-tint)] text-[var(--danger)]",
-];
+// Local copies of provider marks keep Settings usable offline and preserve the
+// promise above that rendering this list never contacts a provider. `nosana_vlm`
+// is retained as an alias for older readiness fixtures and persisted responses.
+const PROVIDER_LOGOS = {
+  daytona: daytonaLogo,
+  deepseek: deepseekLogo,
+  doubleword: doublewordLogo,
+  moonshot: kimiLogo,
+  nosana: nosanaLogo,
+  nosana_vlm: nosanaLogo,
+  openai: openaiLogo,
+  openrouter: openrouterLogo,
+  oxylabs: oxylabsLogo,
+};
 
 function Chevron({ open }) {
   return (
@@ -47,10 +82,8 @@ function Chevron({ open }) {
 // One service = one row. The header line is always visible (icon, name, status);
 // its env-var breakdown and full capability sentence fold away behind the row's
 // own disclosure so the list reads as a short scannable index.
-/* Two characters, so the tile is legible without relying on its hue: a single
-   initial collided on six of eight services (three D, three O). Internal
-   capitals win where a name has them (DeepSeek -> DS, OpenRouter -> OR),
-   otherwise the first two letters (Daytona -> Da, Doubleword -> Do). */
+/* Unknown future providers fall back to a two-character monogram, so a newly
+   added backend entry never leaves an empty tile while its logo is sourced. */
 function monogram(label) {
   const name = String(label || "?").trim();
   const capitals = name.replace(/[^A-Za-z]/g, "").match(/[A-Z]/g) || [];
@@ -60,7 +93,87 @@ function monogram(label) {
   return (letters[0] || "?").toUpperCase();
 }
 
-function ServiceRow({ item, tile }) {
+function ServiceLogo({ item }) {
+  const logo = PROVIDER_LOGOS[item.provider];
+  return (
+    <span
+      className={`grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-[8px] ${
+        logo
+          ? "bg-[oklch(0.985_0.004_210)] p-1"
+          : "bg-[var(--surface-2)] text-[12px] font-semibold text-[var(--ink-2)]"
+      }`}
+      aria-hidden="true"
+    >
+      {logo ? (
+        <img
+          src={logo}
+          alt=""
+          className="h-full w-full object-contain"
+          data-provider-logo={item.provider}
+        />
+      ) : (
+        monogram(item.label)
+      )}
+    </span>
+  );
+}
+
+/* A missing required variable is the one thing an operator can act on from this
+   list, so the action sits on that row rather than in a form further down the
+   page. The value lives in this component's state only: it is posted once, is
+   never written to storage, and is never read back — the row's word flips from
+   "missing" to "set" instead. */
+function MissingEnvField({ env, onSave }) {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const id = useId();
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (saving || !value) return;
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(env, value);
+      setValue("");
+    } catch (failure) {
+      setError(failure.message || "Could not save this provider credential.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="mt-2 flex items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <input
+          type="password"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="Paste value"
+          aria-label={`Value for ${env}`}
+          aria-invalid={error ? "true" : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+          autoComplete="off"
+          disabled={saving}
+          className={`${INPUT} text-[12px]`}
+          required
+        />
+        {error && (
+          <p id={`${id}-error`} role="alert" className="mt-1 text-[12px] text-[var(--danger)]">
+            {error}
+          </p>
+        )}
+      </div>
+      <button type="submit" disabled={saving || !value} className={`${BTN_SECONDARY} shrink-0`}>
+        {saving ? "Saving" : "Save"}
+      </button>
+    </form>
+  );
+}
+
+function ServiceRow({ item, canWrite, onSaveMissing }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const st = READINESS[item.status] || READINESS.missing;
@@ -78,12 +191,7 @@ function ServiceRow({ item, tile }) {
         onClick={() => setOpen((value) => !value)}
         className="flex w-full items-center gap-3 py-3 text-left focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
       >
-        <span
-          className={`grid h-7 w-7 shrink-0 place-items-center rounded-[8px] text-[12px] font-semibold ${tile}`}
-          aria-hidden="true"
-        >
-          {monogram(item.label)}
-        </span>
+        <ServiceLogo item={item} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">
             <span className="truncate text-[13px] font-medium text-[var(--ink)]">{item.label}</span>
@@ -105,13 +213,18 @@ function ServiceRow({ item, tile }) {
               {item.required.map((env) => {
                 const isMissing = missing.has(env);
                 return (
-                  <li key={env} className="flex items-center gap-x-2.5 px-3 py-2">
-                    <code className="pb-mono pb-contain flex-1 text-[12px] text-[var(--ink)]">{env}</code>
-                    <span
-                      className={`shrink-0 text-[12px] font-medium ${isMissing ? "text-[var(--danger)]" : "text-[var(--ink-3)]"}`}
-                    >
-                      {isMissing ? "missing" : "set"}
-                    </span>
+                  <li key={env} className="px-3 py-2">
+                    <div className="flex items-center gap-x-2.5">
+                      <code className="pb-mono pb-contain flex-1 text-[12px] text-[var(--ink)]">{env}</code>
+                      <span
+                        className={`shrink-0 text-[12px] font-medium ${isMissing ? "text-[var(--danger)]" : "text-[var(--ink-3)]"}`}
+                      >
+                        {isMissing ? "missing" : "set"}
+                      </span>
+                    </div>
+                    {isMissing && canWrite && (
+                      <MissingEnvField env={env} onSave={onSaveMissing} />
+                    )}
                   </li>
                 );
               })}
@@ -126,6 +239,7 @@ function ServiceRow({ item, tile }) {
 
 export default function Settings() {
   const [theme, setThemeState] = useState(storedTheme);
+  const themeSheen = useSelectionSheen(theme);
   const setTheme = (value) => {
     setThemeState(value);
     applyTheme(value);
@@ -160,6 +274,12 @@ export default function Settings() {
     });
   };
 
+  const refreshReadiness = async () => {
+    const data = await getProviderReadiness();
+    setReadiness(data);
+    setReadinessFailed(false);
+  };
+
   useEffect(() => {
     let alive = true;
     getProviderReadiness()
@@ -178,12 +298,20 @@ export default function Settings() {
       await saveProviderKey(envName.trim().toUpperCase(), secretValue);
       setEnvName("");
       setSecretValue("");
-      await refreshProviderKeys();
+      await Promise.all([refreshProviderKeys(), refreshReadiness()]);
     } catch (error) {
       setKeyError(error.message);
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveMissingProviderKey = async (env, value) => {
+    if (!providerPolicy.runtimeWritesEnabled) {
+      throw new Error("Runtime credential changes are disabled in this environment.");
+    }
+    await saveProviderKey(env, value);
+    await Promise.all([refreshProviderKeys(), refreshReadiness()]);
   };
 
   const removeProviderKey = async (env) => {
@@ -192,7 +320,7 @@ export default function Settings() {
     setKeyError("");
     try {
       await deleteProviderKey(env);
-      await refreshProviderKeys();
+      await Promise.all([refreshProviderKeys(), refreshReadiness()]);
       setConfirmingRemoval(null);
     } catch (error) {
       setKeyError(error.message);
@@ -202,14 +330,6 @@ export default function Settings() {
   };
 
   const providers = readiness?.providers || [];
-  // Fixed tint map keyed on provider identity (canonical, alphabetical), so the
-  // tile is stable per service and independent of the display order below.
-  const tintIndex = {};
-  [...providers]
-    .map((p) => p.provider)
-    .sort()
-    .forEach((id, i) => { tintIndex[id] = i; });
-  const tintFor = (id) => TILE_TINTS[(tintIndex[id] ?? 0) % TILE_TINTS.length];
   // Daytona first, then ready services, then partial, then unconfigured.
   const rank = (p) => {
     if (p.provider === "daytona") return 0;
@@ -260,11 +380,13 @@ export default function Settings() {
     </p>
   ) : null;
 
+  /* Every key in this list is present by definition, so a status dot on each
+     row marks nothing: it is the same signal repeated for every entry. The
+     row's presence is the signal. */
   const managedKeyList = providerKeys.length > 0 ? (
     <ul className="mt-4 divide-y divide-[var(--line)] overflow-hidden rounded-[12px] bg-[var(--surface-2)]">
       {providerKeys.map((key) => (
         <li key={key.env} className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 py-3">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--ok)]" aria-hidden="true" />
           <code className="pb-mono pb-contain text-[12px] text-[var(--ink)]">{key.env}</code>
           <span className="text-[12px] text-[var(--ink-3)]">{key.source}</span>
           {key.source === "settings" &&
@@ -329,12 +451,17 @@ export default function Settings() {
             }`}
             role="status"
           >
+            {/* A banner states an outcome, so it carries the glyph for that
+                outcome. A bare dot is a status colour with no meaning of its
+                own, which is fine at row density and weak at this size. */}
             <span
-              className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
-                readiness.run_ready ? "bg-[var(--ok)]" : "bg-[var(--danger)]"
+              className={`mt-px shrink-0 ${
+                readiness.run_ready ? "text-[var(--ok)]" : "text-[var(--danger)]"
               }`}
               aria-hidden="true"
-            />
+            >
+              {readiness.run_ready ? <ReadyIcon /> : <BlockedIcon />}
+            </span>
             <p className="pb-contain text-[13px] leading-relaxed text-[var(--ink)]">
               {readiness.run_ready
                 ? "Ready to run real benchmarks."
@@ -356,7 +483,7 @@ export default function Settings() {
 
           {readinessFailed ? (
             <div className="mt-4 flex items-center gap-2.5 rounded-[12px] bg-[var(--warn-tint)] px-4 py-3">
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--warn)]" aria-hidden="true" />
+              <StatusIcon tone="warn" size={13} className="mt-px text-[var(--warn)]" />
               <p className="text-[13px] text-[var(--ink)]">Provider readiness is unavailable right now.</p>
             </div>
           ) : !readiness ? (
@@ -372,7 +499,12 @@ export default function Settings() {
           ) : (
             <ul aria-label="Services" className="mt-2 divide-y divide-[var(--line)]">
               {ordered.map((item) => (
-                <ServiceRow key={item.provider} item={item} tile={tintFor(item.provider)} />
+                <ServiceRow
+                  key={item.provider}
+                  item={item}
+                  canWrite={providerPolicy.runtimeWritesEnabled}
+                  onSaveMissing={saveMissingProviderKey}
+                />
               ))}
             </ul>
           )}
@@ -439,7 +571,7 @@ export default function Settings() {
                 onClick={() => setTheme(choice.value)}
                 className={`min-h-8 rounded-full px-3.5 text-[13px] font-medium transition-colors duration-150 ${
                   theme === choice.value
-                    ? "bg-[var(--ink)] text-[var(--surface)]"
+                    ? `bg-[var(--ink)] text-[var(--surface)] ${themeSheen ? SHEEN_SWIPE : ""}`
                     : "text-[var(--ink-2)] hover:text-[var(--ink)]"
                 }`}
               >

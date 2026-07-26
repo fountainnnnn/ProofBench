@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <!-- Versioned href: browsers cache favicons in a store that survives a hard
+         reload, so a recoloured icon keeps rendering from the old cache until
+         the URL itself changes. Bump this when logo.svg changes. -->
+    <link rel="icon" type="image/svg+xml" href="/logo.svg?v=4" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ProofBench</title>
     <meta

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { safeVisibleText } from "../displaySafety.js";
-import { BTN_PRIMARY, BTN_SECONDARY } from "./ui.jsx";
+import { phaseTone } from "../phaseLabel.js";
+import StatusIcon from "./StatusIcon.jsx";
+import { BTN_PRIMARY, BTN_SECONDARY, FlowHighlight, useFlowHighlight } from "./ui.jsx";
 
 function phaseColor(phase) {
   const p = String(phase || "").toLowerCase();
@@ -26,11 +28,49 @@ function relativeAge(value) {
   return `${Math.floor(hrs / 24)}d`;
 }
 
-function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, disabled, compact = false }) {
+/* Row actions are icons: a session row is narrow, and a word-wide button next
+   to a truncating title steals the space the title needs. Each keeps its
+   accessible name and a 36px hit area. */
+const ICON_BTN =
+  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] " +
+  "focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-1 " +
+  "focus-visible:outline-[var(--accent)] disabled:opacity-40";
+
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M10 4h4" />
+      <path d="M6.5 7l.7 12a1.5 1.5 0 0 0 1.5 1.4h6.6a1.5 1.5 0 0 0 1.5-1.4L17.5 7" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}
+
+export function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, disabled, compact = false }) {
   const [confirmingSessionId, setConfirmingSessionId] = useState(null);
+  /* Re-keyed on the list length as well: rows arriving or being deleted shift
+     every row below them, and the pill has to follow. */
+  const flow = useFlowHighlight(`${activeId}:${sessions.length}:${compact}`);
 
   return (
-    <ul className="flex flex-col gap-0.5">
+    <ul ref={flow.containerRef} className="relative flex flex-col gap-0.5">
+      <FlowHighlight box={flow.box} className="pb-session-highlight" />
       {sessions.map((s) => {
         const active = s.id === activeId;
         const safeTitle = safeVisibleText(s.title || "Untitled");
@@ -39,9 +79,8 @@ function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, d
         return (
           <li
             key={s.id}
-            className={`group flex items-center gap-1 rounded-[10px] ${
-              active ? "bg-[var(--surface-2)]" : ""
-            }`}
+            data-flow-active={active ? "true" : undefined}
+            className="pb-flow-row group flex items-center gap-1 rounded-[10px]"
           >
             <button
               type="button"
@@ -52,10 +91,12 @@ function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, d
               }`}
             >
               <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: phaseColor(s.phase) }}
+                className="shrink-0"
+                style={{ color: phaseColor(s.phase) }}
                 title={safeVisibleText(s.phase)}
-              />
+              >
+                <StatusIcon tone={phaseTone(s.phase)} size={13} />
+              </span>
               <span className="min-w-0 flex-1 truncate">{safeTitle}</span>
               {age && (
                 <span
@@ -68,7 +109,7 @@ function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, d
             </button>
             {confirming ? (
               <span
-                className="flex shrink-0 items-center gap-1"
+                className="mr-1 flex shrink-0 items-center gap-0.5"
                 role="group"
                 aria-label={`Confirm deletion of ${safeTitle}`}
               >
@@ -76,17 +117,21 @@ function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, d
                   type="button"
                   onClick={() => { setConfirmingSessionId(null); onDelete(s); }}
                   disabled={disabled}
-                  className="min-h-10 rounded-[8px] px-2 text-[12px] font-medium text-[var(--danger)] hover:bg-[var(--danger-tint)] disabled:opacity-40"
+                  title="Delete permanently"
+                  aria-label={`Confirm deleting ${safeTitle}`}
+                  className={`${ICON_BTN} bg-[var(--danger-tint)] text-[var(--danger)] hover:bg-[color-mix(in_oklab,var(--danger)_16%,var(--danger-tint))]`}
                 >
-                  Confirm
+                  <CheckIcon />
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirmingSessionId(null)}
                   disabled={disabled}
-                  className="min-h-10 rounded-[8px] px-2 text-[12px] text-[var(--ink-2)] hover:bg-[var(--surface-2)] disabled:opacity-40"
+                  title="Keep this session"
+                  aria-label={`Cancel deleting ${safeTitle}`}
+                  className={`${ICON_BTN} text-[var(--ink-2)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]`}
                 >
-                  Cancel
+                  <CloseIcon />
                 </button>
               </span>
             ) : (
@@ -94,11 +139,11 @@ function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, d
                 type="button"
                 onClick={() => setConfirmingSessionId(s.id)}
                 disabled={s.is_running || disabled}
-                className="mr-1 min-h-10 shrink-0 rounded-[8px] px-2 text-[12px] text-[var(--ink-3)] transition-opacity duration-150 hover:bg-[var(--danger-tint)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-30 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100"
+                className={`${ICON_BTN} mr-1 text-[var(--ink-3)] transition-opacity duration-150 hover:bg-[var(--danger-tint)] hover:text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-30 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100`}
                 title={s.is_running ? "Stop this benchmark before deleting it" : "Delete session"}
                 aria-label={`Delete ${safeTitle}`}
               >
-                Delete
+                <TrashIcon />
               </button>
             )}
           </li>
@@ -109,48 +154,15 @@ function SessionList({ sessions, activeId, onSelect, onNew, onDelete, onClose, d
 }
 
 /**
- * Session list in two shapes.
- * `variant="rail"`: the persistent right rail on wide screens, resting on the
- * canvas like any other panel. `variant="drawer"` (default): the small-screen
- * dialog, opened from the header.
+ * The small-screen sessions drawer, opened from the Benchmark header. On md and
+ * up the list lives in the console's left sidebar instead (Shell.jsx), where a
+ * conversation history is conventionally found.
  */
-export default function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClose, disabled = false, variant = "drawer" }) {
-  if (variant === "rail") {
-    return (
-      <section
-        aria-label="Sessions"
-        className="flex h-full w-full flex-col"
-      >
-        <div className="flex max-h-full min-h-0 flex-col">
-          <div className="flex shrink-0 items-baseline justify-between gap-2 px-2 pb-2 pt-1">
-            <h2 className="pb-eyebrow">Sessions</h2>
-            <span className="pb-mono text-[12px] text-[var(--ink-3)]">{sessions.length}</span>
-          </div>
-          {sessions.length === 0 ? (
-            <p className="px-2 pb-2 pt-1 text-[13px] text-[var(--ink-2)]">
-              Start a new benchmark to create a session.
-            </p>
-          ) : (
-            <div className="min-h-0 overflow-y-auto pb-1">
-              <SessionList
-                sessions={sessions}
-                activeId={activeId}
-                onSelect={onSelect}
-                onDelete={onDelete}
-                disabled={disabled}
-                compact
-              />
-            </div>
-          )}
-        </div>
-      </section>
-    );
-  }
-
+export default function Sidebar({ sessions, activeId, onSelect, onNew, onDelete, onClose, disabled = false }) {
   return (
     <section
       aria-label="Benchmark sessions"
-      className="flex h-full w-[min(340px,calc(100vw-2rem))] shrink-0 flex-col border-r border-[var(--line)] bg-[var(--surface)] shadow-lift"
+      className="pb-glass-float flex h-full w-[min(340px,calc(100vw-2rem))] shrink-0 flex-col shadow-lift"
     >
       <div className="flex items-center gap-2 border-b border-[var(--line)] px-3 py-3">
         <button type="button" onClick={onNew} disabled={disabled} className={`${BTN_PRIMARY} flex-1`}>

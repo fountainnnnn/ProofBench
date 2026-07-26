@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import Logo from "../components/Logo.jsx";
+import StatusIcon from "../components/StatusIcon.jsx";
 import { BTN_PRIMARY, BTN_SECONDARY, PANEL } from "../components/ui.jsx";
 
 const PRINCIPLES = [
@@ -48,7 +49,7 @@ function BasisCell({ basis }) {
   }
   return (
     <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-dashed border-[var(--line-strong)] px-2.5 py-0.5 text-[12px] font-medium text-[var(--ink-2)]">
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-current" />
+      <StatusIcon tone="docs" size={12} />
       Docs only, not executed
     </span>
   );

@@ -20,7 +20,7 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
   const isAssessment = safeSpec?.benchmark_type === "tool_assessment";
 
   return (
-    <section className={`${PANEL} min-w-0 p-5`} aria-label="Benchmark spec">
+    <section className="pb-glass min-w-0 rounded-[24px] p-5 shadow-[var(--shadow-card)]" aria-label="Benchmark spec">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">Benchmark spec</h2>
         {safeSpec?.category && (

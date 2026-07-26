@@ -62,6 +62,11 @@ BUILTIN_PROVIDER_HOSTS = {
     "api.deepseek.com", "api.doubleword.ai", "api.moonshot.ai", "openrouter.ai",
 }
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}_(?:API_KEY|BASE_URL|MODEL)$")
+# Oxylabs authenticates with a username/password pair rather than an API key, so
+# readiness asks for two names the pattern above cannot express. They are listed
+# individually on purpose: a broader `_USERNAME`/`_PASSWORD` suffix rule would
+# let a caller name any credential it liked.
+EXTRA_PROVIDER_ENV_NAMES = frozenset({"OXYLABS_USERNAME", "OXYLABS_PASSWORD"})
 SYNTHETIC_LOCK = threading.Lock()
 RETENTION_STARTED = False
 LOGGER = logging.getLogger("proofbench.api")
@@ -325,6 +330,10 @@ def provider_environment(tenant_id: str) -> dict[str, str]:
 def _runtime_credentials_enabled() -> bool:
     return (os.environ.get("PROOFBENCH_INSECURE_DEV") == "1" and
             os.environ.get("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "0") == "1")
+
+
+def _is_provider_env_name(name: str) -> bool:
+    return bool(ENV_NAME_RE.fullmatch(name)) or name in EXTRA_PROVIDER_ENV_NAMES
 
 
 def _validate_provider_setting(name: str, value: str) -> None:
@@ -924,8 +933,10 @@ async def api_save_provider_key(request: Request, identity: Identity = Depends(a
                             detail="runtime credentials are disabled; configure deployment secrets")
     payload = _payload(ProviderKeyRequest, await _json(request))
     env = payload.env.upper()
-    if not ENV_NAME_RE.fullmatch(env):
-        raise HTTPException(status_code=422, detail="env must name a provider API_KEY, BASE_URL, or MODEL")
+    if not _is_provider_env_name(env):
+        raise HTTPException(status_code=422,
+                            detail="env must name a provider API_KEY, BASE_URL, MODEL, "
+                                   "or an Oxylabs username or password")
     _validate_provider_setting(env, payload.value)
     provider_credentials.set(identity.tenant_id, env, payload.value)
     return {"env": env, "source": "settings"}
@@ -937,7 +948,7 @@ def api_delete_provider_key(env: str, identity: Identity = Depends(authenticate)
         raise HTTPException(status_code=503,
                             detail="runtime credentials are disabled; configure deployment secrets")
     env = env.upper()
-    if not ENV_NAME_RE.fullmatch(env):
+    if not _is_provider_env_name(env):
         raise HTTPException(status_code=422, detail="invalid environment variable name")
     provider_credentials.delete(identity.tenant_id, env)
     return {"ok": True}

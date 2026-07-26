@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { applyTheme, storedTheme } from "../theme.js";
 import { useProviderReadiness } from "../useProviderReadiness.js";
+import StatusIcon from "./StatusIcon.jsx";
 
 /* The shared right-hand cluster of every console page header: live run
    readiness (deep-linking to Settings) and the theme toggle. Page-specific
@@ -63,26 +64,21 @@ function ThemeToggle() {
   );
 }
 
+/* Status chrome is silent when healthy. A deployment that can run says nothing:
+   a green badge repeated on every page is decoration, and Settings already
+   holds the full readiness picture. Only the state that needs an action, and
+   that would otherwise be discovered by a run failing, earns space here. */
 function ReadinessChip() {
   const { readiness } = useProviderReadiness();
-  if (!readiness) return null;
-  const ready = readiness.run_ready === true;
+  if (!readiness || readiness.run_ready === true) return null;
   return (
     <Link
       to="/app/settings"
-      title={
-        ready
-          ? "All essential providers are configured. Open Settings for details."
-          : "A required provider is not configured. Open Settings to fix it."
-      }
-      className={`hidden shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors duration-150 sm:inline-flex ${
-        ready
-          ? "bg-[var(--ok-tint)] text-[var(--ok)] hover:bg-[color-mix(in_oklab,var(--ok)_10%,var(--ok-tint))]"
-          : "bg-[var(--warn-tint)] text-[var(--warn)] hover:bg-[color-mix(in_oklab,var(--warn)_10%,var(--warn-tint))]"
-      }`}
+      title="A required provider is not configured. Open Settings to fix it."
+      className="hidden shrink-0 items-center gap-1.5 rounded-full bg-[var(--warn-tint)] px-3 py-1.5 text-[12px] font-medium text-[var(--warn)] transition-colors duration-150 hover:bg-[color-mix(in_oklab,var(--warn)_10%,var(--warn-tint))] sm:inline-flex"
     >
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-      {ready ? "Ready to run" : "Setup needed"}
+      <StatusIcon tone="warn" size={13} />
+      Setup needed
     </Link>
   );
 }

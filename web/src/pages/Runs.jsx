@@ -10,7 +10,8 @@ import { listSessions } from "../api.js";
 import { safeVisibleText } from "../displaySafety.js";
 import { authoritativeProvenance } from "../provenance.js";
 import { relativeTime } from "../relativeTime.js";
-import { BTN_PRIMARY, INPUT, PAGE_HEADER, PAGE_TITLE, InlineError, PANEL, Skeleton } from "../components/ui.jsx";
+import { phaseLabel } from "../phaseLabel.js";
+import { BTN_PRIMARY, INPUT, PAGE_HEADER, PAGE_TITLE, InlineError, PANEL, SHEEN_SWIPE, Skeleton, useSelectionSheen } from "../components/ui.jsx";
 import HeaderActions from "../components/HeaderActions.jsx";
 
 const PHASE_BADGE = {
@@ -55,7 +56,7 @@ function EvidenceBadge({ session }) {
 // under the session title so the authoritative provenance column is never echoed
 // by a second coloured chip, nor by a whole column half-duplicating it.
 function PhaseLabel({ phase, evidenceLabel }) {
-  const label = safeVisibleText(phase || "unknown").toLowerCase().replace(/_/g, " ");
+  const label = phaseLabel(safeVisibleText(phase || "unknown"));
   // When the phase is what produced the evidence label ("failed" -> "Failed"),
   // the subtitle would print the badge's own word a second time on one row.
   if (label === String(evidenceLabel || "").toLowerCase()) return null;
@@ -73,11 +74,17 @@ function RunTime({ value }) {
   );
 }
 
+/* Filter labels come from the shared phase vocabulary, not hand-typed here:
+   this chip said "Done" while every other surface said "completed". The
+   vocabulary is lowercase because it reads mid-sentence elsewhere; a standalone
+   chip is sentence-case. */
+const sentenceCase = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+
 const PHASE_FILTERS = [
   { key: "all", label: "All" },
-  { key: "done", label: "Done" },
+  { key: "done", label: sentenceCase(phaseLabel("done")) },
   { key: "inprogress", label: "In progress" },
-  { key: "failed", label: "Failed" },
+  { key: "failed", label: sentenceCase(phaseLabel("failed")) },
 ];
 
 function matchesPhase(phase, filter) {
@@ -112,6 +119,7 @@ export default function Runs() {
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
   const [phaseFilter, setPhaseFilter] = useState("all");
+  const filterSheen = useSelectionSheen(phaseFilter);
 
   const load = async () => {
     try {
@@ -216,7 +224,7 @@ export default function Runs() {
                   onClick={() => setPhaseFilter(key)}
                   className={`min-h-8 rounded-full px-3 text-[12px] font-medium transition-colors duration-150 ease-out-quart ${
                     active
-                      ? "bg-[var(--ink)] text-[var(--surface)]"
+                      ? `bg-[var(--ink)] text-[var(--surface)] ${filterSheen ? SHEEN_SWIPE : ""}`
                       : "bg-[var(--surface-2)] text-[var(--ink-2)] hover:text-[var(--ink)]"
                   }`}
                 >

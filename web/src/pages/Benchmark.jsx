@@ -23,25 +23,8 @@ import { resolveDatasetSelection } from "../datasetSelection.js";
 import { acquireOperation, releaseOperation } from "../operationGuard.js";
 import { authoritativeProvenance, hasAuthoritativeProvenance } from "../provenance.js";
 import { safeVisibleText } from "../displaySafety.js";
-
-/* The persistent session rail exists only at xl and up. It is mounted
-   conditionally rather than CSS-hidden so narrow viewports (and jsdom) never
-   carry a duplicate session list in the document. */
-const RAIL_QUERY = "(min-width: 1280px)";
-
-function useSessionRail() {
-  const [wide, setWide] = useState(() =>
-    typeof window.matchMedia === "function" && window.matchMedia(RAIL_QUERY).matches
-  );
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return undefined;
-    const mql = window.matchMedia(RAIL_QUERY);
-    const onChange = (event) => setWide(event.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-  return wide;
-}
+import { phaseLabel, phaseTone } from "../phaseLabel.js";
+import StatusIcon from "../components/StatusIcon.jsx";
 
 const MAX_LOG_LINES = 400;
 const MAX_TRACE_EVENTS = 300;
@@ -920,11 +903,11 @@ export default function Benchmark() {
   // Display-only: a restored run reports its own provenance, everything this
   // client can newly write is real. There is no mode the user can change.
   const provenanceMode = state.provenance?.mode || RUN_MODE;
-  const railVisible = useSessionRail();
 
+  // No background of its own: the shell's atmosphere sits behind every route,
+  // and an opaque fill here would hide it from the glass above.
   return (
-    <div className="relative flex h-full min-h-0 w-full overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
-      <div aria-hidden="true" className="pb-atmosphere" />
+    <div className="relative flex h-full min-h-0 w-full overflow-hidden text-[var(--ink)]">
       {sessionsOpen && (
         <div
           className="absolute inset-0 z-30 flex bg-[color-mix(in_oklab,var(--ink)_25%,transparent)]"
@@ -972,7 +955,7 @@ export default function Benchmark() {
                 aria-expanded={sessionsOpen}
                 aria-controls="benchmark-sessions-panel"
                 onClick={() => setSessionsOpen(true)}
-                className={`${BTN_SECONDARY} shrink-0 ${railVisible ? "hidden" : ""}`}
+                className={`${BTN_SECONDARY} shrink-0 md:hidden`}
               >
                 Sessions ({sessions.length})
               </button>
@@ -999,8 +982,8 @@ export default function Benchmark() {
                   }`}
                   aria-live="polite"
                 >
-                  <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-                  {safeVisibleText(runPhase).toLowerCase().replaceAll("_", " ")}
+                  <StatusIcon tone={phaseTone(runPhase)} size={12} />
+                  {phaseLabel(safeVisibleText(runPhase))}
                 </span>
               )}
               {streamStatus.state !== "idle" && (
@@ -1082,23 +1065,6 @@ export default function Benchmark() {
         )}
       </div>
 
-      {/* Persistent session rail on wide screens; the drawer covers the rest.
-          The rail is a pane of the frame, not a floating card: it mirrors the
-          left sidebar with its own tint and a hairline seam. */}
-      {railVisible && (
-      <aside className="relative flex w-[280px] shrink-0 flex-col border-l border-[var(--line)] bg-[var(--sidebar-bg)] px-3 py-4">
-        <div className="flex min-h-0 flex-1 flex-col">
-          <Sidebar
-            variant="rail"
-            sessions={sessions}
-            activeId={activeId}
-            onSelect={onSelect}
-            onDelete={onDelete}
-            disabled={uploadingDataset}
-          />
-        </div>
-      </aside>
-      )}
     </div>
   );
 }

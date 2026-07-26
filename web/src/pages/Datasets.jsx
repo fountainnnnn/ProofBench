@@ -22,6 +22,11 @@ const isCsv = (f) => f.type === "text/csv" || /\.csv$/i.test(f.name);
 
 // Compact "Use dataset" affordance: the secondary weight at row density.
 const USE_BTN = `${BTN_SECONDARY.replace("min-h-10", "min-h-8")} h-8`;
+// A solid, theme-aware light gray for the upload panel's recessed controls.
+// Mixing the two neutral surfaces keeps it quieter than --surface-2 without
+// inheriting any of the surrounding glass gradient.
+const UPLOAD_BOX =
+  "bg-[color-mix(in_oklab,var(--surface-2)_38%,var(--surface))] transition-colors duration-150 ease-out-quart hover:bg-[color-mix(in_oklab,var(--surface-2)_58%,var(--surface))]";
 
 function DatasetTime({ value }) {
   const d = new Date(value);
@@ -45,12 +50,13 @@ function DatasetRow({ record, highlighted, onUse, confirming, onAskDelete, onCan
         highlighted ? "bg-[var(--surface-2)]" : ""
       }`}
     >
-      {/* A dataset is an object: icon tile, human name first, machine id second. */}
+      {/* A dataset is an object: icon tile, human name first, machine id second.
+          The tile is the brand accent, not a status colour — green here read as
+          a success signal a dataset row does not carry. Sample vs uploaded is
+          said by the heading, so the icon need not colour-code it. */}
       <span
         aria-hidden="true"
-        className={`hidden h-9 w-9 shrink-0 items-center justify-center rounded-[10px] sm:flex ${
-          synthetic ? "bg-[var(--ok-tint)] text-[var(--ok)]" : "bg-[var(--blue-tint)] text-[var(--blue)]"
-        }`}
+        className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--accent-tint)] text-[var(--accent)] sm:flex"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
           <ellipse cx="12" cy="5.5" rx="7" ry="2.5" />
@@ -230,18 +236,18 @@ export default function Datasets() {
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-canvas grid-cols-1 gap-x-[24px] gap-y-10 px-4 pb-12 pt-8 sm:px-8 lg:grid-cols-12">
+      <div className="mx-auto grid w-full max-w-canvas grid-cols-1 gap-x-[24px] gap-y-4 px-4 pb-12 pt-8 sm:px-8 lg:grid-cols-12">
         {/* Every card on this page titles itself from inside, so this column
             carries no heading of its own: an "Add data" label outside the cards
             put one column's title outside its container and the other's inside. */}
-        <section className="lg:col-span-5" aria-label="Add data">
+        <section className="lg:contents" aria-label="Add data">
           {/* Fastest path first: a new operator can have scoreable data in one
               click before ever preparing an upload. */}
-          <div className={`${PANEL} p-5`}>
+          <div className={`${PANEL} flex h-full flex-col p-5 lg:col-span-5 lg:col-start-1 lg:row-start-1`}>
             <div className="mb-3 flex items-center gap-3">
               <span
                 aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--ok-tint)] text-[var(--ok)]"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--accent-tint)] text-[var(--accent)]"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 3v3" />
@@ -260,7 +266,7 @@ export default function Datasets() {
               15 synthetic invoice images with known ground truth. The images are synthetic;
               every metric measured against them is real.
             </p>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
+            <div className="mt-auto flex flex-wrap items-center gap-3 pt-4">
               <button onClick={onGenerate} disabled={syn.busy} className={BTN_SECONDARY}>
                 {syn.busy ? "Generating..." : "Generate sample dataset"}
               </button>
@@ -283,11 +289,11 @@ export default function Datasets() {
             )}
           </div>
 
-          <div className={`mt-4 ${PANEL} p-5`}>
+          <div className={`${PANEL} p-5 lg:col-span-5 lg:col-start-1 lg:row-start-2`}>
             <div className="mb-3 flex items-center gap-3">
               <span
                 aria-hidden="true"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--blue-tint)] text-[var(--blue)]"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--accent-tint)] text-[var(--accent)]"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 16V4" />
@@ -321,7 +327,7 @@ export default function Datasets() {
               className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-[12px] p-6 text-center transition-colors duration-150 ease-out-quart ${
                 dragOver
                   ? "bg-[var(--accent-tint)]"
-                  : "bg-[var(--surface-2)]"
+                  : UPLOAD_BOX
               }`}
             >
               <p className="text-[13px] font-medium text-[var(--ink)]">
@@ -335,7 +341,7 @@ export default function Datasets() {
             {/* The two requirements as a visible checklist: state icon, name,
                 and the action to satisfy it, per row. */}
             <ul className="mt-4 flex flex-col gap-1.5">
-              <li className="flex min-h-10 flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[12px] bg-[var(--surface-2)] px-3 py-1.5">
+              <li className={`flex min-h-10 flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[12px] px-3 py-1.5 ${UPLOAD_BOX}`}>
                 <span
                   aria-hidden="true"
                   className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${
@@ -373,7 +379,7 @@ export default function Datasets() {
                   </button>
                 </span>
               </li>
-              <li className="flex min-h-10 flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[12px] bg-[var(--surface-2)] px-3 py-1.5">
+              <li className={`flex min-h-10 flex-wrap items-center gap-x-2.5 gap-y-1 rounded-[12px] px-3 py-1.5 ${UPLOAD_BOX}`}>
                 <span
                   aria-hidden="true"
                   className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${
@@ -401,7 +407,7 @@ export default function Datasets() {
             </ul>
 
             {images.length > 0 && (
-              <ul className="mt-4 max-h-28 overflow-y-auto rounded-[12px] bg-[var(--surface-2)] px-3 py-2">
+              <ul className={`mt-4 max-h-28 overflow-y-auto rounded-[12px] px-3 py-2 ${UPLOAD_BOX}`}>
                 {images.map((f, i) => (
                   <li
                     key={`${f.name}-${i}`}
@@ -455,14 +461,15 @@ export default function Datasets() {
           </div>
         </section>
 
-        <section className="lg:col-span-7" aria-labelledby="library-heading">
-          {library.error && (
-            <div className="mb-3">
-              <InlineError onRetry={refreshRecords}>{library.error}</InlineError>
-            </div>
-          )}
+        <section className="lg:contents" aria-labelledby="library-heading">
+          <div className="flex h-full flex-col lg:col-span-7 lg:col-start-6 lg:row-start-1">
+            {library.error && (
+              <div className="mb-3">
+                <InlineError onRetry={refreshRecords}>{library.error}</InlineError>
+              </div>
+            )}
 
-          <div className={`${PANEL} overflow-hidden`}>
+            <div className={`${PANEL} flex-1 overflow-hidden`}>
             <div className="px-4 pb-1 pt-4">
               <h2 id="library-heading" className="text-[16px] font-semibold text-[var(--ink)]">
                 Library
@@ -522,11 +529,12 @@ export default function Datasets() {
                 )}
               </>
             )}
+            </div>
           </div>
 
           {/* Quiet explainer so the column does not end abruptly below the
               library card. Plain text, not a second panel. */}
-          <p className="mt-4 max-w-[62ch] px-1 text-[12px] leading-relaxed text-[var(--ink-3)]">
+          <p className="max-w-[62ch] px-1 text-[12px] leading-relaxed text-[var(--ink-3)] lg:col-span-7 lg:col-start-6 lg:row-start-2">
             A dataset is a folder of invoice images plus a{" "}
             <span className="pb-mono">ground_truth.csv</span> holding the correct answer for each
             one. That CSV needs the columns{" "}

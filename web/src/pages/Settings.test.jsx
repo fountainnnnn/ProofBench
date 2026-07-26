@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({
   deleteProviderKey: vi.fn(),
@@ -158,6 +158,7 @@ describe("Settings about disclosure", () => {
     fireEvent.click(within(missing).getByRole("button"));
     expect(within(missing).getByText("OPENAI_API_KEY")).toBeTruthy();
     expect(within(missing).getByText("missing")).toBeTruthy();
+    expect(within(missing).queryByLabelText("Value for OPENAI_API_KEY")).toBeNull();
 
     const partial = screen.getByText("Nosana VLM").closest("li");
     expect(within(partial).getByText("partly configured")).toBeTruthy();
@@ -166,6 +167,112 @@ describe("Settings about disclosure", () => {
     expect(within(nosanaKey).getByText("missing")).toBeTruthy();
     // Not essential, so it must not be marked required nor block the run.
     expect(partial.textContent).not.toMatch(/required/);
+  });
+
+  it("saves a missing value inline and refreshes readiness without echoing it", async () => {
+    const configured = {
+      ...READINESS,
+      run_ready: true,
+      blocked_by: [],
+      providers: READINESS.providers.map((provider) =>
+        provider.provider === "openai"
+          ? { ...provider, status: "ready", missing: [] }
+          : provider
+      ),
+    };
+    api.listProviderKeys
+      .mockResolvedValueOnce({
+        keys: [],
+        runtime_writes_enabled: true,
+        managed_by: "runtime",
+      })
+      .mockResolvedValueOnce({
+        keys: [{ env: "OPENAI_API_KEY", source: "settings" }],
+        runtime_writes_enabled: true,
+        managed_by: "runtime",
+      });
+    api.getProviderReadiness
+      .mockResolvedValueOnce(READINESS)
+      .mockResolvedValueOnce(configured);
+    api.saveProviderKey.mockResolvedValue({ env: "OPENAI_API_KEY", source: "settings" });
+
+    const { container } = render(<Settings />);
+    const row = (await screen.findByText("OpenAI")).closest("li");
+    fireEvent.click(within(row).getByRole("button"));
+    const input = within(row).getByLabelText("Value for OPENAI_API_KEY");
+    fireEvent.change(input, { target: { value: "local-provider-value" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(api.saveProviderKey).toHaveBeenCalledWith(
+        "OPENAI_API_KEY",
+        "local-provider-value"
+      );
+      expect(api.getProviderReadiness).toHaveBeenCalledTimes(2);
+      expect(api.listProviderKeys).toHaveBeenCalledTimes(2);
+    });
+    expect(within(row).getByText("set")).toBeTruthy();
+    expect(within(row).queryByLabelText("Value for OPENAI_API_KEY")).toBeNull();
+    expect(container.textContent).not.toContain("local-provider-value");
+  });
+
+  it("keeps an inline value available for retry when saving fails", async () => {
+    api.listProviderKeys.mockResolvedValue({
+      keys: [],
+      runtime_writes_enabled: true,
+      managed_by: "runtime",
+    });
+    api.saveProviderKey.mockRejectedValue(new Error("Could not save this provider credential."));
+
+    render(<Settings />);
+    const row = (await screen.findByText("OpenAI")).closest("li");
+    fireEvent.click(within(row).getByRole("button"));
+    const input = within(row).getByLabelText("Value for OPENAI_API_KEY");
+    fireEvent.change(input, { target: { value: "retry-provider-value" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+
+    expect((await within(row).findByRole("alert")).textContent).toContain(
+      "Could not save this provider credential."
+    );
+    expect(input.value).toBe("retry-provider-value");
+    expect(api.getProviderReadiness).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders locally bundled brand marks for known providers", async () => {
+    const { container } = render(<Settings />);
+    await screen.findByText("Daytona sandboxes");
+
+    for (const provider of ["daytona", "openai", "nosana_vlm"]) {
+      const logo = container.querySelector(`[data-provider-logo="${provider}"]`);
+      expect(logo).toBeTruthy();
+      expect(logo.getAttribute("src")).toMatch(/^(?:data:image\/svg\+xml|.*\.svg$)/);
+      expect(logo.getAttribute("alt")).toBe("");
+    }
+  });
+
+  it("falls back to a monogram for an unknown future provider", async () => {
+    api.getProviderReadiness.mockResolvedValue({
+      mode: "real",
+      run_ready: true,
+      blocked_by: [],
+      providers: [
+        {
+          provider: "future_service",
+          label: "Future Service",
+          capability: "A future provider capability.",
+          essential: false,
+          status: "ready",
+          required: [],
+          missing: [],
+          optional_configured: [],
+        },
+      ],
+    });
+
+    const { container } = render(<Settings />);
+    const row = (await screen.findByText("Future Service")).closest("li");
+    expect(row.textContent).toContain("FS");
+    expect(container.querySelector('[data-provider-logo="future_service"]')).toBeNull();
   });
 
   it("renders readiness without exposing any credential value", async () => {

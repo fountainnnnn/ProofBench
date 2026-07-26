@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { prepareReportPdf } from "../api.js";
 import { BasisTag, BTN_PRIMARY, BTN_SECONDARY, MARKDOWN_HEADINGS_IN_REPORT, PANEL } from "./ui.jsx";
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
+import StatusIcon from "./StatusIcon.jsx";
 import { safeHttpUrl } from "../linkSafety.js";
 import {
   buildCanonicalRows,
@@ -301,7 +302,7 @@ export default function ResultsCard({
             aria-modal="true"
             aria-labelledby="pdf-preview-title"
             tabIndex={-1}
-            className="flex h-[min(48rem,calc(100dvh-1rem))] w-full max-w-canvas flex-col overflow-hidden rounded-[24px] bg-[var(--surface)] shadow-[var(--shadow-lift)]"
+            className="pb-glass-float flex h-[min(48rem,calc(100dvh-1rem))] w-full max-w-canvas flex-col overflow-hidden rounded-[24px] shadow-[var(--shadow-lift)]"
           >
             <header className="flex flex-col gap-3 border-b border-[var(--line)] px-4 py-3 sm:flex-row sm:items-center">
               <div>
@@ -448,7 +449,7 @@ export default function ResultsCard({
 
         {running && rows.length > 0 && !safeReport?.markdown && (
           <p className="flex items-center gap-2 px-5 py-3 text-[12px] text-[var(--ink-3)]" aria-live="polite">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" aria-hidden="true" />
+            <StatusIcon tone="running" size={13} pulse className="text-[var(--accent)]" />
             Preparing report
           </p>
         )}

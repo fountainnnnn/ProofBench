@@ -82,7 +82,7 @@ export default function Composer({ onSend, onUpload, dataset, disabled, provenan
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
-          className={`rounded-[16px] bg-[var(--surface)] shadow-[var(--shadow-card)] transition-shadow duration-150 focus-within:shadow-[var(--shadow-lift)] ${
+          className={`pb-glass rounded-[16px] shadow-[var(--shadow-card)] transition-shadow duration-150 focus-within:shadow-[var(--shadow-lift)] ${
             dragging ? "bg-[var(--accent-tint)]" : ""
           }`}
         >

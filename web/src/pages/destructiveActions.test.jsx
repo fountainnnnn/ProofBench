@@ -65,7 +65,9 @@ describe("destructive action confirmation and session presentation", () => {
     expect(document.body.textContent).not.toContain("sidebar-secret");
     fireEvent.click(screen.getByRole("button", { name: /delete authorization/i }));
     expect(onDelete).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    // The confirm control is an icon button, so its accessible name carries the
+    // session it would delete rather than a bare "Confirm".
+    fireEvent.click(screen.getByRole("button", { name: /^confirm deleting/i }));
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 

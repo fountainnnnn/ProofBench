@@ -42,7 +42,9 @@ subtle color alone.
 
 - Plain, confident, technical. Short sentences. No exclamation marks.
 - No em dashes. Commas, colons, periods, parentheses instead.
-- Status language is literal: "building", "validating", "running", "done", "failed".
+- Status language is literal: "building", "validating", "running", "completed",
+  "failed". The backend phase vocabulary is mapped to these words in one place
+  (`web/src/phaseLabel.js`) so every surface says the same thing.
 - Numbers speak first; narrative second.
 
 ## Anti-references

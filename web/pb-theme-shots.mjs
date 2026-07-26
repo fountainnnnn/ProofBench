@@ -3,6 +3,7 @@ import { chromium } from "@playwright/test";
 const base = "http://localhost:5199";
 const shots = [
   { path: "/", name: "landing" },
+  { path: "/app/overview", name: "overview" },
   { path: "/app/benchmark", name: "benchmark" },
   { path: "/app/settings", name: "settings" },
   { path: "/app/runs", name: "runs" },

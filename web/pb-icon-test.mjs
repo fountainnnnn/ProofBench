@@ -1,0 +1,16 @@
+import { chromium } from "@playwright/test";
+const b = await chromium.launch();
+const pg = await b.newPage({ viewport: { width: 1440, height: 900 } });
+await pg.goto("http://localhost:5199/app/overview", { waitUntil: "networkidle" });
+await pg.waitForTimeout(1500);
+const row = pg.locator('div[aria-label="Sessions"] ul li').first();
+await row.hover();
+await pg.waitForTimeout(400);
+const del = row.getByRole("button", { name: /^Delete / });
+const box = await del.boundingBox();
+await pg.screenshot({ path: "qa-icon-default.png", clip: { x: 0, y: 300, width: 260, height: 120 } });
+await del.click();
+await pg.waitForTimeout(300);
+await pg.screenshot({ path: "qa-icon-confirm.png", clip: { x: 0, y: 300, width: 260, height: 120 } });
+console.log(JSON.stringify({ hitArea: box && { w: Math.round(box.width), h: Math.round(box.height) } }));
+await b.close();
