@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar.jsx";
 import ChatThread from "../components/ChatThread.jsx";
 import Composer from "../components/Composer.jsx";
+import DirectionCard from "../components/DirectionCard.jsx";
 import HeaderActions from "../components/HeaderActions.jsx";
 import { BTN_PRIMARY, BTN_SECONDARY } from "../components/ui.jsx";
 import {
@@ -70,6 +71,9 @@ const emptyState = (scope) => ({
   spec: null,
   results: null,
   report: null,
+  // The pending direction confirmation, when the agent gated the opening turn.
+  // Cleared the moment the user sends anything, by either button or by typing.
+  direction: null,
   // How the backend says the run reached its numbers. Rendered verbatim; the
   // UI never derives an execution claim of its own.
   executionMode: "",
@@ -95,8 +99,24 @@ export default function Benchmark() {
   const [datasetError, setDatasetError] = useState(() => searchParams.get("dataset") ? "Verifying dataset access…" : "");
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [followUpOpen, setFollowUpOpen] = useState(false);
+  // Carrying on after a run is a property of the session, not of this page
+  // load. Without it, closing the tab folded the conversation away again and
+  // the user had to reopen it to see replies they had already been given.
+  const followUpKey = (id) => `proofbench.followUp.${id}`;
+  const rememberFollowUp = (id, open) => {
+    if (!id) return;
+    try {
+      if (open) localStorage.setItem(followUpKey(id), "1");
+      else localStorage.removeItem(followUpKey(id));
+    } catch { /* private mode: the session still works, it just forgets */ }
+  };
+  const openFollowUp = (id) => {
+    setFollowUpOpen(true);
+    rememberFollowUp(id, true);
+  };
   const [streamStatus, setStreamStatus] = useState({ state: "idle", message: "" });
   const datasetRef = useRef(dataset);
+  const runCompleteRef = useRef(false);
   const esRef = useRef(null);
   const eventCountRef = useRef(0);
   const selectionRef = useRef(0);
@@ -311,8 +331,32 @@ export default function Benchmark() {
           case "spec":
             setTyping(false);
             return { ...s, spec: data.spec, provenance, specProvenance: artifactProvenance };
+          case "direction":
+            /* A chat-side card, not a trace row: it is a question put to the
+               user, not a record of work done. The turn stops here until they
+               answer, so the typing indicator comes down with it. */
+            setTyping(false);
+            return {
+              ...s,
+              direction: {
+                improved_prompt: data.improved_prompt,
+                assumptions: data.assumptions || [],
+                unknowns: data.unknowns || [],
+              },
+              provenance,
+            };
           case "trace":
-            return { ...s, trace: [...s.trace, { ...data, provenance: artifactProvenance }].slice(-MAX_TRACE_EVENTS), provenance };
+            /* Stamp the turn this call belongs to, so the thread can show the
+               agent's work beside the reply it produced instead of pooling
+               every call of the session into one block at the foot. The count
+               of messages so far IS the turn: the user's message has landed,
+               the assistant's has not yet. */
+            return {
+              ...s,
+              trace: [...s.trace, { ...data, turn: s.messages.length, provenance: artifactProvenance }]
+                .slice(-MAX_TRACE_EVENTS),
+              provenance,
+            };
           case "sandbox_log": {
             const logs = { ...s.sandboxLogs };
             const arr = logs[data.sandbox] ? [...logs[data.sandbox]] : [];
@@ -464,7 +508,14 @@ export default function Benchmark() {
       return next;
     });
     setState(emptyState(selection));
-    setFollowUpOpen(false);
+    // Restore whether this session had already been carried on past its run.
+    setFollowUpOpen(() => {
+      try {
+        return localStorage.getItem(followUpKey(id)) === "1";
+      } catch {
+        return false;
+      }
+    });
     setRunning(false);
     setLoadingSession(true);
     let knownEventCount = 0;
@@ -526,7 +577,16 @@ export default function Benchmark() {
         const restoredArtifactProvenance = authoritativeProvenance(data, sessionProvenance);
         if (data.kind === "spec") restored.specProvenance = restoredArtifactProvenance;
         if (data.kind === "trace") {
-          restored.trace.push({ ...data, provenance: restoredArtifactProvenance });
+          /* A restored session hands back its messages in one block and its
+             events in another, with nothing tying the two orders together — so
+             unlike the live path there is no honest per-turn attribution to
+             recover. The whole restored trace attaches to the end of the
+             conversation rather than being spread across turns on a guess. */
+          restored.trace.push({
+            ...data,
+            turn: restored.messages.length,
+            provenance: restoredArtifactProvenance,
+          });
           if (restored.trace.length > MAX_TRACE_EVENTS) restored.trace.shift();
         }
         if (data.kind === "sandbox_log") {
@@ -545,7 +605,21 @@ export default function Benchmark() {
           citations: data.citations,
           provenance: restoredArtifactProvenance,
         };
+        if (data.kind === "direction") restored.direction = {
+          improved_prompt: data.improved_prompt,
+          assumptions: data.assumptions || [],
+          unknowns: data.unknowns || [],
+        };
       });
+      /* The gate only ever fires on the opening turn, so a restored session
+         that carries a second user message has already answered it. Events and
+         messages come back in separate blocks with nothing tying their order
+         together, and re-asking a question the user settled is worse than
+         dropping a card they can no longer act on. */
+      if (restored.direction
+          && restored.messages.filter((m) => m.role === "user").length > 1) {
+        restored.direction = null;
+      }
       setState((s) => (s.scope === selection ? restored : s));
       datasetRef.current = restoredDataset;
       setDataset(restoredDataset);
@@ -602,6 +676,7 @@ export default function Benchmark() {
     if (session.is_running || uploadBusyRef.current) return;
     try {
       await deleteSession(session.id);
+      rememberFollowUp(session.id, false);
       if (session.id === activeId) {
         selectionRef.current += 1;
         closeEvents();
@@ -648,6 +723,9 @@ export default function Benchmark() {
       setTyping(true);
       setState((s) => (s.scope === selection ? {
         ...s,
+        // Answered, whichever way they answered it — the card's own buttons
+        // come through here too.
+        direction: null,
         messages: [...s.messages, { role: "user", text }],
         provenance: s.provenance || authoritativeProvenance({}, {
           mode: RUN_MODE,
@@ -657,6 +735,9 @@ export default function Benchmark() {
       } : s));
       const { session_id } = await postChat(text, activeId, dataset?.dataset_id || dataset?.id);
       if (selectionRef.current !== selection) return;
+      // Sending anything after a run settled is the user continuing the
+      // session, whether or not they used the follow-up button to get here.
+      if (runCompleteRef.current) openFollowUp(session_id);
       if (session_id !== activeId) {
         setActiveId(session_id);
         activeIdRef.current = session_id;
@@ -754,7 +835,10 @@ export default function Benchmark() {
       setStreamStatus({ state: "connected", message: "Waiting for run updates" });
       setRunning(true);
       runningRef.current = true;
+      // A new run replaces the decision, so the thread returns to leading with
+      // the fresh ranking rather than the previous conversation.
       setFollowUpOpen(false);
+      rememberFollowUp(activeId, false);
       setActiveRunId(null);
       activeRunIdRef.current = null;
       setState((s) => ({
@@ -799,13 +883,37 @@ export default function Benchmark() {
     }
   };
 
+  /* The URL is the single source of truth for which session is open.
+     Previously a bare /app/benchmark silently reopened whatever was last in
+     localStorage, so clicking Benchmark in the nav returned you to an old
+     conversation instead of starting one — the opposite of what the nav item
+     reads as. Now: a `session` param opens that session, and no param means a
+     fresh chat. Nothing is created server-side here; the first message does
+     that (see onSend), so visiting the page cannot litter the history with
+     empty sessions. */
   useEffect(() => {
     const requested = searchParams.get("session");
-    const requestedDataset = searchParams.get("dataset");
-    const remembered = localStorage.getItem("proofbench.activeSessionId");
-    const target = requested || (!requestedDataset && !activeId && sessions.some((session) => session.id === remembered) ? remembered : null);
-    if (target && target !== activeId) onSelect(target);
-  }, [searchParams, sessions, activeId, uploadingDataset]);
+    if (requested) {
+      if (requested !== activeId) onSelect(requested);
+      return;
+    }
+    if (!activeId) return;
+    selectionRef.current += 1;
+    closeEvents();
+    localStorage.removeItem("proofbench.activeSessionId");
+    setActiveId(null);
+    activeIdRef.current = null;
+    setActiveRunId(null);
+    activeRunIdRef.current = null;
+    setState(emptyState(selectionRef.current));
+    setFollowUpOpen(false);
+    setRunning(false);
+    setStopping(false);
+    setTyping(false);
+    setLoadingSession(false);
+    eventCountRef.current = 0;
+    seenEventIdsRef.current = new Set();
+  }, [searchParams, activeId]);
 
   useEffect(() => {
     const requested = searchParams.get("dataset");
@@ -895,10 +1003,17 @@ export default function Benchmark() {
   // The completed screen is for reading a decision. A permanently docked
   // composer would spend a fixed band of it on a box nobody is typing in, so
   // the next action is offered as one row and the composer returns on request.
-  const runSettled = ["DONE", "FAILED", "STOPPED"].includes(runPhase) ||
-    (!state.phaseState && !typing);
-  const runComplete = runSettled && !running && Boolean(state.results || state.report);
+  const runTerminal = ["DONE", "FAILED", "STOPPED"].includes(runPhase);
+  const runSettled = runTerminal || (!state.phaseState && !typing);
+  // A run that failed or was stopped is just as finished as one that produced a
+  // ranking. Requiring results here left exactly that case with no footer and no
+  // way forward, which is when the user most needs one.
+  const runComplete = runSettled && !running &&
+    (runTerminal || Boolean(state.results || state.report));
   const showComposer = !runComplete || followUpOpen;
+  useEffect(() => {
+    runCompleteRef.current = runComplete;
+  }, [runComplete]);
   const provenanceLocked = Boolean(loadingSession || running || state.provenance || state.spec || state.results);
   // Display-only: a restored run reports its own provenance, everything this
   // client can newly write is real. There is no mode the user can change.
@@ -938,27 +1053,53 @@ export default function Benchmark() {
         </div>
       )}
       <div className="relative flex min-w-0 flex-1 flex-col">
-        <header className="pb-page-header shrink-0 px-4 sm:px-8">
-          <div className="mx-auto flex w-full max-w-canvas items-center gap-x-3 gap-y-2 pb-3 pt-3.5">
-            <div className="min-w-0 flex-1">
-              <h1 className="pb-page-title truncate">
-                Benchmark
-              </h1>
-              <p className="pb-contain mt-0.5 truncate text-[13px] text-[var(--ink-2)]">
-                {safeVisibleText(activeSession?.title || (activeId ? `Session ${activeId}` : "No active session"))}
-              </p>
-            </div>
-            <HeaderActions>
-              <button
-                ref={sessionsButtonRef}
-                type="button"
-                aria-expanded={sessionsOpen}
-                aria-controls="benchmark-sessions-panel"
-                onClick={() => setSessionsOpen(true)}
-                className={`${BTN_SECONDARY} shrink-0 md:hidden`}
+        {/* No page-header band. A chat workspace is the conversation, and a
+            full-width bar carrying a static "Benchmark" label spent a fixed
+            slice of every screen restating what the selected nav item already
+            says. What is actually per-session — the title and run phase — moved
+            inline above the thread, where it scrolls with the content; only the
+            live controls stay pinned. */}
+        <header className="pb-chat-bar pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-3 px-4 sm:px-5">
+          {/* The session's own title, hard left. It is the one per-session fact
+              worth keeping on screen; "Benchmark" is already the selected nav
+              item, so the bar carries no page label. */}
+          <h1 className="pb-contain pointer-events-auto min-w-0 flex-1 truncate text-[14px] font-medium text-[var(--ink)]">
+            {safeVisibleText(activeSession?.title || (activeId ? `Session ${activeId}` : ""))}
+          </h1>
+          <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+            {/* Live run state travels with the controls now that there is no
+                band to hold it: it must stay visible while the thread scrolls. */}
+            {runPhase && (
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium shadow-[var(--shadow-card)] ${
+                  runPhase === "DONE"
+                    ? "bg-[var(--ok-tint)] text-[var(--ok)]"
+                    : runPhase === "FAILED" || runPhase === "STOPPED"
+                      ? "bg-[var(--danger-tint)] text-[var(--danger)]"
+                      : "bg-[var(--accent-tint)] text-[var(--accent)]"
+                }`}
+                aria-live="polite"
               >
-                Sessions ({sessions.length})
+                <StatusIcon tone={phaseTone(runPhase)} size={12} />
+                {phaseLabel(safeVisibleText(runPhase))}
+              </span>
+            )}
+            {streamStatus.state === "failed" && streamStatus.retryable && activeId && (
+              <button type="button" onClick={retryEvents} className={BTN_SECONDARY}>
+                Reconnect
               </button>
+            )}
+            <button
+              ref={sessionsButtonRef}
+              type="button"
+              aria-expanded={sessionsOpen}
+              aria-controls="benchmark-sessions-panel"
+              onClick={() => setSessionsOpen(true)}
+              className={`${BTN_SECONDARY} shrink-0 md:hidden`}
+            >
+              Sessions ({sessions.length})
+            </button>
+            <HeaderActions>
               {/* A settled run puts "Start a new benchmark" in its footer, at
                   the end of what the reader just finished. Two buttons for one
                   action would be the same offer twice on one screen. */}
@@ -969,42 +1110,6 @@ export default function Benchmark() {
               )}
             </HeaderActions>
           </div>
-          {(streamStatus.state !== "idle" || runPhase) && (
-            <div className="mx-auto -mt-1 flex w-full max-w-canvas flex-wrap items-center gap-x-3 gap-y-1 pb-2.5">
-              {runPhase && (
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-medium ${
-                    runPhase === "DONE"
-                      ? "bg-[var(--ok-tint)] text-[var(--ok)]"
-                      : runPhase === "FAILED" || runPhase === "STOPPED"
-                        ? "bg-[var(--danger-tint)] text-[var(--danger)]"
-                        : "bg-[var(--accent-tint)] text-[var(--accent)]"
-                  }`}
-                  aria-live="polite"
-                >
-                  <StatusIcon tone={phaseTone(runPhase)} size={12} />
-                  {phaseLabel(safeVisibleText(runPhase))}
-                </span>
-              )}
-              {streamStatus.state !== "idle" && (
-                <span
-                  className={`text-[12px] ${streamStatus.state === "failed" ? "text-[var(--danger)]" : "text-[var(--ink-3)]"}`}
-                  role="status"
-                >
-                  {streamStatus.message}
-                </span>
-              )}
-              {streamStatus.state === "failed" && streamStatus.retryable && activeId && (
-                <button
-                  type="button"
-                  onClick={retryEvents}
-                  className={BTN_SECONDARY}
-                >
-                  Reconnect
-                </button>
-              )}
-            </div>
-          )}
         </header>
         {datasetError && (
           <div
@@ -1015,6 +1120,8 @@ export default function Benchmark() {
           </div>
         )}
         <ChatThread
+          statusMessage={streamStatus.state !== "idle" ? streamStatus.message : ""}
+          statusFailed={streamStatus.state === "failed"}
           messages={state.messages}
           trace={state.trace}
           sandboxLogs={state.sandboxLogs}
@@ -1036,7 +1143,18 @@ export default function Benchmark() {
           executionMode={state.executionMode}
           interactionDisabled={uploadingDataset || Boolean(datasetError)}
           onPickPrompt={setPromptDraft}
+          conversationLive={followUpOpen}
         />
+        {showComposer && state.direction && (
+          <DirectionCard
+            direction={state.direction}
+            onSend={onSend}
+            onDismiss={() => {
+              setState((s) => ({ ...s, direction: null }));
+              document.getElementById("benchmark-composer")?.focus();
+            }}
+          />
+        )}
         {showComposer ? (
           <Composer
             onSend={onSend}
@@ -1048,13 +1166,13 @@ export default function Benchmark() {
           />
         ) : (
           <div className="shrink-0 px-4 pb-4 pt-3 sm:px-8">
-            <div className="mx-auto flex w-full max-w-[840px] flex-wrap items-center gap-2">
+            <div className="mx-auto flex w-full max-w-[var(--thread-w)] flex-wrap items-center gap-2">
               <span className="mr-auto text-[12px] text-[var(--ink-2)]">
                 {runPhase === "DONE"
                   ? "This run is finished. The ranking above is the result."
                   : `This run ended as ${runPhase.toLowerCase()}.`}
               </span>
-              <button type="button" onClick={() => setFollowUpOpen(true)} className={BTN_SECONDARY}>
+              <button type="button" onClick={() => openFollowUp(activeId)} className={BTN_SECONDARY}>
                 Ask a follow-up
               </button>
               <button type="button" onClick={onNew} disabled={uploadingDataset} className={BTN_PRIMARY}>

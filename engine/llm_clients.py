@@ -85,9 +85,9 @@ PROVIDERS: dict[str, ProviderSpec] = {
 # capability -> providers in preference order. The first configured one is used;
 # callers that tolerate a failure walk the rest of the list.
 CAPABILITY_PROVIDERS: dict[str, tuple[str, ...]] = {
-    "orchestration": ("moonshot", "openai", "openrouter"),
+    "orchestration": ("moonshot", "openai", "openrouter", "deepseek"),
     "assessment": ("doubleword", "openrouter", "openai", "deepseek"),
-    "report": ("moonshot", "openai", "openrouter"),
+    "report": ("moonshot", "openai", "openrouter", "deepseek"),
     "codegen": ("deepseek", "openrouter"),
 }
 

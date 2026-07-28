@@ -44,6 +44,8 @@ class SQLiteStore:
         self.max_events = max(1, int(max_events))
         self.max_event_bytes = max(1024, int(max_event_bytes))
         self.max_messages = max(1, int(max_messages))
+        # Enough to carry a session's research without letting it grow forever.
+        self.max_findings = 120
         self.worker_id = worker_id or os.environ.get("PROOFBENCH_WORKER_ID") or uuid.uuid4().hex
         self.lease_seconds = max(30, int(lease_seconds))
         self.orphan_grace_seconds = max(self.lease_seconds, int(orphan_grace_seconds))
@@ -186,6 +188,34 @@ class SQLiteStore:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS messages_session_id ON messages(session_id, id);
+
+                /* What the agent already looked up this session. Only messages
+                   were durable, so every turn rebuilt its context from visible
+                   text alone and re-ran research it had already done — one
+                   session spent nineteen searches, then twelve more on the same
+                   question. Titles and URLs only: never page bodies, which are
+                   large, and never anything the citation ledger owns. UNIQUE on
+                   (session_id, url) makes re-recording a URL a no-op. */
+                CREATE TABLE IF NOT EXISTS findings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(session_id, url)
+                );
+                CREATE INDEX IF NOT EXISTS findings_session_id ON findings(session_id, id);
+
+                -- Operator preferences, not credentials. A preference that
+                -- resets on restart is a bug, so these are durable and per
+                -- tenant rather than living in the process-local key vault.
+                CREATE TABLE IF NOT EXISTS tenant_settings (
+                    owner TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (owner, key)
+                );
 
                 CREATE TABLE IF NOT EXISTS request_usage (
                     owner TEXT NOT NULL,
@@ -449,7 +479,7 @@ class SQLiteStore:
             # measured execution ever happened. Only benchmark_runs carries the
             # immutable provenance marker and a terminal status.
             rows = connection.execute(
-                "SELECT s.id,s.title,s.phase,s.mode,s.is_running,s.created_at,"
+                "SELECT s.id,s.title,s.phase,s.mode,s.is_running,s.created_at,s.updated_at,"
                 "s.latest_run_id,r.status AS latest_run_status,"
                 "r.provenance AS latest_run_provenance,"
                 "(r.metrics_json IS NOT NULL) AS latest_run_has_metrics "
@@ -641,6 +671,56 @@ class SQLiteStore:
                 "(SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?)",
                 (session_id, session_id, self.max_messages),
             )
+
+    def add_findings(self, session_id: str, items) -> None:
+        """Record what the agent found, so the next turn need not find it again.
+
+        Bounded the same way messages are: the newest `max_findings` survive, so
+        a long session cannot grow this without limit. Writes are idempotent on
+        URL, which is what makes it safe to call after every turn.
+        """
+        rows = []
+        for item in items or []:
+            url = str((item or {}).get("url") or "").strip()[:2048]
+            if not url:
+                continue
+            title = str((item or {}).get("title") or url).strip()[:300]
+            rows.append((session_id, title, url, utc_now()))
+        if not rows:
+            return
+        with self.transaction(immediate=True) as connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO findings(session_id,title,url,created_at) VALUES(?,?,?,?)",
+                rows,
+            )
+            connection.execute(
+                "DELETE FROM findings WHERE session_id=? AND id NOT IN "
+                "(SELECT id FROM findings WHERE session_id=? ORDER BY id DESC LIMIT ?)",
+                (session_id, session_id, self.max_findings),
+            )
+
+    def get_setting(self, owner: str, key: str) -> str | None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT value FROM tenant_settings WHERE owner=? AND key=?", (owner, key)
+            ).fetchone()
+        return row["value"] if row else None
+
+    def set_setting(self, owner: str, key: str, value: str) -> None:
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO tenant_settings(owner,key,value,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(owner,key) DO UPDATE SET value=excluded.value,"
+                "updated_at=excluded.updated_at",
+                (owner, key, str(value)[:2048], utc_now()),
+            )
+
+    def list_findings(self, session_id: str) -> list[dict]:
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT title,url FROM findings WHERE session_id=? ORDER BY id", (session_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def claim_chat(self, session_id: str) -> bool:
         now = utc_now()

@@ -32,6 +32,21 @@ def test_two_store_instances_share_sessions_and_events(tmp_path):
     assert second.events_since(session["id"], "tenant-b", 0) is None
 
 
+def test_session_summaries_expose_last_activity_time(tmp_path):
+    first, _ = stores(tmp_path)
+    session = first.create_session("tenant-a", "Activity")
+    touched = "2026-07-28T06:02:05.977175Z"
+    with first.connect() as connection:
+        connection.execute(
+            "UPDATE sessions SET updated_at=? WHERE id=?",
+            (touched, session["id"]),
+        )
+
+    [summary] = first.list_sessions("tenant-a")
+
+    assert summary["updated_at"] == touched
+
+
 def test_reruns_are_distinct_and_history_is_durable(tmp_path):
     first, second = stores(tmp_path)
     session = first.create_session("tenant-a", "Rerun")

@@ -14,6 +14,9 @@ from engine import docs_intel
 from engine.agent import Orchestrator
 from engine.candidates.base import Candidate
 
+# The chain only tries providers holding credentials, so these tests supply them.
+OX = {"OXYLABS_USERNAME": "u", "OXYLABS_PASSWORD": "p"}
+
 
 def public_resolver(host, port, **_kwargs):
     """Controlled resolver: every name resolves to one public address."""
@@ -227,7 +230,7 @@ def test_scrape_page_prefers_oxylabs_when_it_succeeds(monkeypatch, offline_dns):
         docs_intel, "fetch_documentation",
         lambda _url: pytest.fail("the direct fallback must not run when Oxylabs works"),
     )
-    assert docs_intel.scrape_page("https://docs.example.com/alpha") == "oxylabs content"
+    assert docs_intel.scrape_page("https://docs.example.com/alpha", OX) == "oxylabs content"
 
 
 def test_scrape_page_reports_both_failures_without_echoing_provider_text(monkeypatch, offline_dns):
@@ -243,10 +246,13 @@ def test_scrape_page_reports_both_failures_without_echoing_provider_text(monkeyp
     monkeypatch.setattr(docs_intel, "fetch_documentation", direct_down)
 
     with pytest.raises(RuntimeError) as raised:
-        docs_intel.scrape_page("https://docs.example.com/alpha")
+        docs_intel.scrape_page("https://docs.example.com/alpha", OX)
 
     assert secret not in str(raised.value)
-    assert "oxylabs RuntimeError" in str(raised.value)
+    # Error TYPES only. The chain names "providers" rather than one vendor now
+    # that three can answer, but the property under test is unchanged: no
+    # provider's error text reaches the caller.
+    assert "providers RuntimeError" in str(raised.value)
     assert "direct RuntimeError" in str(raised.value)
 
 

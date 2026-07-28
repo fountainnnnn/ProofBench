@@ -118,16 +118,65 @@ class AssessmentCandidateSpec(StrictModel):
     docs_url: str = Field(min_length=1, max_length=2048)
     pricing_url: str = Field(default="", max_length=2048)
     kind: Literal["local_tool", "hosted_api", "saas"]
+    # Whether this is something to buy or a piece of a self-built integration.
+    # Intake stamps it on every candidate, and StrictModel forbids extras, so
+    # omitting it here rejected every normalized spec at /run with a 422 — the
+    # build path is claimed explicitly, never inferred, so the default is
+    # "product" for a caller that does not say.
+    role: Literal["product", "build_component"] = "product"
 
     _valid_name = field_validator("name")(CandidateSpec.valid_name.__func__)
     _valid_urls = field_validator("docs_url", "pricing_url")(CandidateSpec.valid_public_url.__func__)
+
+
+class SpecConstraints(StrictModel):
+    """What the user said their environment is, as intake recorded it.
+
+    Every field is optional: an absent constraint means the user never stated
+    one, which must never be filled in on their behalf.
+    """
+
+    stack: list[str] = Field(default_factory=list, max_length=12)
+    must_have: list[str] = Field(default_factory=list, max_length=12)
+    budget: str = Field(default="", max_length=300)
+    deployment: str = Field(default="", max_length=300)
+
+    @field_validator("stack", "must_have")
+    @classmethod
+    def valid_constraint_items(cls, values: list[str]) -> list[str]:
+        for item in values:
+            if not item.strip():
+                raise ValueError("constraint entries must not be empty")
+            if len(item) > 120:
+                raise ValueError("constraint entries must be at most 120 characters")
+        return values
+
+
+class ExcludedCandidateSpec(StrictModel):
+    """A candidate that left the field before assessment, and why.
+
+    It carries no score of any kind: it was removed before assessment, so
+    nothing about it was ever measured. ``kind`` separates the two ways that
+    happens — "violation" is a stated constraint ruling a candidate out, while
+    "not_assessed" is one discovery surfaced and intake did not shortlist, which
+    is a choice about attention rather than a strike against the tool.
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(default="", max_length=160)
+    kind: Literal["violation", "not_assessed"] = "violation"
+    violates: str = Field(min_length=1, max_length=300)
+
+    _valid_name = field_validator("name")(CandidateSpec.valid_name.__func__)
 
 
 class ToolAssessmentSpec(StrictModel):
     benchmark_type: Literal["tool_assessment"]
     category: str = Field(min_length=1, max_length=128)
     objective: str = Field(min_length=1, max_length=4000)
+    constraints: SpecConstraints | None = None
     candidates: list[AssessmentCandidateSpec] = Field(min_length=1, max_length=20)
+    excluded: list[ExcludedCandidateSpec] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def unique_candidates(self):
@@ -158,6 +207,14 @@ class SyntheticDatasetRequest(StrictModel):
 
 class AuthSessionRequest(StrictModel):
     token: str = Field(min_length=1, max_length=16_384)
+
+
+class ScraperOrderRequest(StrictModel):
+    """Which scraping provider is tried first. Bounded, but not validated against
+    the known names here: engine.scrapers normalizes the list so an unknown or
+    stale name is dropped rather than rejected, which keeps a bad stored value
+    from being able to stop a deployment scraping at all."""
+    order: list[str] = Field(min_length=1, max_length=8)
 
 
 class ProviderKeyRequest(StrictModel):

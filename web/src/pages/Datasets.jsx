@@ -226,7 +226,8 @@ export default function Datasets() {
       <header className={`${PAGE_HEADER} px-4 sm:px-8`}>
         <div className="mx-auto flex w-full max-w-canvas items-start justify-between gap-x-6 pb-3 pt-3.5">
           <div className="min-w-0">
-            <h1 className={PAGE_TITLE}>Datasets</h1>
+            <span className="pb-eyebrow-glow">Data</span>
+            <h1 className={`${PAGE_TITLE} mt-1`}>Datasets</h1>
             <p className="mt-0.5 text-[13px] text-[var(--ink-2)]">
               A benchmark scores output against labelled data. Add the data here, then select it when
               you start a run.

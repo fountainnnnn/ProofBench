@@ -146,7 +146,15 @@ def main() -> int:
     # 2. orchestrator with local pool
     print("== scripted run (oracle + noisy) ==")
     run_dir = os.path.join(ROOT, "runs", "itest")
-    orch = Orchestrator("itest", run_dir, emit)
+    # The production orchestrator accepts only server-owned dataset roots. The
+    # offline harness owns this generated fixture, so declare that exact root
+    # instead of relying on the pre-confinement repository-wide default.
+    orch = Orchestrator(
+        "itest",
+        run_dir,
+        emit,
+        provider_env={"PROOFBENCH_DATASET_ROOT": dataset},
+    )
     orch.pool = LocalPool()
     orch.ctx.pool = orch.pool
 

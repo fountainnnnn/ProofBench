@@ -482,7 +482,7 @@ def test_provider_readiness_blocks_when_no_orchestration_provider_is_configured(
     """Orchestration is a capability, not one vendor: losing every LLM key blocks."""
     monkeypatch.setattr(main_module, "provider_environment", lambda _tenant: {})
     for name in ("DAYTONA_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
-                 "MOONSHOT_API_KEY"):
+                 "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     body = client.get("/api/providers", headers=headers("token-a")).json()
     assert body["run_ready"] is False

@@ -251,11 +251,11 @@ satisfy.
 ## Hackathon integrations
 
 ProofBench integrates several third-party services used in the hackathon build:
-Daytona for disposable sandboxes, Oxylabs for search and documentation scraping,
-Doubleword for adapter generation and batch inference, OpenRouter as an
-OpenAI-compatible provider for orchestration, assessment, and reports, and Kimi
-and Nosana as configured model endpoints. Each is reached through its own
-credentials, which you supply.
+Daytona for disposable sandboxes; Scrape.do, Oxylabs, and Bright Data for the
+ordered search and documentation-scraping chain; Doubleword for adapter
+generation and batch inference; OpenRouter as an OpenAI-compatible provider for
+orchestration, assessment, and reports; and Kimi and Nosana as configured model
+endpoints. Each is reached through its own credentials, which you supply.
 
 Third-party names and trademarks appear only to identify these integrations and
 remain the property of their respective owners. Their use does not imply any

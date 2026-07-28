@@ -1,7 +1,9 @@
-import { useEffect, useId, useRef, useState } from "react";
+﻿import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import SpecCard from "./SpecCard.jsx";
-import AgentTraceCard from "./AgentTraceCard.jsx";
+import AgentActivity from "./AgentActivity.jsx";
+import TracePanel from "./TracePanel.jsx";
 import ResultsCard from "./ResultsCard.jsx";
 import { MARKDOWN_HEADINGS_IN_THREAD, PANEL } from "./ui.jsx";
 import { safeVisibleText } from "../displaySafety.js";
@@ -42,8 +44,15 @@ function Bubble({ role, streaming, children }) {
             <div className="pb-skeleton h-3 w-40" />
           </div>
         ) : (
-          <div className="md">
-            <ReactMarkdown components={{ a: SafeMarkdownLink, ...MARKDOWN_HEADINGS_IN_THREAD }}>
+          /* GFM, same as the generated report already used: the agent replies
+             in tables often enough that without it a comparison arrived as a
+             wall of pipe characters. Tables scroll inside the message rather
+             than widening it, so a wide one cannot stretch the thread. */
+          <div className="md overflow-x-auto">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{ a: SafeMarkdownLink, ...MARKDOWN_HEADINGS_IN_THREAD }}
+            >
               {safeVisibleText(children)}
             </ReactMarkdown>
           </div>
@@ -52,7 +61,6 @@ function Bubble({ role, streaming, children }) {
     </div>
   );
 }
-
 function TypingIndicator({ phase }) {
   const label = phase?.phase
     ? `Agent is working: ${phaseLabel(safeVisibleText(phase.phase))}`
@@ -101,8 +109,11 @@ const EXAMPLE_PROMPTS = [
   "Rank open source OCR tools by exact match accuracy and latency",
 ];
 
-export default function ChatThread({ messages, trace, sandboxLogs, phaseState, typing, spec, results, report, runId, onRun, onStop, running, stopping, mode, datasetId, provenance, specProvenance, resultsProvenance, executionMode, interactionDisabled = false, onPickPrompt }) {
+export default function ChatThread({ statusMessage = "", statusFailed = false, messages, trace, sandboxLogs, phaseState, typing, spec, results, report, runId, onRun, onStop, running, stopping, mode, datasetId, provenance, specProvenance, resultsProvenance, executionMode, interactionDisabled = false, onPickPrompt, conversationLive = false }) {
 
+  /* Holds the slice of trace the reader asked to see, so opening the log from a
+     turn shows THAT turn's calls rather than every call of the session. */
+  const [logTrace, setLogTrace] = useState(null);
   const empty = messages.length === 0 && !spec && !results;
   const latestTraceProvenance = [...trace].reverse().find((item) => item?.provenance)?.provenance ||
     Object.values(sandboxLogs || {}).flat().slice().reverse().find((line) => line?.provenance)?.provenance;
@@ -121,8 +132,12 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
   // the ranking leads and the conversation becomes supporting material. A
   // restored run that never replayed a terminal phase event still counts as
   // settled when no phase is live and nothing is streaming.
+  // Once the user carries on talking after a run, the conversation is live
+  // again. Leaving it decision-first would fold their follow-up, and the reply
+  // streaming into it, inside a collapsed disclosure.
   const settled = terminal || (!phaseState && !typing);
-  const decisionFirst = settled && !running && Boolean(results || report);
+  const decisionFirst = settled && !running && !conversationLive && !typing &&
+    Boolean(results || report);
 
   // Scroll only the thread's own container. scrollIntoView would also scroll
   // every ancestor scroll container (including the page-level <main>), which
@@ -185,15 +200,81 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
     />
   ) : null;
 
-  const conversation = messages.map((m, i) => (
-    <Bubble key={i} role={m.role} streaming={m.streaming}>
-      {m.text}
-    </Bubble>
-  ));
+  /* The agent's work belongs to the turn that produced it, so trace is grouped
+     by its stamped turn and rendered inline just before that turn's reply —
+     the way a chat shows "Searched the web" above the answer it informed.
+     Anything stamped past the last message is the turn in flight and renders at
+     the end of the thread. Trace with no stamp at all (an older session) also
+     falls to the end rather than being attributed to a guess. */
+  const traceByTurn = new Map();
+  for (const item of trace) {
+    const turn = Number.isInteger(item?.turn) ? item.turn : messages.length;
+    if (!traceByTurn.has(turn)) traceByTurn.set(turn, []);
+    traceByTurn.get(turn).push(item);
+  }
+  const trailingTrace = [...traceByTurn.entries()]
+    .filter(([turn]) => turn >= messages.length)
+    .flatMap(([, items]) => items);
+
+  const turnActivity = (turn, isLive) => {
+    const items = traceByTurn.get(turn);
+    if (!items || items.length === 0) return null;
+    return (
+      <AgentActivity
+        key={`activity-${turn}`}
+        trace={items}
+        sandboxLogs={sandboxLogs}
+        phaseState={phaseState}
+        simulated={simulatedTrace}
+        live={isLive}
+        onOpenLog={() => setLogTrace(items)}
+      />
+    );
+  };
+
+  /* "Working" is the agent thinking OR a benchmark executing. Keying liveness
+     to `running` alone collapsed the list to its one-line summary while the
+     agent was still mid-search, because `running` only covers an executing
+     benchmark — not the chat turn that precedes it. */
+  const working = running || typing;
+
+  const conversation = messages.flatMap((m, i) => {
+    /* The reply beginning is what ends the work, not the turn finishing. Keying
+       liveness to `working` alone left the full search log expanded above the
+       answer for as long as it streamed, so the reader had to scroll past a
+       finished list of URLs to reach the thing they asked for. */
+    const answered = m.role === "assistant" && Boolean(m.text);
+    const activity = turnActivity(i, working && !answered && i === messages.length - 1);
+    const bubble = (
+      <Bubble key={i} role={m.role} streaming={m.streaming}>
+        {m.text}
+      </Bubble>
+    );
+    return activity ? [activity, bubble] : [bubble];
+  });
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-canvas px-4 py-6 sm:px-8 sm:py-8">
+      {/* pt clears the fixed top strip (3.25rem) plus a little air, so the first
+          message starts below it rather than under it. */}
+      <div className="mx-auto w-full max-w-canvas px-4 pb-6 pt-[4.25rem] sm:px-8 sm:pb-8">
+
+        {/* Connection state sits with the conversation, not in the top strip:
+            it is transient prose about THIS thread, and the strip is reserved
+            for the title and the controls that must never scroll away.
+            Never gated on the thread having messages — a stream can connect,
+            fail or complete before the first reply arrives, and that is exactly
+            when the reader most needs to be told. */}
+        {statusMessage && (
+          <p
+            className={`mx-auto mb-3 w-full max-w-[var(--thread-w)] text-[12px] ${
+              statusFailed ? "text-[var(--danger)]" : "text-[var(--ink-3)]"
+            }`}
+            role="status"
+          >
+            {statusMessage}
+          </p>
+        )}
 
         {empty && (
           <div className="mx-auto flex min-h-[max(320px,calc(100dvh-330px))] max-w-[720px] flex-col justify-center text-center">
@@ -263,7 +344,7 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
             and the trace follows it in flow; once the run settles the verdict
             leads and everything else folds away below it. */}
         {decisionFirst ? (
-          <div className="mx-auto flex w-full max-w-[840px] min-w-0 flex-col gap-4">
+          <div className="mx-auto flex w-full max-w-[var(--thread-w)] min-w-0 flex-col gap-4">
             {alerts}
             {resultsCard}
             {specCard}
@@ -275,35 +356,38 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
                 <div className="flex flex-col gap-5">{conversation}</div>
               </Disclosure>
             )}
-            {hasTrace && (
-              <AgentTraceCard
-                trace={trace}
+            {trailingTrace.length > 0 && (
+              <AgentActivity
+                trace={trailingTrace}
                 sandboxLogs={sandboxLogs}
                 phaseState={phaseState}
                 simulated={simulatedTrace}
-                defaultOpen={false}
+                onOpenLog={() => setLogTrace(trailingTrace)}
               />
             )}
           </div>
         ) : (
-          <div className="mx-auto flex w-full max-w-[840px] min-w-0 flex-col gap-4">
+          <div className="mx-auto flex w-full max-w-[var(--thread-w)] min-w-0 flex-col gap-4">
             {conversation.length > 0 && (
               <div className="flex flex-col gap-5">{conversation}</div>
             )}
             {typing && <TypingIndicator phase={phaseState} />}
             {alerts}
             {specCard}
-            {hasTrace && (
-              <AgentTraceCard
-                trace={trace}
+            {/* Only the turn still in flight lands here; work belonging to an
+                earlier turn is rendered beside that turn's reply above. */}
+            {trailingTrace.length > 0 && (
+              <AgentActivity
+                trace={trailingTrace}
                 sandboxLogs={sandboxLogs}
                 phaseState={phaseState}
                 simulated={simulatedTrace}
-                /* Open only while the agent is actually working, so its work
-                   stays visible live. Once a run pauses for confirmation the
-                   trace collapses to its summary row: expanded, it outweighed
-                   the reply it belongs to and pushed it off screen. */
-                defaultOpen={running}
+                /* Bare and streaming while the agent works, so its progress is
+                   the visible thing; a quiet one-line summary once it stops,
+                   because then the ANSWER is the visible thing and the log is
+                   evidence available on request. */
+                live={working}
+                onOpenLog={() => setLogTrace(trailingTrace)}
               />
             )}
             {resultsCard}
@@ -311,6 +395,15 @@ export default function ChatThread({ messages, trace, sandboxLogs, phaseState, t
         )}
 
       </div>
+
+      <TracePanel
+        open={logTrace !== null}
+        onClose={() => setLogTrace(null)}
+        trace={logTrace || []}
+        sandboxLogs={sandboxLogs}
+        phaseState={phaseState}
+        simulated={simulatedTrace}
+      />
     </div>
   );
 }

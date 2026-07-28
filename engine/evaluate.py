@@ -267,12 +267,14 @@ def evaluate_results(
         cer_total = 0.0
         failures = 0
         latencies: list[float] = []
+        errors: Counter[str] = Counter()
 
         for doc_id, gt_row in ground_truth.items():
             result = candidate_rows.get(doc_id)
             ok = bool(result and result.get("ok") is True and isinstance(result.get("prediction"), dict))
             if not ok:
                 failures += 1
+                errors[str((result or {}).get("error") or "no result was produced")] += 1
             prediction = result["prediction"] if ok else {}
             latency = result.get("latency_s", 0.0) if result else 0.0
             try:
@@ -291,14 +293,24 @@ def evaluate_results(
                 cer_total += cer(pred_value, gt_value)
 
         denominator = field_slots or 1
+        scored = n_docs - failures
+        # A candidate that never produced a single result was not measured.
+        # Reporting 0.0 accuracy there states a benchmark outcome the run never
+        # observed, so the quality metrics are withheld and the reason is named.
+        ran = scored > 0
+        price = prices.get(candidate_name)
         metrics[candidate_name] = {
-            "exact_accuracy": _rounded(exact_matches / denominator) if field_slots else 0.0,
-            "field_f1": _rounded(f1_total / denominator) if field_slots else 0.0,
-            "cer": _rounded(cer_total / denominator) if field_slots else 0.0,
-            "mean_latency_s": _rounded(sum(latencies) / n_docs) if n_docs else 0.0,
+            "exact_accuracy": _rounded(exact_matches / denominator) if ran and field_slots else None,
+            "field_f1": _rounded(f1_total / denominator) if ran and field_slots else None,
+            "cer": _rounded(cer_total / denominator) if ran and field_slots else None,
+            "mean_latency_s": _rounded(sum(latencies) / n_docs) if ran and n_docs else None,
             "failure_rate": _rounded(failures / n_docs) if n_docs else 0.0,
-            "cost_per_1k_docs": _rounded(float(prices.get(candidate_name, 0.0) or 0.0) * 1000),
+            "cost_per_1k_docs": _rounded(float(price) * 1000) if price is not None else None,
             "setup_complexity": SETUP_COMPLEXITY.get(candidate_name, 1),
             "n_docs": n_docs,
+            "documents_scored": scored,
+            "status": "ok" if ran else "no_result",
         }
+        if errors:
+            metrics[candidate_name]["error_summary"] = errors.most_common(1)[0][0][:MAX_FIELD_CHARS]
     return metrics

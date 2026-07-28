@@ -60,11 +60,12 @@ describe("dark theme is declared identically in both places", () => {
   });
 
   it("overrides every colour token the light theme defines", () => {
-    /* Tokens that are intentionally theme-independent: geometry, motion, and
-       aliases that resolve through another token. */
+    /* Tokens that are intentionally theme-independent: geometry, spacing,
+       motion, and aliases that resolve through another token. Spacing scales
+       with the viewport, never with the theme. */
     const themeless = (name, value) =>
       value.startsWith("var(") ||
-      /^--(radius|canvas$|sidebar$|gap|motion|ease|shadow-btn|bg|text|border)/.test(name);
+      /^--(radius|space|thread-w|canvas$|sidebar$|gap|motion|ease|shadow-btn|bg|text|border)/.test(name);
 
     const missing = [...light]
       .filter(([name, value]) => !themeless(name, value) && !media.has(name))

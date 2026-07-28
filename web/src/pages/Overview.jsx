@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { getResults, listSessions } from "../api.js";
+import { fetchBrandLogos, getResults, listSessions } from "../api.js";
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
 import { authoritativeProvenance, canRenderMetrics } from "../provenance.js";
 import { relativeTime } from "../relativeTime.js";
-import { buildCanonicalRows, buildDecision, primaryMetricKey } from "../resultsModel.js";
+import { buildCanonicalRows, buildDecision, candidateLabel, componentRows, primaryMetricKey } from "../resultsModel.js";
 import { BTN_PRIMARY, InlineError, PAGE_HEADER, PAGE_TITLE, PANEL, Skeleton, useFitList } from "../components/ui.jsx";
 import HeaderActions from "../components/HeaderActions.jsx";
 import StatusIcon from "../components/StatusIcon.jsx";
 import { ContributionCalendar, RankBars } from "../components/charts.jsx";
+import { brandAssetFor, ensureBrandAssets, runtimeBrandAssetFor } from "../brandIcons.js";
+import { selectResumeSession } from "../overviewResume.js";
 
 /* This page answers the one question no other page does: what did the work
    actually conclude. Runs owns the session list, Datasets owns the data,
@@ -56,7 +58,14 @@ function SectionCard({ title, count, children, grow = false }) {
       className={`${PANEL} flex flex-col overflow-hidden ${grow ? "min-h-0 flex-1" : ""}`}
       aria-label={title}
     >
-      <div className="flex items-baseline justify-between gap-3 px-5 pb-1 pt-4">
+      <div
+        className="flex items-baseline justify-between gap-3 pb-1"
+        style={{
+          paddingLeft: "var(--space-card-x)",
+          paddingRight: "var(--space-card-x)",
+          paddingTop: "calc(var(--space-card-y) * 1.6)",
+        }}
+      >
         <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">{title}</h2>
         {count !== null && count !== undefined && (
           <span className="pb-mono text-[12px] text-[var(--ink-3)]">{count}</span>
@@ -67,35 +76,131 @@ function SectionCard({ title, count, children, grow = false }) {
   );
 }
 
-/* One finished benchmark, read as its conclusion rather than its status. */
-function VerdictRow({ item }) {
+/* The margin behind a verdict, stated rather than plotted. "X won" is a claim;
+   the number a reader actually needs is how far clear it finished, which is one
+   subtraction — so it is written out instead of left to be eyeballed off five
+   bars. The beaten field follows as compact chips, ordered as they ranked. */
+function VerdictMargin({ item }) {
+  const rows = [...item.rows].sort(
+    (a, b) => (Number(b[item.metricKey]) || -1) - (Number(a[item.metricKey]) || -1),
+  );
+  const [winner, runnerUp] = rows;
+  const top = Number(winner?.[item.metricKey]);
+  const next = Number(runnerUp?.[item.metricKey]);
+  const gap = Number.isFinite(top) && Number.isFinite(next) ? top - next : null;
+  const isRating = item.metricKey === "rating";
+  const gapLabel = gap === null
+    ? null
+    : gap === 0
+      ? "Tied on the primary metric"
+      : `+${isRating ? Math.round(gap) : `${(gap * 100).toFixed(1)} pts`}${isRating ? "" : ""} clear of ${safeVisibleText(candidateLabel(runnerUp))}`;
+
+  /* A sole candidate has no margin to report. Saying so in one line is honest
+     and costs a row's height; rendering nothing left an empty band instead. */
+  if (rows.length <= 1) {
+    return (
+      <div style={{ paddingLeft: "var(--space-card-x)", paddingRight: "var(--space-card-x)", paddingBottom: "calc(var(--space-card-y) * 1.3)" }}>
+        <p className="flex items-center gap-1.5 text-[12px] text-[var(--ink-3)]">
+          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--ink-3)]" />
+          Only candidate in this benchmark — no comparison to draw.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-5 pb-3.5">
+      {gapLabel && (
+        <p className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--ink-2)]">
+          <span
+            aria-hidden="true"
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: gap === 0 ? "var(--warn)" : "var(--ok)" }}
+          />
+          {gapLabel}
+        </p>
+      )}
+      {rows.length > 1 && (
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {rows.slice(1).map((row) => {
+            const value = formatMetric(item.metricKey, row[item.metricKey]);
+            return (
+              <li
+                key={row.name}
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full bg-[var(--surface-2)] py-1 pl-1.5 pr-2.5"
+                title={candidateLabel(row)}
+              >
+                <BrandIcon name={row.name} size={16} />
+                <span className="pb-contain min-w-0 truncate text-[12px] text-[var(--ink-2)]">
+                  {safeVisibleText(candidateLabel(row))}
+                </span>
+                {value && (
+                  <span className="pb-mono shrink-0 text-[11px] text-[var(--ink-3)]">{value}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* One finished benchmark, read as its conclusion rather than its status.
+   Rows are content-sized, never stretched: a fixed tall row plus flex-1 made a
+   verdict with one runner-up as tall as one with five, which is mostly air, and
+   the fit-list then showed fewer verdicts than would actually fit. */
+function VerdictRow({ item, pad = 0 }) {
   const score = formatMetric(item.metricKey, item.winner[item.metricKey]);
   return (
-    <li data-fit-item className="flex flex-col">
+    <li
+      data-fit-item
+      className="flex flex-col"
+      style={pad ? { paddingBottom: pad } : undefined}
+    >
       <Link
         to={`/app/benchmark?session=${encodeURIComponent(item.sessionId)}`}
         onClick={() => localStorage.setItem("proofbench.activeSessionId", item.sessionId)}
-        className="flex min-h-16 items-center gap-4 px-5 py-3 transition-colors duration-150 hover:bg-[var(--surface-2)] focus-visible:bg-[var(--surface-2)] focus-visible:outline-none"
+        className="flex items-center gap-3.5 transition-colors duration-150 hover:bg-[var(--surface-2)] focus-visible:bg-[var(--surface-2)] focus-visible:outline-none"
+        style={{
+          paddingLeft: "var(--space-card-x)",
+          paddingRight: "var(--space-card-x)",
+          paddingTop: "calc(var(--space-card-y) * 1.4)",
+          paddingBottom: "calc(var(--space-card-y) * 0.8)",
+        }}
       >
+        <BrandIcon name={item.winner.name} size={30} />
         <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-            <span className="pb-contain truncate text-[15px] font-medium text-[var(--ink)]">
-              {safeVisibleText(item.winner.name)}
-            </span>
-            {score && (
-              <span className="pb-mono shrink-0 text-[12px] text-[var(--ink-2)]">
-                {METRIC_LABEL[item.metricKey] || "Score"} {score}
-              </span>
-            )}
+          <span className="pb-contain block truncate text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
+            {/* A run where nothing cleared the bar has no winner to name, so the
+                row states the outcome rather than promoting the top scorer. */}
+            {item.unmet
+              ? "No candidate met the requirements"
+              : safeVisibleText(candidateLabel(item.winner))}
           </span>
-          <span className="pb-contain mt-0.5 block truncate text-[12px] text-[var(--ink-2)]">
-            won {item.rankedCount === 1 ? "the only entry" : `over ${item.rankedCount - 1} other${item.rankedCount === 2 ? "" : "s"}`}
+          <span className="pb-contain mt-1 block truncate text-[12px] text-[var(--ink-2)]">
+            {item.unmet
+              ? `${item.failedCount} of ${item.rankedCount} rated not implementable`
+              : `won ${item.rankedCount === 1 ? "the only entry" : `over ${item.rankedCount - 1} other${item.rankedCount === 2 ? "" : "s"}`}`}
             {" in "}
             {safeVisibleText(item.title)}
           </span>
         </span>
+        {/* The verdict's number is the headline of this card, so it is set at
+            display size — the leaderboard beside it keeps its numbers small
+            because there the bar carries the comparison, not the digits. */}
+        {score && (
+          <span className="shrink-0 text-right">
+            <span className="block text-[10px] font-medium uppercase tracking-[0.06em] text-[var(--ink-3)]">
+              {METRIC_LABEL[item.metricKey] || "Score"}
+            </span>
+            <span className="pb-mono mt-0.5 block text-[19px] font-medium leading-none tracking-[-0.02em] text-[var(--ink)]">
+              {score}
+            </span>
+          </span>
+        )}
         <time
-          className="pb-mono shrink-0 text-[12px] text-[var(--ink-3)]"
+          className="pb-mono hidden shrink-0 text-[12px] text-[var(--ink-3)] sm:block"
           dateTime={item.createdAt}
           title={new Date(item.createdAt).toLocaleString()}
         >
@@ -105,18 +210,12 @@ function VerdictRow({ item }) {
           <ArrowIcon />
         </span>
       </Link>
-      {/* The spread behind the verdict. A headline of "X won" is a claim; the
-          bars are the margin it won by, which is the part a reader needs to
-          judge whether the result is decisive or a coin flip. */}
-      <div className="px-5 pb-4">
-        <RankBars
-          rows={item.rows}
-          metricKey={item.metricKey}
-          format={(v) => formatMetric(item.metricKey, v) ?? "n/a"}
-          max={item.metricKey === "rating" ? 100 : undefined}
-          hue={METRIC_HUE[item.metricKey] || "var(--accent)"}
-        />
-      </div>
+      {/* Deliberately NOT the leaderboard's bar list — the card beside this one
+          already ranks tools that way, and two identical treatments make the
+          page read as one repeated widget. A verdict answers a different
+          question: was this decisive, and who did it beat. So it states the
+          margin in words and shows the beaten field as compact chips. */}
+      <VerdictMargin item={item} />
     </li>
   );
 }
@@ -126,23 +225,149 @@ function VerdictRow({ item }) {
    exactly why this list must show every tool rather than truncate to a "see
    all" link: there is no other page for that link to lead to. It reads in two
    columns so the whole set fits the card at a dashboard's density. */
-function ToolCell({ tool }) {
-  const score = formatMetric(tool.metricKey, tool.best);
-  return (
-    <div className="flex min-w-0 items-center gap-2 px-5 py-2">
-      <span className="pb-contain min-w-0 flex-1 truncate text-[13px] text-[var(--ink)]">
-        {safeVisibleText(tool.name)}
+/* Known third-party services use bundled brand marks. Custom benchmark
+   adapters keep the neutral monogram, so every row remains aligned and the
+   dashboard never makes a runtime request to an icon service. */
+function BrandIcon({ name, size = 22 }) {
+  const [failed, setFailed] = useState(false);
+  const asset = brandAssetFor(name) || runtimeBrandAssetFor(name);
+  const initial = (String(name || "?").trim()[0] || "?").toUpperCase();
+  const box = { width: size, height: size };
+
+  if (failed || !asset) {
+    return (
+      <span
+        aria-hidden="true"
+        style={box}
+        className="flex shrink-0 items-center justify-center rounded-[7px] bg-[var(--accent-tint)] text-[10px] font-semibold uppercase text-[var(--accent)]"
+      >
+        {initial}
       </span>
-      {tool.wins > 0 && (
-        <span className="shrink-0 text-[var(--ok)]" title="Won a benchmark" aria-label="Won a benchmark">
-          <StatusIcon tone="ok" size={13} />
-        </span>
-      )}
-      {score && (
-        <span className="pb-mono shrink-0 text-[12px] text-[var(--ink-2)]">
-          {score}
-        </span>
-      )}
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      style={box}
+      className="flex shrink-0 items-center justify-center rounded-[7px] bg-[var(--surface-2)] p-[3px]"
+    >
+      <img
+        src={asset}
+        alt=""
+        width={size - 6}
+        height={size - 6}
+        onError={() => setFailed(true)}
+        className="h-full w-full object-contain"
+      />
+    </span>
+  );
+}
+
+/* The row's legibility floor: one line plus its padding. Shared between the CSS
+   class and the fit maths, which must agree or the cap lands off a row edge. */
+const TOOL_ROW_MIN = 26;
+
+/* One evidence group as a ranked leaderboard: sorted best-first, each tool's
+   score drawn as a bar so the standing is read at a glance rather than by
+   comparing numbers. The leader's bar carries the group's full hue, the rest a
+   muted step of it, and a win is marked with the same check used everywhere
+   else. Rows stretch to fill the card (flexGrow by tool count), so the column
+   stays balanced with no blank at the foot.
+
+   overflow-hidden on the group, not just the card: rows hold a min-height, so a
+   group allotted less than its rows need would otherwise spill past its own box
+   and overlap the next group's header. */
+function ToolLeaderboard({ metricKey, tools }) {
+  const sorted = [...tools].sort((a, b) => (Number(b.best) || -1) - (Number(a.best) || -1));
+  const max = metricKey === "rating" ? 100 : Math.max(1, ...sorted.map((t) => Number(t.best) || 0));
+  const hue = METRIC_HUE[metricKey] || "var(--accent)";
+
+  /* Rows are uniform, so when they cannot all fit the list is capped to a WHOLE
+     number of them. Without this the group clipped through whatever row landed
+     on its edge, leaving a half-height row of sliced text at the fold.
+     Measured from the group box (not the list) so applying the cap cannot feed
+     back into the measurement. */
+  const [group, setGroup] = useState(null);
+  const headRef = useRef(null);
+  const [maxH, setMaxH] = useState(undefined);
+
+  useLayoutEffect(() => {
+    if (!group) return undefined;
+    const measure = () => {
+      const head = headRef.current ? headRef.current.offsetHeight : 0;
+      const available = group.clientHeight - head;
+      const needed = tools.length * TOOL_ROW_MIN;
+      const next = needed > available + 0.5
+        ? Math.max(0, Math.floor(available / TOOL_ROW_MIN)) * TOOL_ROW_MIN
+        : undefined;
+      setMaxH((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(group);
+    return () => observer.disconnect();
+  }, [group, tools.length]);
+
+  return (
+    <div ref={setGroup} className="flex min-h-0 flex-col overflow-hidden" style={{ flexGrow: tools.length }}>
+      <div ref={headRef}>
+        <ToolGroupHeader metricKey={metricKey} />
+      </div>
+      <ul className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ maxHeight: maxH }}>
+        {sorted.map((tool, index) => {
+          const value = Number(tool.best);
+          const finite = Number.isFinite(value);
+          const pct = finite && max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+          const isLeader = index === 0 && finite && value > 0;
+          const score = formatMetric(metricKey, tool.best);
+          return (
+            /* Rows share the card's height evenly (flex-1) but never below a
+               legibility floor: with min-h-0 alone a short viewport squeezed
+               rows under their own line-height and the names overlapped into an
+               unreadable stack. The floor is one line plus its padding; when
+               even that will not fit, the list reports the overflow rather than
+               compressing (see the count below). */
+            <li
+              key={tool.name}
+              data-tool-row
+              className="flex flex-1 items-center gap-2.5 overflow-hidden border-t border-[var(--line)]"
+              style={{
+                minHeight: TOOL_ROW_MIN,
+                paddingLeft: "var(--space-card-x)",
+                paddingRight: "var(--space-card-x)",
+                paddingTop: "calc(var(--space-card-y) * 0.55)",
+                paddingBottom: "calc(var(--space-card-y) * 0.55)",
+              }}
+            >
+              <BrandIcon name={tool.name} size={20} />
+              <span
+                className="pb-contain min-w-0 flex-[1.5] truncate text-[13px] text-[var(--ink)]"
+                title={candidateLabel(tool)}
+              >
+                {safeVisibleText(candidateLabel(tool))}
+              </span>
+              <span className="relative hidden h-1.5 flex-[2] overflow-hidden rounded-full bg-[var(--surface-2)] sm:block">
+                <span
+                  className="absolute inset-y-0 left-0 rounded-full"
+                  style={{
+                    width: `${pct}%`,
+                    backgroundColor: isLeader ? hue : `color-mix(in oklab, ${hue} 42%, var(--surface-2))`,
+                  }}
+                />
+              </span>
+              {tool.wins > 0 && (
+                <span className="shrink-0 text-[var(--ok)]" title="Won a benchmark" aria-label="Won a benchmark">
+                  <StatusIcon tone="ok" size={13} />
+                </span>
+              )}
+              <span className="pb-mono w-[7ch] shrink-0 text-right text-[12px] text-[var(--ink-2)]">
+                {score ?? "n/a"}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -152,7 +377,10 @@ function ToolCell({ tool }) {
    repeating it, and carries the group's hue as a small key. */
 function ToolGroupHeader({ metricKey }) {
   return (
-    <div className="flex items-center gap-2 bg-[var(--surface-2)] px-5 py-1.5">
+    <div
+      className="flex items-center gap-2 bg-[var(--surface-2)] py-1.5"
+      style={{ paddingLeft: "var(--space-card-x)", paddingRight: "var(--space-card-x)" }}
+    >
       <span
         aria-hidden="true"
         className="h-2 w-2 rounded-[3px]"
@@ -177,7 +405,8 @@ function MoreLink({ hidden, noun, footerRef }) {
     <Link
       ref={footerRef}
       to="/app/runs"
-      className="mt-auto flex shrink-0 items-center justify-center gap-1.5 border-t border-[var(--line)] px-5 py-2.5 text-[12px] font-medium text-[var(--ink-2)] transition-colors duration-150 hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
+      className="mt-auto flex shrink-0 items-center justify-center gap-1.5 border-t border-[var(--line)] py-2.5 text-[12px] font-medium text-[var(--ink-2)] transition-colors duration-150 hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
+      style={{ paddingLeft: "var(--space-card-x)", paddingRight: "var(--space-card-x)" }}
     >
       {hidden} more {hidden === 1 ? noun : `${noun}s`}
       <ArrowIcon />
@@ -213,7 +442,11 @@ export default function Overview() {
             const metrics = sanitizeForDisplay(data?.metrics || null);
             if (!metrics) return null;
             const isAssessment = Object.values(metrics).some((row) => row?.rating !== undefined);
-            const decision = buildDecision(buildCanonicalRows(metrics, isAssessment), isAssessment);
+            // Products only. Libraries are parts of a self-built design, never
+            // tools that were evaluated, so they never reach the leaderboard.
+            const rows = buildCanonicalRows(metrics, isAssessment);
+            const decision = buildDecision(rows, isAssessment,
+              componentRows(metrics, isAssessment));
             if (!decision?.winner) return null;
             return {
               sessionId: s.id,
@@ -222,7 +455,9 @@ export default function Overview() {
               metricKey: primaryMetricKey(isAssessment),
               winner: decision.winner,
               rankedCount: decision.rankedCount,
-              rows: buildCanonicalRows(metrics, isAssessment),
+              unmet: decision.unmet,
+              failedCount: decision.failedCount,
+              rows,
               isAssessment,
             };
           }),
@@ -247,7 +482,8 @@ export default function Overview() {
         const name = String(row.name || "");
         if (!name) continue;
         const value = Number(row[v.metricKey]);
-        const entry = byName.get(name) || { name, appearances: 0, wins: 0, best: null, metricKey: v.metricKey };
+        const entry = byName.get(name)
+          || { name, display_name: row.display_name, appearances: 0, wins: 0, best: null, metricKey: v.metricKey };
         entry.appearances += 1;
         if (row.canonicalRank === 1) entry.wins += 1;
         if (Number.isFinite(value) && (entry.best === null || value > entry.best)) entry.best = value;
@@ -262,6 +498,18 @@ export default function Overview() {
     }
     return { all, groups: [...groups.entries()] };
   }, [verdicts]);
+
+  /* Marks for anything the bundle does not already carry. The build-time
+     manifest is frozen when the frontend is built, so without this every tool
+     benchmarked since the last deploy renders as a monogram forever. */
+  const [, redrawIcons] = useReducer((n) => n + 1, 0);
+  const iconNames = useMemo(() => tools.all.map((tool) => tool.name), [tools]);
+  useEffect(() => {
+    let alive = true;
+    ensureBrandAssets(iconNames, fetchBrandLogos)
+      .then((added) => { if (alive && added) redrawIcons(); });
+    return () => { alive = false; };
+  }, [iconNames]);
 
   /* A year of days, week-aligned, for the calendar. Columns are weeks, so the
      window has to end on a Saturday and be a whole multiple of seven or every
@@ -294,13 +542,47 @@ export default function Overview() {
     return days;
   }, [sessions]);
 
-  const resume = sessions.find((s) => s.is_running) || sessions[sessions.length - 1] || null;
+  const resume = useMemo(() => selectResumeSession(sessions), [sessions]);
   const nothingYet = !loading && sessions.length === 0;
 
   // Verdicts fit to the height they are handed; the overflow is a link to Runs,
   // where those completed runs actually live. Tools never truncate — they read
   // in two columns instead, since Overview is their only home.
   const verdictFit = useFitList(verdicts.length);
+
+  /* How many tool rows fall past the card's edge once each row holds its
+     legibility floor. Reported rather than clipped in silence. */
+  const [toolBox, setToolBox] = useState(null);
+  const [hiddenTools, setHiddenTools] = useState(0);
+  useEffect(() => {
+    if (!toolBox) return undefined;
+    const measure = () => {
+      /* Counted against each row's OWN group box, since a group clips its own
+         overflow — a row can be cut by its group while still sitting inside the
+         card's outer bounds. Derived as total-minus-visible rather than counted
+         directly, so the number shown and the number reported always sum to the
+         total (counting both independently drifted by one at the boundary). */
+      const rows = toolBox.querySelectorAll("[data-tool-row]");
+      let visible = 0;
+      for (const row of rows) {
+        const box = row.closest("ul");
+        if (!box) continue;
+        if (row.getBoundingClientRect().bottom <= box.getBoundingClientRect().bottom + 1) visible += 1;
+      }
+      const hidden = rows.length - visible;
+      setHiddenTools((prev) => (prev === hidden ? prev : hidden));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    /* Each group list is observed too, not just the card: a group caps itself to
+       a whole number of rows, and that cap changes which rows are visible
+       WITHOUT resizing the card — so watching only the outer box left the count
+       one row stale. */
+    const observer = new ResizeObserver(measure);
+    observer.observe(toolBox);
+    for (const list of toolBox.querySelectorAll("ul")) observer.observe(list);
+    return () => observer.disconnect();
+  }, [toolBox, tools.all.length]);
 
   /* The page is a dashboard, so it fits the viewport rather than scrolling: a
      roll-up you have to scroll is a list. Height flows header -> content, the
@@ -312,7 +594,8 @@ export default function Overview() {
       <header className={`${PAGE_HEADER} px-4 sm:px-8`}>
         <div className="mx-auto flex w-full max-w-canvas items-start justify-between gap-x-6 pb-3 pt-3.5">
           <div className="min-w-0">
-            <h1 className={PAGE_TITLE}>Overview</h1>
+            <span className="pb-eyebrow-glow">Dashboard</span>
+            <h1 className={`${PAGE_TITLE} mt-1`}>Overview</h1>
             <p className="mt-0.5 text-[13px] text-[var(--ink-2)]">
               What this deployment has benchmarked, and what it concluded.
             </p>
@@ -325,7 +608,19 @@ export default function Overview() {
         </div>
       </header>
 
-      <div className="mx-auto flex w-full min-h-0 max-w-canvas flex-1 flex-col gap-4 overflow-y-auto px-4 pb-6 pt-5 sm:px-8 lg:overflow-hidden">
+      {/* Spacing scales with the viewport (see the --space-* tokens): a short
+          window spends its pixels on content instead of margin, a tall one
+          breathes. */}
+      <div
+        className="mx-auto flex w-full min-h-0 max-w-canvas flex-1 flex-col overflow-y-auto lg:overflow-hidden"
+        style={{
+          gap: "var(--space-gap)",
+          paddingLeft: "var(--space-page-x)",
+          paddingRight: "var(--space-page-x)",
+          paddingTop: "var(--space-page-y)",
+          paddingBottom: "var(--space-page-y)",
+        }}
+      >
         {error && <InlineError>Could not load your activity: {error}</InlineError>}
 
         {loading && (
@@ -360,7 +655,13 @@ export default function Overview() {
               <Link
                 to={`/app/benchmark?session=${encodeURIComponent(resume.id)}`}
                 onClick={() => localStorage.setItem("proofbench.activeSessionId", resume.id)}
-                className={`${PANEL} flex min-h-14 shrink-0 items-center gap-3 px-5 py-3 transition-colors duration-150 hover:bg-[var(--surface-2)]`}
+                className={`${PANEL} flex shrink-0 items-center gap-3 transition-colors duration-150 hover:bg-[var(--surface-2)]`}
+                style={{
+                  paddingLeft: "var(--space-card-x)",
+                  paddingRight: "var(--space-card-x)",
+                  paddingTop: "calc(var(--space-card-y) * 1.1)",
+                  paddingBottom: "calc(var(--space-card-y) * 1.1)",
+                }}
               >
                 <span className="min-w-0 flex-1">
                   <span className="block text-[12px] text-[var(--ink-2)]">
@@ -382,14 +683,21 @@ export default function Overview() {
 
             <div className="shrink-0">
               <SectionCard title="Activity">
-                <div className="px-5 pb-4 pt-1">
+                <div
+                  className="pt-1"
+                  style={{
+                    paddingLeft: "var(--space-card-x)",
+                    paddingRight: "var(--space-card-x)",
+                    paddingBottom: "calc(var(--space-card-y) * 1.5)",
+                  }}
+                >
                   <p className="mb-2.5 text-[12px] text-[var(--ink-2)]">Benchmarks started</p>
                   <ContributionCalendar days={activity} />
                 </div>
               </SectionCard>
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
+            <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-12" style={{ gap: "var(--space-gap)" }}>
             <div className="flex min-h-0 flex-col lg:col-span-7">
             <SectionCard title="Verdicts" count={verdicts.length} grow>
               {verdicts.length === 0 ? (
@@ -409,10 +717,10 @@ export default function Overview() {
                   <ul
                     ref={verdictFit.listRef}
                     style={{ maxHeight: verdictFit.maxHeight }}
-                    className="divide-y divide-[var(--line)] overflow-hidden"
+                    className="flex min-h-0 flex-1 flex-col divide-y divide-[var(--line)] overflow-hidden"
                   >
                     {verdicts.map((item) => (
-                      <VerdictRow key={item.sessionId} item={item} />
+                      <VerdictRow key={item.sessionId} item={item} pad={verdictFit.pad} />
                     ))}
                   </ul>
                   <MoreLink hidden={verdictFit.hidden} noun="verdict" footerRef={verdictFit.footerRef} />
@@ -425,29 +733,25 @@ export default function Overview() {
             {tools.all.length > 0 && (
               <div className="flex min-h-0 flex-col lg:col-span-5">
                 <SectionCard title="Tools evaluated" count={tools.all.length} grow>
-                  {/* Two columns, every tool shown. This list is the roll-up
-                      that exists nowhere else, so it must not truncate to a link
-                      that leads to a page without it — instead it halves its own
-                      height by reading in two columns. */}
-                  <div className="min-h-0 flex-1 overflow-hidden border-t border-[var(--line)]">
+                  {/* A leaderboard, not a lookup table. Every tool is shown —
+                      this roll-up exists nowhere else, so it must not truncate
+                      to a link that leads to a page without it — but each group
+                      is ranked best-first with its score drawn as a bar, so the
+                      standing reads at a glance instead of by comparing digits.
+                      Rows stretch to fill the card, keeping the column balanced. */}
+                  <div ref={setToolBox} className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-[var(--line)]">
                     {tools.groups.map(([metricKey, group]) => (
-                      <div key={metricKey}>
-                        <ToolGroupHeader metricKey={metricKey} />
-                        <ul className="grid grid-cols-1 sm:grid-cols-2">
-                          {group.map((tool, index) => (
-                            <li
-                              key={tool.name}
-                              className={`min-w-0 border-t border-[var(--line)] ${
-                                index % 2 === 1 ? "sm:border-l" : ""
-                              }`}
-                            >
-                              <ToolCell tool={tool} />
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                      <ToolLeaderboard key={metricKey} metricKey={metricKey} tools={group} />
                     ))}
                   </div>
+                  {/* Rows hold a legibility floor rather than compressing, so on
+                      a short window some fall past the card's edge. Saying how
+                      many is the honest alternative to clipping them silently. */}
+                  {hiddenTools > 0 && (
+                    <p className="shrink-0 border-t border-[var(--line)] py-1.5 text-center text-[11px] text-[var(--ink-3)]">
+                      {hiddenTools} more below the fold — taller window shows all
+                    </p>
+                  )}
                 </SectionCard>
               </div>
             )}

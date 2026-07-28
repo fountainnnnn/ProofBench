@@ -169,7 +169,8 @@ export default function Runs() {
       <header className={`${PAGE_HEADER} px-4 sm:px-8`}>
         <div className="mx-auto flex w-full max-w-canvas flex-wrap items-end justify-between gap-x-6 gap-y-1 pb-3 pt-3.5">
           <div className="min-w-0">
-            <h1 className={PAGE_TITLE}>Runs</h1>
+            <span className="pb-eyebrow-glow">History</span>
+            <h1 className={`${PAGE_TITLE} mt-1`}>Runs</h1>
             <p className="mt-0.5 text-[13px] text-[var(--ink-2)]">
               Every benchmark session on this deployment, with the evidence each one can prove.
             </p>

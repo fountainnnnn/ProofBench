@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 //
 // The completed-run view is read to make a decision. The ranking leads, the
 // evidence labels stay compact, and the conversation and execution trace start
@@ -52,11 +52,14 @@ describe("completed run is decision first", () => {
     const text = container.textContent;
     const recommendation = text.indexOf("Recommendation");
     const conversation = text.indexOf("Conversation");
-    const trace = text.indexOf("Execution trace");
+    /* A settled run collapses its trace to one activity line ("Searched the
+       web · …"), so the ordering is asserted against that line rather than the
+       old "Execution trace" card heading. */
+    const activity = text.indexOf("Read documentation");
 
     expect(recommendation).toBeGreaterThanOrEqual(0);
     expect(conversation).toBeGreaterThan(recommendation);
-    expect(trace).toBeGreaterThan(conversation);
+    expect(activity).toBeGreaterThan(conversation);
   });
 
   it("names the winning candidate and its margin over the runner up", () => {
@@ -77,15 +80,27 @@ describe("completed run is decision first", () => {
     expect(screen.getByText("compare tesseract and easyocr")).toBeTruthy();
   });
 
-  it("folds the execution trace away by default and opens it on request", () => {
-    renderCompleted();
-    const toggle = screen.getByRole("button", { name: /Execution trace/ });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText(/Tesseract install guide/)).toBeNull();
+  it("collapses a settled trace to one activity line and opens the sources on request", () => {
+    renderCompleted({
+      trace: [{
+        tool: "scrape_docs",
+        status: "ok",
+        detail: '[{"title": "Tesseract install guide", "url": "https://tesseract-ocr.github.io/install"}]',
+      }],
+    });
+    /* The detail is not in the thread at all — it lives in a side panel — and
+       the panel lists the PAGES consulted rather than the raw call payload. */
+    const line = screen.getByRole("button", { name: /Searched 1 site/ });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Tesseract install guide")).toBeNull();
 
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("button", { name: /scrape_docs/ })).toBeTruthy();
+    fireEvent.click(line);
+    const panel = screen.getByRole("dialog", { name: /Sources/ });
+    expect(panel).toBeTruthy();
+    const link = within(panel).getByRole("link", { name: /Tesseract install guide/ });
+    expect(link.getAttribute("href")).toBe("https://tesseract-ocr.github.io/install");
+    // The raw payload must not leak into the panel.
+    expect(panel.textContent).not.toContain('"url"');
   });
 
   it("leads with the decision even when no terminal phase event was replayed", () => {
@@ -100,12 +115,27 @@ describe("completed run is decision first", () => {
     expect(screen.getByText("compare tesseract and easyocr")).toBeTruthy();
   });
 
-  it("keeps an active run in conversation order with the trace open", () => {
+  it("streams a live run's work inline, after the message that prompted it", () => {
     renderCompleted({ phaseState: { phase: "RUNNING" }, running: true, results: null, report: null });
     const text = document.body.textContent;
-    expect(text.indexOf("compare tesseract and easyocr")).toBeLessThan(text.indexOf("Execution trace"));
-    expect(screen.getByRole("button", { name: /Execution trace/ }).getAttribute("aria-expanded")).toBe("true");
+    /* Live work is bare text in the thread, not a card to expand: the reader
+       sees what the agent is doing without having to open anything. This
+       fixture's one call has already returned, so the line reads in the past
+       tense — the gerund ("Reading…") is reserved for calls still in flight. */
+    expect(text.indexOf("compare tesseract and easyocr")).toBeLessThan(text.indexOf("Read documentation"));
+    expect(screen.queryByRole("button", { name: /Execution trace/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Conversation/ })).toBeNull();
+  });
+
+  it("says a tool is still working while its call is in flight", () => {
+    renderCompleted({
+      phaseState: { phase: "RUNNING" },
+      running: true,
+      results: null,
+      report: null,
+      trace: [{ tool: "web_search", status: "start", args_summary: "query=ocr" }],
+    });
+    expect(document.body.textContent).toContain("Searching the web");
   });
 
   it("still blocks a run whose conclusive provenance disagrees", () => {
@@ -127,7 +157,7 @@ describe("completed run is decision first", () => {
 describe("execution basis is taken from the backend", () => {
   it("renders a declared execution mode rather than inventing one", () => {
     render(<ResultsCard metrics={metrics} phase="DONE" executionMode="verified_in_daytona" />);
-    expect(screen.getByText("Verified in Daytona")).toBeTruthy();
+    expect(screen.getByText("Verified by execution")).toBeTruthy();
   });
 
   it("reads a documentation-only assessment from the candidate rows", () => {
@@ -147,12 +177,12 @@ describe("execution basis is taken from the backend", () => {
         phase="DONE"
       />
     );
-    expect(screen.getByText("Partly verified in Daytona")).toBeTruthy();
+    expect(screen.getByText("Partly verified by execution")).toBeTruthy();
   });
 
   it("claims nothing when the backend reported no basis", () => {
     render(<ResultsCard metrics={metrics} phase="DONE" />);
-    expect(screen.queryByText(/Verified in Daytona/)).toBeNull();
+    expect(screen.queryByText(/Verified by execution/)).toBeNull();
     expect(screen.queryByText(/Compared from documentation/)).toBeNull();
     expect(screen.getByText("Recommendation")).toBeTruthy();
   });

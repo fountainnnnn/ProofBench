@@ -11,9 +11,11 @@ from engine.agent import Orchestrator
 from engine import agent, llm_clients, tool_assessment
 from engine.tool_assessment import (
     assess_documentation_batch,
+    format_constraints,
     result_from_plan,
     unavailable_result,
     validate_plan,
+    write_assessment_report,
 )
 
 
@@ -442,5 +444,304 @@ def test_real_runner_skips_daytona_when_docs_are_not_implementable(monkeypatch):
         assert metrics["example"]["daytona_triggered"] is False
         assert metrics["example"]["verification_status"] == "not_implementable"
         assert any(event == "artifact" and data.get("kind") == "results" for event, data in events)
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def test_unreadable_documentation_is_withheld_not_scored_zero():
+    """A 404 docs URL says nothing about the vendor, so it earns no rating."""
+    from engine.tool_assessment import result_from_plan
+
+    plan = {
+        "implementable": False,
+        "execution_mode": "comparison_only",
+        "documentation_quality": 0,
+        "integration_feasibility": 0,
+        "auth_clarity": 0,
+        "setup_complexity": 5,
+        "reason": "The documentation link leads to a 404 - Not Found page.",
+        "evidence": ["The documentation page returned a 404 error."],
+    }
+
+    row = result_from_plan(plan, verification_status="not_implementable",
+                           daytona_triggered=False)
+
+    assert row["rating"] is None
+    assert row["suitability"] is None
+    assert row["verification_status"] == "unavailable"
+    assert "404" in row["reason"]
+
+
+def test_a_weak_but_readable_document_set_is_still_scored():
+    """Withholding must apply only when nothing at all could be assessed."""
+    from engine.tool_assessment import result_from_plan
+
+    plan = {
+        "implementable": False,
+        "execution_mode": "comparison_only",
+        "documentation_quality": 10,
+        "integration_feasibility": 0,
+        "auth_clarity": 0,
+        "setup_complexity": 5,
+        "reason": "Sparse documentation with no authentication guidance.",
+        "evidence": ["Only a marketing overview is published."],
+    }
+
+    row = result_from_plan(plan, verification_status="not_implementable",
+                           daytona_triggered=False)
+
+    assert row["rating"] == 3
+    assert row["implementable"] is False
+
+
+# ------------------------------------------------------------ the pricing axis
+
+
+def test_pricing_evidence_reweights_the_rating():
+    """25/45/15/15 once pricing was actually measured."""
+    value = validate_plan(plan(execution_mode="comparison_only",
+                               pricing_transparency=60,
+                               pricing_notes="Published per-seat tiers with a free plan."))
+    row = result_from_plan(value, "not_applicable", False)
+
+    # 0.25*80 + 0.45*84 + 0.15*70 + 0.15*60 == 77.3
+    assert row["rating"] == 77
+    assert row["pricing_transparency"] == 60
+    assert row["pricing_notes"] == "Published per-seat tiers with a free plan."
+
+
+def test_absent_pricing_evidence_is_never_a_penalty():
+    """No pricing page means the legacy 30/50/20 weighting, not a zero axis."""
+    without = result_from_plan(
+        validate_plan(plan(execution_mode="comparison_only")), "not_applicable", False)
+    explicit_null = result_from_plan(
+        validate_plan(plan(execution_mode="comparison_only", pricing_transparency=None)),
+        "not_applicable", False)
+
+    assert without["rating"] == 80 == explicit_null["rating"]
+    assert without["pricing_transparency"] is None
+    # A zeroed pricing axis would score strictly lower, which is the claim the
+    # withheld score exists to avoid making.
+    zeroed = result_from_plan(
+        validate_plan(plan(execution_mode="comparison_only", pricing_transparency=0)),
+        "not_applicable", False)
+    assert zeroed["rating"] < without["rating"]
+
+
+def test_pricing_fields_are_optional_and_bounded():
+    assert validate_plan(plan())["pricing_transparency"] is None
+    assert validate_plan(plan())["pricing_notes"] == ""
+    assert validate_plan(plan(pricing_transparency=None))["pricing_transparency"] is None
+    assert validate_plan(plan(pricing_transparency=0))["pricing_transparency"] == 0
+    with pytest.raises(ValueError, match="pricing_transparency"):
+        validate_plan(plan(pricing_transparency=101))
+    with pytest.raises(ValueError, match="pricing_transparency"):
+        validate_plan(plan(pricing_transparency=-1))
+    # Required keys must not grow: a provider that ignores pricing still validates.
+    assert "pricing_transparency" not in tool_assessment.REQUIRED_PLAN_KEYS
+    assert "pricing_notes" not in tool_assessment.REQUIRED_PLAN_KEYS
+
+
+def test_pricing_does_not_rescue_a_row_with_no_readable_documentation():
+    """The withhold check reads the three core axes only."""
+    row = result_from_plan(
+        {"implementable": False, "execution_mode": "comparison_only",
+         "documentation_quality": 0, "integration_feasibility": 0, "auth_clarity": 0,
+         "pricing_transparency": 90, "setup_complexity": 5,
+         "reason": "The documentation link leads to a 404.", "evidence": []},
+        "not_implementable", False)
+
+    assert row["rating"] is None
+    assert row["pricing_transparency"] is None
+
+
+def test_unavailable_result_withholds_pricing_too():
+    row = unavailable_result("documentation could not be scraped")
+    assert row["pricing_transparency"] is None
+    assert row["pricing_notes"] == ""
+
+
+def test_pricing_page_reaches_the_prompt_only_when_one_was_scraped(monkeypatch):
+    captured = {}
+
+    async def fake_batch(requests, model=None, env=None):
+        captured["requests"] = requests
+        content = json.dumps(plan())
+        return [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+            for _ in requests
+        ]
+
+    monkeypatch.setattr(llm_clients, "batch_chat_completions", fake_batch)
+    assess_documentation_batch(
+        [
+            {"name": "alpha", "docs_text": "Alpha docs", "pricing_text": "Free tier, $9/seat"},
+            {"name": "beta", "docs_text": "Beta docs"},
+        ],
+        "compare integrations",
+        env={"DOUBLEWORD_API_KEY": "hidden-test-value"},
+        constraints={"stack": ["Python"], "budget": "under $500/month"},
+    )
+
+    with_pricing = captured["requests"][0]["messages"][1]["content"]
+    without_pricing = captured["requests"][1]["messages"][1]["content"]
+    assert "PRICING PAGE:" in with_pricing and "$9/seat" in with_pricing
+    assert "PRICING PAGE:" not in without_pricing
+    # The stated environment is threaded into every request, not just the first.
+    for prompt in (with_pricing, without_pricing):
+        assert "Existing stack: Python" in prompt
+        assert "under $500/month" in prompt
+
+
+def test_format_constraints_renders_only_what_was_stated():
+    assert format_constraints({}) == ""
+    assert format_constraints(None) == ""
+    assert format_constraints("not a dict") == ""
+    rendered = format_constraints({"stack": ["Python", "Postgres"], "deployment": "on-prem"})
+    assert "Existing stack: Python, Postgres" in rendered
+    assert "Deployment: on-prem" in rendered
+    # Nothing is invented for the fields the user never answered.
+    assert "Hard requirements" not in rendered
+    assert "Budget" not in rendered
+
+
+# ------------------------------------------------------------------- the report
+
+
+def test_report_renders_pricing_as_a_column_and_withholds_it_honestly(tmp_path):
+    metrics = {
+        "alpha": {"rating": 77, "implementable": True, "display_name": "Alpha",
+                  "assessment_basis": "documentation_evidence", "verification_status": "not_applicable",
+                  "documentation_quality": 80, "integration_feasibility": 84, "auth_clarity": 70,
+                  "pricing_transparency": 60, "pricing_notes": "Per-seat tiers are published.",
+                  "setup_complexity": 2, "reason": "Documented SDK.", "evidence": ["A worked example."]},
+        "beta": {"rating": 55, "implementable": True, "display_name": "Beta",
+                 "assessment_basis": "documentation_evidence", "verification_status": "not_applicable",
+                 "documentation_quality": 60, "integration_feasibility": 55, "auth_clarity": 50,
+                 "pricing_transparency": None, "pricing_notes": "",
+                 "setup_complexity": 3, "reason": "Sparse docs.", "evidence": []},
+    }
+    markdown = write_assessment_report(metrics, [], str(tmp_path / "r.md"))
+
+    assert "| Auth | Pricing | Setup |" in markdown
+    assert "Pricing: Per-seat tiers are published." in markdown
+    # Beta disclosed no pricing, so the cell is withheld rather than printed as 0.
+    beta_row = next(line for line in markdown.splitlines() if "| Beta |" in line)
+    assert "| n/a |" in beta_row
+    assert "| 0 |" not in beta_row
+
+
+def test_report_lists_excluded_candidates_without_scoring_them(tmp_path):
+    metrics = {"alpha": {"rating": 70, "implementable": True, "display_name": "Alpha",
+                         "assessment_basis": "documentation_evidence",
+                         "documentation_quality": 70, "integration_feasibility": 70,
+                         "auth_clarity": 70, "pricing_transparency": None,
+                         "reason": "Fine.", "evidence": []}}
+    markdown = write_assessment_report(
+        metrics, [], str(tmp_path / "r.md"),
+        excluded=[{"name": "gamma", "display_name": "Gamma Cloud",
+                   "violates": "Requires a hosted deployment; the stated constraint is on-prem."}],
+    )
+
+    assert "## Considered and excluded" in markdown
+    assert "**Gamma Cloud**" in markdown
+    assert "the stated constraint is on-prem" in markdown
+    assert "They were not scored." in markdown
+    # It is listed, not ranked: no row in the ranked table belongs to it.
+    assert "| Gamma Cloud |" not in markdown
+
+
+def test_report_omits_the_excluded_section_when_nothing_was_dropped(tmp_path):
+    metrics = {"alpha": {"rating": 70, "reason": "Fine.", "evidence": []}}
+    markdown = write_assessment_report(metrics, [], str(tmp_path / "r.md"))
+    assert "Considered and excluded" not in markdown
+
+
+# --------------------------------------------------------------- the build path
+
+
+def test_documented_setup_commands_travel_with_a_runnable_row():
+    """A build path may only print setup the documentation actually supports."""
+    runnable = result_from_plan(validate_plan(plan()), "passed", True)
+    assert runnable["build_commands"] == ["pip install example-sdk"]
+
+    # Validation strips them for anything that will never be built, so a
+    # comparison-only row cannot advertise steps nothing documented.
+    compared = result_from_plan(
+        validate_plan(plan(execution_mode="comparison_only")), "not_applicable", False)
+    assert compared["build_commands"] == []
+    assert unavailable_result("nothing ran")["build_commands"] == []
+
+
+def test_report_falls_back_to_the_assessed_parts_when_no_plan_was_produced(tmp_path):
+    metrics = {
+        "vendor_suite": {"rating": 41, "implementable": False, "display_name": "Vendor Suite",
+                         "role": "product", "reason": "The connector is unreleased.",
+                         "evidence": []},
+        "object_store_sdk": {"rating": 84, "implementable": True, "role": "build_component",
+                             "display_name": "Object Store SDK",
+                             "build_commands": ["pip install store-sdk", "store init"],
+                             "reason": "Documented client and worked examples.", "evidence": []},
+        "index_library": {"rating": 66, "implementable": True, "role": "build_component",
+                          "display_name": "Index Library", "build_commands": [],
+                          "reason": "Documented indexing API.", "evidence": []},
+    }
+    markdown = write_assessment_report(metrics, [], str(tmp_path / "r.md"))
+
+    assert "## Build path" not in markdown, "the parts list is not a section of its own"
+    section = markdown.split("## How to build this yourself")[1].split("\n## ")[0]
+    # It says plainly that the design is missing, rather than passing an
+    # inventory off as an answer.
+    assert "could not be generated on this run" in section
+    # Ranked order, with the score each component actually earned.
+    assert section.index("**Object Store SDK**") < section.index("**Index Library**")
+    assert "**Object Store SDK** — 84/100" in section
+    assert "documented setup: `pip install store-sdk; store init`" in section
+    # A component with no documented commands says nothing about setup.
+    index_line = next(line for line in section.splitlines() if "**Index Library**" in line)
+    assert "documented setup" not in index_line
+    # Products are not swept into it.
+    assert "**Vendor Suite**" not in section
+
+
+def test_report_has_no_build_section_when_every_candidate_is_a_product(tmp_path):
+    metrics = {"alpha": {"rating": 70, "implementable": True, "role": "product",
+                         "reason": "Fine.", "evidence": []},
+               "beta": {"rating": 50, "implementable": True, "reason": "Fine.", "evidence": []}}
+    markdown = write_assessment_report(metrics, [], str(tmp_path / "r.md"))
+    assert "Build path" not in markdown
+    assert "How to build this yourself" not in markdown
+
+
+def test_assessment_rows_carry_the_role_the_spec_gave_them(monkeypatch):
+    """The verdict reads metrics, not the spec, so the role has to travel."""
+    events = []
+    run_dir = Path("runs") / f"test_roles_{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(agent, "dispatch_tool", lambda *_a, **_k: json.dumps("official docs"))
+    monkeypatch.setattr(
+        tool_assessment, "assess_documentation_batch",
+        lambda candidates, *_a, **_k: {
+            candidate["name"]: {"plan": validate_plan(plan(execution_mode="comparison_only"))}
+            for candidate in candidates
+        },
+    )
+    orchestrator = Orchestrator(
+        "test-roles", str(run_dir), lambda event, data: events.append((event, data)))
+    try:
+        metrics = orchestrator.run_benchmark({
+            "benchmark_type": "tool_assessment",
+            "category": "RAG platforms",
+            "objective": "RAG over internal documents",
+            "candidates": [
+                {"name": "vendor_suite", "display_name": "Vendor Suite",
+                 "docs_url": "https://example.com/a", "kind": "saas"},
+                {"name": "index_library", "display_name": "Index Library",
+                 "docs_url": "https://example.com/b", "kind": "local_tool",
+                 "role": "build_component"},
+            ],
+        })
+
+        assert metrics["vendor_suite"]["role"] == "product"
+        assert metrics["index_library"]["role"] == "build_component"
     finally:
         shutil.rmtree(run_dir, ignore_errors=True)

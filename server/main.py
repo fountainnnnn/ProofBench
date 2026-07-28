@@ -1,4 +1,4 @@
-"""ProofBench FastAPI service with authenticated, tenant-scoped resources."""
+﻿"""ProofBench FastAPI service with authenticated, tenant-scoped resources."""
 from __future__ import annotations
 
 import json
@@ -27,9 +27,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from server import runs
+from engine import session_title
+from server import brand, runs
 from server.schemas import (AuthSessionRequest, ChatRequest, ProviderKeyRequest, RunRequest,
-                            SyntheticDatasetRequest)
+                            ScraperOrderRequest, SyntheticDatasetRequest)
 from server.security import (Identity, auth_is_configured, auth_mode, authenticate,
                              authenticate_token, check_auth_mode, local_mode,
                              provider_credentials)
@@ -66,7 +67,15 @@ ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}_(?:API_KEY|BASE_URL|MODEL)$")
 # readiness asks for two names the pattern above cannot express. They are listed
 # individually on purpose: a broader `_USERNAME`/`_PASSWORD` suffix rule would
 # let a caller name any credential it liked.
-EXTRA_PROVIDER_ENV_NAMES = frozenset({"OXYLABS_USERNAME", "OXYLABS_PASSWORD"})
+EXTRA_PROVIDER_ENV_NAMES = frozenset({
+    "OXYLABS_USERNAME", "OXYLABS_PASSWORD",
+    # The other two scrapers authenticate with a token plus a zone name, neither
+    # of which the pattern above can express. Listed individually for the same
+    # reason as the Oxylabs pair: a broader suffix rule would let a caller name
+    # any credential it liked.
+    "SCRAPEDO_API_TOKEN",
+    "BRIGHTDATA_API_TOKEN", "BRIGHTDATA_SERP_ZONE", "BRIGHTDATA_UNLOCKER_ZONE",
+})
 SYNTHETIC_LOCK = threading.Lock()
 RETENTION_STARTED = False
 LOGGER = logging.getLogger("proofbench.api")
@@ -319,11 +328,17 @@ async def _json(request: Request) -> dict:
 
 
 def provider_environment(tenant_id: str) -> dict[str, str]:
+    from engine import scrapers
+
     values = {name: os.environ[name]
               for name in SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
               if os.environ.get(name)}
     if _runtime_credentials_enabled():
         values.update(provider_credentials.snapshot(tenant_id))
+    # The engine reads all its configuration from this snapshot, so the stored
+    # scraper preference travels the same path as everything else and a run uses
+    # the order that was set when it started.
+    values[scrapers.ORDER_ENV] = " ".join(runs.scraper_order(tenant_id))
     return values
 
 
@@ -525,6 +540,43 @@ def _fail_worker(session_id: str, exc: Exception, job_id: str | None = None) -> 
         "message": f"Operation failed ({type(exc).__name__}). Check server logs and retry."}, job_id)
 
 
+def _run_summary(session: dict) -> str:
+    """A factual account of the session's finished run, for follow-up questions.
+
+    The intake agent otherwise has only the message history, so asking it why a
+    candidate lost produced speculation about a run it could not see.
+    """
+    metrics = session.get("results")
+    if not isinstance(metrics, dict) or not metrics:
+        return ""
+    spec = session.get("spec") if isinstance(session.get("spec"), dict) else {}
+    lines = [
+        "CONTEXT: this session has already completed a benchmark. The measured "
+        "results are below. Answer questions about them from these numbers only. "
+        "Never invent a metric, and never describe a candidate whose status is "
+        "no_result as having scored badly: it produced no result at all, for the "
+        "stated reason.",
+    ]
+    objective = str(spec.get("objective") or spec.get("category") or "").strip()
+    if objective:
+        lines.append(f"Objective: {objective}")
+    for name, row in metrics.items():
+        if not isinstance(row, dict):
+            continue
+        readable = ", ".join(
+            f"{key}={row[key]}"
+            for key in ("exact_accuracy", "field_f1", "cer", "mean_latency_s",
+                        "failure_rate", "cost_per_1k_docs", "setup_complexity",
+                        "rating", "n_docs", "documents_scored", "status")
+            if key in row and row[key] is not None
+        )
+        entry = f"- {name}: {readable or 'no metrics recorded'}"
+        if row.get("status") == "no_result":
+            entry += f" | did not run: {row.get('error_summary') or 'reason not recorded'}"
+        lines.append(entry)
+    return "\n".join(lines)
+
+
 def _get_or_create_orchestrator(identity: Identity, session: dict, run_id: str | None = None,
                                 chat_job_id: str | None = None):
     from engine.agent import Orchestrator, intake_system
@@ -552,6 +604,7 @@ def _get_or_create_orchestrator(identity: Identity, session: dict, run_id: str |
         # cannot leave one process using stale tenant configuration.
         provider_env=provider_environment(identity.tenant_id),
         dataset_available=dataset_available,
+        run_summary=_run_summary(session),
     )
     history = list(session.get("messages") or [])
     if history and history[-1].get("role") == "user":
@@ -559,7 +612,45 @@ def _get_or_create_orchestrator(identity: Identity, session: dict, run_id: str |
     orch._messages = [{"role": "system", "content": intake_system(dataset_available)}, *(
         {"role": item["role"], "content": item["text"]} for item in history
     )]
+    # Durable message history carries only what was said. Research lives in tool
+    # results, which are not persisted, so without this the agent re-discovered
+    # the same candidates on every turn.
+    orch.prior_findings = runs.list_findings(session["id"])
     return orch
+
+
+def _latest_reply(session_id: str, owner: str) -> str:
+    """The answer this turn just produced, read back from durable history.
+
+    Read from the store rather than the orchestrator's private message list, so
+    a turn that ended early still titles from whatever the user actually saw.
+    """
+    session = runs.get_session(session_id, owner) or {}
+    for message in reversed(session.get("messages") or []):
+        if (message or {}).get("role") == "assistant":
+            return str(message.get("text") or "")
+    return ""
+
+
+def _is_unnamed(session: dict) -> bool:
+    """True until the session has been answered once.
+
+    A session is titled exactly once, on its first exchange: renaming it every
+    turn would make the sidebar shift under the user as they typed.
+    """
+    return not any((message or {}).get("role") == "assistant"
+                   for message in (session or {}).get("messages") or [])
+
+
+def _retitle(session_id: str, identity: Identity, message: str, orchestrator) -> None:
+    """Name the session after its first exchange. Never fails the chat."""
+    try:
+        title = session_title.summarize_title(
+            message, _latest_reply(session_id, identity.tenant_id),
+            env=getattr(orchestrator, "runtime_env", None))
+        runs.set_value(session_id, "title", title)
+    except Exception:
+        LOGGER.info(json.dumps({"event": "session_retitle_skipped"}))
 
 
 @app.get("/api/live")
@@ -926,6 +1017,27 @@ def api_provider_keys(identity: Identity = Depends(authenticate)):
     ]}
 
 
+@app.get("/api/settings/scrapers")
+def api_scraper_order(identity: Identity = Depends(authenticate)):
+    """The provider chain, and which links actually hold credentials."""
+    from engine import scrapers
+
+    env = provider_environment(identity.tenant_id)
+    merged = {**os.environ, **env}
+    order = runs.scraper_order(identity.tenant_id)
+    ready = set(scrapers.configured_providers(merged, "search")) | set(
+        scrapers.configured_providers(merged, "scrape"))
+    return {"order": list(order), "default": list(scrapers.DEFAULT_ORDER),
+            "providers": [{"name": name, "label": scrapers.LABELS.get(name, name),
+                           "configured": name in ready} for name in order]}
+
+
+@app.put("/api/settings/scrapers")
+async def api_set_scraper_order(request: Request, identity: Identity = Depends(authenticate)):
+    payload = _payload(ScraperOrderRequest, await _json(request))
+    return {"order": list(runs.set_scraper_order(identity.tenant_id, payload.order))}
+
+
 @app.post("/api/settings/provider-keys")
 async def api_save_provider_key(request: Request, identity: Identity = Depends(authenticate)):
     if not _runtime_credentials_enabled():
@@ -952,6 +1064,30 @@ def api_delete_provider_key(env: str, identity: Identity = Depends(authenticate)
         raise HTTPException(status_code=422, detail="invalid environment variable name")
     provider_credentials.delete(identity.tenant_id, env)
     return {"ok": True}
+
+
+_LOGOS = brand.LogoCache(os.path.join(runs.RUNS_DIR, "brand"))
+# One page of results, not a crawl budget.
+_MAX_LOGO_NAMES = 24
+
+
+@app.get("/api/brand")
+def api_brand(names: str = "", identity: Identity = Depends(authenticate)):
+    """Vendor marks for candidates this tenant has benchmarked.
+
+    Resolved at request time and cached, so a tool benchmarked five minutes ago
+    has its logo without anyone re-running a build script. Names not in the
+    tenant's own specs are ignored outright: the endpoint resolves from a
+    candidate's stored docs URL and never from anything a caller supplies.
+    """
+    known = runs.candidate_docs_urls(identity.tenant_id)
+    wanted = [name for name in str(names or "").split(",")[:_MAX_LOGO_NAMES] if name in known]
+    logos = {}
+    for name in wanted:
+        found = _LOGOS.get(name, known[name])
+        if found:
+            logos[name] = brand.data_uri(*found)
+    return {"logos": logos}
 
 
 @app.post("/api/sessions")
@@ -1055,8 +1191,10 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
         session = _session_or_404(payload.session_id, identity)
     else:
         dataset = requested_dataset or datasets.synthetic(identity.tenant_id)
-        title = (payload.message[:40] + "...") if len(payload.message) > 40 else payload.message
-        session = runs.new_session(identity.tenant_id, title=title)
+        # Provisional only: the sidebar needs a label before the turn has said
+        # anything worth naming. _retitle replaces it once the turn has.
+        session = runs.new_session(identity.tenant_id,
+                                   title=session_title.fallback_title(payload.message))
     sid = session["id"]
     selected_dataset = requested_dataset
     if selected_dataset is None and session.get("dataset_id"):
@@ -1073,19 +1211,37 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="session or dataset not found") from exc
     session = runs.get_session(sid, identity.tenant_id)
+    # Snapshot taken before the turn runs: a session that has never been
+    # answered is the one still wearing a provisional title.
+    unnamed = _is_unnamed(session)
 
     def worker():
         failed = False
         with runs.job_heartbeat(sid, claimed["id"]):
+            orchestrator = None
             try:
-                _get_or_create_orchestrator(
-                    identity, session, chat_job_id=claimed["id"]).chat(payload.message)
+                orchestrator = _get_or_create_orchestrator(
+                    identity, session, chat_job_id=claimed["id"])
+                orchestrator.chat(payload.message)
             except Exception as exc:
                 failed = True
                 _fail_worker(sid, exc, claimed["id"])
             finally:
+                # Saved even on failure: a turn that searched and then broke has
+                # still learned something, and losing it is what made the next
+                # turn start over.
+                if orchestrator is not None and orchestrator.findings:
+                    try:
+                        runs.add_findings(sid, orchestrator.findings)
+                    except Exception:
+                        # Research is an optimisation; never fail a chat over it.
+                        pass
                 runs.finish_run(sid, cancelled=runs.is_cancelled(sid), failed=failed,
                                 emit_done=True, job_id=claimed["id"])
+        # Deliberately after the turn is marked finished: naming costs a second
+        # completion, and the user should not watch a spinner for their label.
+        if unnamed and not failed:
+            _retitle(sid, identity, payload.message, orchestrator)
 
     threading.Thread(target=worker, daemon=True).start()
     return {"session_id": sid}

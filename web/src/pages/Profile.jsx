@@ -50,7 +50,8 @@ export default function Profile() {
       <header className={`${PAGE_HEADER} px-4 sm:px-8`}>
         <div className="mx-auto flex w-full max-w-canvas items-start justify-between gap-x-6 pb-3 pt-3.5">
           <div className="min-w-0">
-            <h1 className={PAGE_TITLE}>Profile</h1>
+            <span className="pb-eyebrow-glow">Account</span>
+            <h1 className={`${PAGE_TITLE} mt-1`}>Profile</h1>
             <p className="mt-0.5 text-[13px] text-[var(--ink-2)]">
               Who this console runs as, and what that profile is allowed to do.
             </p>

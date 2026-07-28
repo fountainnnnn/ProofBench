@@ -1,13 +1,14 @@
-"""Documentation discovery and scraping through the Oxylabs realtime API.
+"""Documentation discovery and scraping through an ordered provider chain.
 
-When Oxylabs is unconfigured or fails, ``scrape_page`` falls back to a bounded
-direct fetch (:func:`fetch_documentation`). That fallback is deliberately
-narrower than Oxylabs: it reuses ``engine.network_security`` primitives, so the
-target must be a public HTTPS host, every redirect hop is revalidated against
-the same policy, process proxy variables are ignored, and private, loopback,
-link-local, and cloud metadata addresses are refused. Response time, size,
-redirect count, and content types are all bounded, and the caller receives
-bounded readable text rather than an arbitrary byte stream.
+Scrape.do, Oxylabs, and Bright Data are tried in the configured order. If every
+configured provider fails, ``scrape_page`` falls back to a bounded direct fetch
+(:func:`fetch_documentation`). That fallback reuses
+``engine.network_security`` primitives, so the target must be a public HTTPS
+host, every redirect hop is revalidated against the same policy, process proxy
+variables are ignored, and private, loopback, link-local, and cloud metadata
+addresses are refused. Response time, size, redirect count, and content types
+are all bounded, and the caller receives bounded readable text rather than an
+arbitrary byte stream.
 """
 
 from __future__ import annotations
@@ -85,38 +86,106 @@ def _first_content(body: dict[str, Any]) -> Any:
     return results[0]["content"]
 
 
-def web_search(query: str, n: int = 5, env: dict[str, str] | None = None) -> list[dict]:
-    """Search Google and return normalized organic results."""
-    body = _query(
-        {"source": "google_search", "query": query, "parse": True}, dict(env or {})
-    )
-    content = _first_content(body)
-    if isinstance(content, str):
-        try:
-            content = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Oxylabs search content was not valid JSON") from exc
-    if not isinstance(content, dict):
-        return []
-    parsed_results = content.get("results")
-    if not isinstance(parsed_results, dict):
-        return []
-    organic = parsed_results.get("organic")
-    if not isinstance(organic, list):
-        return []
+# Google serves ~10 organic results per page and, since it deprecated `num` in
+# September 2025, ignores any request for more. Depth therefore means pages.
+RESULTS_PER_PAGE = 10
+MAX_SEARCH_PAGES = 4
 
-    normalized = []
-    for item in organic[: max(0, n)]:
-        if not isinstance(item, dict):
+
+def _organic_pages(body: dict[str, Any]) -> list[dict]:
+    """Organic rows across every page in one Oxylabs response.
+
+    A paged query answers with one entry in ``results`` per page, so reading
+    ``results[0]`` alone silently discarded everything past the first ten.
+    """
+    pages = body.get("results")
+    if not isinstance(pages, list):
+        return []
+    rows: list[dict] = []
+    for page in pages:
+        content = page.get("content") if isinstance(page, dict) else None
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Oxylabs search content was not valid JSON") from exc
+        if not isinstance(content, dict):
             continue
+        parsed = content.get("results")
+        organic = parsed.get("organic") if isinstance(parsed, dict) else None
+        if isinstance(organic, list):
+            rows.extend(item for item in organic if isinstance(item, dict))
+    return rows
+
+
+def oxylabs_search(query: str, n: int = 5, env: dict[str, str] | None = None) -> list[dict]:
+    """Search Google through Oxylabs, which returns every page in one request."""
+    settings = dict(env or {})
+    pages = max(1, min(MAX_SEARCH_PAGES, -(-max(1, n) // RESULTS_PER_PAGE)))
+    body = _query(
+        {"source": "google_search", "query": query, "parse": True,
+         "start_page": 1, "pages": pages},
+        settings,
+    )
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for item in _organic_pages(body):
+        url = str(item.get("url") or "").strip()
+        # Paged results overlap at the seams; the same page twice is not depth.
+        if not url or url in seen:
+            continue
+        seen.add(url)
         normalized.append(
             {
                 "title": str(item.get("title") or ""),
-                "url": str(item.get("url") or ""),
+                "url": url,
                 "snippet": str(item.get("snippet") or item.get("desc") or ""),
             }
         )
+        if len(normalized) >= max(0, n):
+            break
     return normalized
+
+
+def web_search(query: str, n: int = 5, env: dict[str, str] | None = None) -> list[dict]:
+    """Search Google through the configured providers, in their configured order.
+
+    Asking for more than one page is what surfaces anything not already famous:
+    the first page of Google is the popular answer by construction, so a tool at
+    rank 15 is invisible to a single-page search.
+
+    Every configured provider is tried. A search that returns nothing ends an
+    intake turn with no candidates at all — the worst outcome this product has —
+    so one more call is always cheaper than the alternative. An empty result is
+    treated as a failure for the same reason: one provider answering 200 with no
+    organic rows should not end the search while another is still available.
+    """
+    from engine import scrapers
+
+    settings = dict(env or {})
+    providers = scrapers.configured_providers(settings, "search")
+    if not providers:
+        # Loudly, not as an empty result: a deployment with no scraper
+        # credentials is misconfigured, and "no tools found" would read as an
+        # answer about the internet rather than about this install.
+        raise RuntimeError("no search provider is configured")
+    failure: Exception | None = None
+    for name in providers:
+        try:
+            if name == "oxylabs":
+                results = oxylabs_search(query, n=n, env=settings)
+            else:
+                results = scrapers._module(name).web_search(query, n=n, env=settings)
+            if results:
+                return results
+        except Exception as exc:
+            failure = exc
+    if failure is not None:
+        raise RuntimeError(
+            "web search failed across every configured provider: " + ", ".join(providers)
+        ) from failure
+    # Every provider answered, none had anything. That is a real empty result.
+    return []
 
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -232,33 +301,62 @@ def fetch_documentation(url: str, *, resolver: Any = _UNSET) -> str:
 def scrape_page(url: str, env: dict[str, str] | None = None) -> str:
     """Scrape a URL and return the response content as text.
 
-    The preferred path submits the target as data to Oxylabs and never fetches
-    it from this process: our only direct connection is the fixed, allowlisted
-    Oxylabs API, and Oxylabs resolves and fetches the submitted target. When
-    Oxylabs is unconfigured or fails, we fall back to :func:`fetch_documentation`,
-    which fetches the page directly under the bounds documented there.
+    Configured providers are tried in the tenant's selected order. Each client
+    connects only to its own fixed, allowlisted API host. If none returns
+    content, :func:`fetch_documentation` performs the strictly bounded direct
+    fetch documented above.
     """
+    from engine import scrapers
     from engine.network_security import validate_external_url
 
     safe_url = validate_external_url(url, require_https=False)
-    try:
-        content = _first_content(
-            _query({"source": "universal", "url": safe_url}, dict(env or {}))
-        )
-    except Exception as exc:
+    settings = dict(env or {})
+    failure: Exception | None = None
+    for name in scrapers.configured_providers(settings, "scrape"):
         try:
-            return fetch_documentation(safe_url)
-        except Exception as fallback_exc:
-            # Type names only: neither provider's error text is trusted output.
-            raise RuntimeError(
-                "documentation retrieval failed: "
-                f"oxylabs {type(exc).__name__}, direct {type(fallback_exc).__name__}"
-            ) from fallback_exc
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    return json.dumps(content, ensure_ascii=False)
+            if name == "oxylabs":
+                content = oxylabs_scrape(safe_url, settings)
+            else:
+                content = scrapers._module(name).scrape(safe_url, settings)
+        except Exception as exc:
+            failure = exc
+            continue
+        if content is None:
+            return ""
+        if not isinstance(content, str):
+            return json.dumps(content, ensure_ascii=False)
+        # Providers return the raw document. Without this the model reads
+        # stylesheets and inline scripts instead of the documentation, and rates
+        # the vendor on what it could not find there.
+        return _readable_text(content, "text/html")
+    try:
+        return fetch_documentation(safe_url)
+    except Exception as fallback_exc:
+        # Type names only: no provider's error text is trusted output.
+        raise RuntimeError(
+            "documentation retrieval failed: "
+            f"providers {type(failure).__name__ if failure else 'unconfigured'}, "
+            f"direct {type(fallback_exc).__name__}"
+        ) from fallback_exc
+
+
+def oxylabs_scrape(safe_url: str, settings: dict[str, str]):
+    """Fetch one page through Oxylabs, rendered first.
+
+    Current documentation sites build their content in the browser, and an
+    unrendered fetch returns the page shell. Assessments read from that shell
+    reported "no API endpoints documented" for vendors whose documentation is
+    complete, so the rendered attempt leads and the plain one is the fallback.
+    """
+    attempts = ({"source": "universal", "url": safe_url, "render": "html"},
+                {"source": "universal", "url": safe_url})
+    failure: Exception | None = None
+    for payload in attempts:
+        try:
+            return _first_content(_query(payload, settings))
+        except Exception as exc:
+            failure = exc
+    raise failure if failure else RuntimeError("Oxylabs returned no content")
 
 
 def _safe_filename(name: str) -> str:

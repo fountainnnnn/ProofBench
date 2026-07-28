@@ -11,6 +11,8 @@
     "test": "vitest run src",
     "lint:a11y": "eslint --config eslint.a11y.mjs src/",
     "check:bundle": "node scripts/check-bundle.mjs",
+    "brand:logos": "node scripts/fetch-brand-logos.mjs",
+    "brand:shots": "node scripts/capture-product-shots.mjs",
     "test:e2e": "playwright test",
     "test:e2e:live": "playwright test e2e/live-smoke.spec.js"
   },

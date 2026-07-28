@@ -10,20 +10,44 @@ import { safeHttpUrl } from "../linkSafety.js";
 import {
   buildCanonicalRows,
   buildDecision,
+  candidateLabel,
+  componentRows,
   classifyResultsState,
+  evidenceTier,
   executionBasisLabel,
   sortResultRows,
 } from "../resultsModel.js";
 
-const OCR_COLUMNS = [
-  { key: "exact_accuracy", label: "Exact acc.", pct: true, higher: true },
-  { key: "field_f1", label: "F1", pct: true, higher: true },
+/* Sandbox measurements. Only a candidate that actually ran has any of these, so
+   in a run where most candidates could not be reached they are seven columns of
+   "Unavailable" — the table stops being a comparison and becomes a list of
+   blanks. They collapse behind one control instead. */
+const OCR_MEASURED_COLUMNS = [
+  { key: "exact_accuracy", label: "Exact acc.", pct: true, higher: true, bar: true },
+  { key: "field_f1", label: "F1", pct: true, higher: true, bar: true },
   { key: "cer", label: "CER", pct: true, higher: false },
   { key: "mean_latency_s", label: "Latency (s)", higher: false },
   { key: "failure_rate", label: "Failure", pct: true, higher: false },
   { key: "cost_per_1k_docs", label: "Cost/1k", higher: false },
+];
+
+/* Documentation evidence, which every candidate has whether or not it ran. This
+   is what makes the table comparable at all when execution was blocked. */
+const OCR_RESEARCH_COLUMNS = [
+  { key: "research_score", label: "Docs score", higher: true, score: true, bar: true },
+  { key: "documentation_quality", label: "Docs", higher: true, score: true },
+  { key: "integration_feasibility", label: "Integration", higher: true, score: true },
+  { key: "auth_clarity", label: "Auth", higher: true, score: true },
   { key: "setup_complexity", label: "Setup", higher: false },
 ];
+
+const OCR_COLUMNS = [...OCR_MEASURED_COLUMNS, ...OCR_RESEARCH_COLUMNS];
+
+const EVIDENCE_LABELS = { measured: "Measured", research: "Documentation" };
+
+/* Rank is the default order because it is the one the verdict above is stated
+   in: measured candidates first, then those scored from their documentation. */
+const RANK_COLUMN = { key: "canonicalRank", label: "Rank", higher: false };
 
 const ASSESSMENT_COLUMNS = [
   { key: "rating", label: "Rating", higher: true, score: true, bar: true },
@@ -56,7 +80,78 @@ function Bar({ value, max = 1 }) {
   );
 }
 
-function SkeletonRows({ columns }) {
+/* Measured or documented, said once per row. */
+function EvidenceTag({ tier }) {
+  const label = EVIDENCE_LABELS[tier];
+  if (!label) return null;
+  const measured = tier === "measured";
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+        measured
+          ? "bg-[var(--accent-tint)] text-[var(--accent)]"
+          : "bg-[var(--surface-2)] text-[var(--ink-3)]"
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* One control for the whole sandbox column group, stating the ratio it hides.
+   "2 of 6 ran" is the fact a reader needs before they read any of it. */
+function MeasurementToggle({ open, measured, total, onToggle }) {
+  if (total === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 pb-1 pt-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-[var(--line)] px-3 text-[12px] font-medium text-[var(--ink-2)] transition-colors duration-150 hover:text-[var(--ink)]"
+      >
+        <span aria-hidden="true">{open ? "−" : "+"}</span>
+        {open ? "Hide sandbox measurements" : "Show sandbox measurements"}
+      </button>
+      <span className="text-[12px] text-[var(--ink-3)]">
+        {measured} of {total} ran
+        {measured < total && " · the rest are scored from their documentation"}
+      </span>
+    </div>
+  );
+}
+
+/* Candidates that produced no measurement are not poor performers, and a row of
+   seven "Unavailable" cells is not a comparison — it is most of the table's
+   height spent saying nothing, with a stack-trace in the name column pushing
+   the candidates that did run off the top. They are named here instead, with
+   their reason, so the table above stays the comparison it claims to be. */
+function NotCompared({ rows }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="border-t border-[var(--line)] px-5 py-4">
+      <div className="pb-eyebrow">Not compared · {rows.length}</div>
+      <ul className="mt-2 flex flex-col gap-1.5">
+        {rows.map((r) => {
+          const reason = safeVisibleText(r.error_summary || "");
+          return (
+            <li key={r.name} className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-relaxed">
+              <span className="font-medium text-[var(--ink-2)]">{safeVisibleText(candidateLabel(r))}</span>
+              <span
+                className="pb-contain line-clamp-1 min-w-0 flex-1 text-[var(--ink-3)]"
+                title={reason || undefined}
+              >
+                {reason ? `Did not run: ${reason}` : "Did not run"}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function SkeletonRows({ columns, evidence = false }) {
   return (
     <tbody>
       {[0, 1, 2].map((r) => (
@@ -67,6 +162,11 @@ function SkeletonRows({ columns }) {
           <td className="px-3 py-3">
             <div className="pb-skeleton h-3 w-24" />
           </td>
+          {evidence && (
+            <td className="px-3 py-3">
+              <div className="pb-skeleton h-3 w-16" />
+            </td>
+          )}
           {columns.map((c) => (
             <td key={c.key} className="px-3 py-3">
               <div className="pb-skeleton ml-auto h-3 w-12" />
@@ -99,29 +199,68 @@ function DecisionSummary({ decision, basis, evidence, documentCount }) {
   const marginText = decision.margin === null || decision.runnerUp === null
     ? null
     : roundedMargin === 0
-      ? `Level with ${safeVisibleText(decision.runnerUp.name)} on this metric`
+      ? `Level with ${safeVisibleText(candidateLabel(decision.runnerUp))} on this metric`
       : column.pct
-        ? `${roundedMargin.toFixed(1)} points ahead of ${safeVisibleText(decision.runnerUp.name)}`
-        : `${roundedMargin} ahead of ${safeVisibleText(decision.runnerUp.name)}`;
+        ? `${roundedMargin.toFixed(1)} points ahead of ${safeVisibleText(candidateLabel(decision.runnerUp))}`
+        : `${roundedMargin} ahead of ${safeVisibleText(candidateLabel(decision.runnerUp))}`;
+
+  /* Nothing cleared the bar. The eyebrow stops saying "Recommendation", the
+     headline states the outcome instead of naming a winner, and the reason the
+     assessment itself gave is quoted — it is the specific requirement that went
+     unmet, which is the only actionable thing on the card. */
+  const failedReason = safeVisibleText(decision.winner?.reason || "");
+  const buildNames = (decision.buildPath || [])
+    .map((row) => safeVisibleText(candidateLabel(row)))
+    .filter(Boolean);
 
   return (
     <div className="pb-verdict-enter rounded-[20px] bg-[var(--hero-ink)] p-6 shadow-[var(--shadow-card)]">
       <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--hero-ink-2)]">
-        Recommendation
+        {decision.unmet ? "No recommendation" : "Recommendation"}
       </p>
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <span className="pb-display pb-contain text-[34px] leading-tight text-[var(--hero-text)] sm:text-[38px]">
-          {safeVisibleText(decision.winner.name)}
-        </span>
-        <span className="pb-mono text-[16px] font-medium text-[var(--hero-text)]">
-          {column.label ? `${column.label} ${winnerScore}` : winnerScore}
-        </span>
-      </div>
-      <p className="mt-2 max-w-[70ch] text-[14px] leading-relaxed text-[var(--hero-ink-2)]">
-        {marginText
-          ? `${marginText}. Ranked first of ${decision.rankedCount}.`
-          : `Ranked first of ${decision.rankedCount}. No comparable runner up.`}
-      </p>
+      {decision.unmet ? (
+        <>
+          <div className="mt-2">
+            <span className="pb-display pb-contain text-[28px] leading-tight text-[var(--hero-text)] sm:text-[32px]">
+              {buildNames.length > 0
+                ? "No marketed product met the requirements"
+                : "No candidate met the requirements"}
+            </span>
+          </div>
+          <p className="mt-2 max-w-[70ch] text-[14px] leading-relaxed text-[var(--hero-ink-2)]">
+            {`${decision.failedCount} of ${decision.rankedCount} candidates were rated not implementable against the stated objective. `}
+            {buildNames.length > 0
+              ? `${buildNames.join(", ")} ${buildNames.length === 1 ? "is" : "are"} documented well enough to build against instead.`
+              : `${safeVisibleText(candidateLabel(decision.winner))} scored highest at ${winnerScore} on documentation alone; the ranking below is relative, not an endorsement.`}
+          </p>
+          {failedReason && (
+            <p className="mt-2 max-w-[70ch] text-[13px] leading-relaxed text-[var(--hero-ink-2)]">
+              {failedReason}
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span className="pb-display pb-contain text-[34px] leading-tight text-[var(--hero-text)] sm:text-[38px]">
+              {safeVisibleText(candidateLabel(decision.winner))}
+            </span>
+            <span className="pb-mono text-[16px] font-medium text-[var(--hero-text)]">
+              {column.label ? `${column.label} ${winnerScore}` : winnerScore}
+            </span>
+          </div>
+          <p className="mt-2 max-w-[70ch] text-[14px] leading-relaxed text-[var(--hero-ink-2)]">
+            {marginText
+              ? `${marginText}. Ranked first of ${decision.rankedCount}.`
+              : `Ranked first of ${decision.rankedCount}. No comparable runner up.`}
+            {/* How many of those the run could actually execute. Without it,
+                "first of 6" reads as six benchmarked products when two ran. */}
+            {decision.researchCount > 0 && (
+              ` ${decision.measuredCount} measured, ${decision.researchCount} scored from documentation.`
+            )}
+          </p>
+        </>
+      )}
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         <BasisTag basis={basis} dark />
         {evidence && (
@@ -149,8 +288,9 @@ export default function ResultsCard({
   executionMode = "",
   headingId,
 }) {
-  const [sortKey, setSortKey] = useState("exact_accuracy");
-  const [sortDirection, setSortDirection] = useState("desc");
+  const [sortKey, setSortKey] = useState("canonicalRank");
+  const [sortDirection, setSortDirection] = useState("asc");
+  const [showMeasured, setShowMeasured] = useState(null);
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState("");
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -161,22 +301,49 @@ export default function ResultsCard({
   const safeReport = useMemo(() => sanitizeForDisplay(report || null), [report]);
   const resultState = classifyResultsState(metrics, phase, running);
   const isAssessment = Object.values(safeMetrics || {}).some((row) => row?.rating !== undefined);
-  const columns = isAssessment ? ASSESSMENT_COLUMNS : OCR_COLUMNS;
-  const activeSortKey = columns.some((column) => column.key === sortKey)
-    ? sortKey
-    : columns[0].key;
 
   const canonicalRows = useMemo(
     () => buildCanonicalRows(safeMetrics, isAssessment),
     [safeMetrics, isAssessment]
   );
-  const rows = useMemo(
-    () => sortResultRows(canonicalRows, activeSortKey, sortDirection),
-    [canonicalRows, activeSortKey, sortDirection]
+  /* Only a candidate with evidence behind it is a table row. An unranked row has
+     neither a measurement nor a readable documentation set: every cell in it
+     reads "Unavailable" and its bar reads as a zero it never scored. */
+  const ranked = useMemo(() => canonicalRows.filter((row) => row.canonicalRank), [canonicalRows]);
+  const unrankedRows = useMemo(
+    () => canonicalRows.filter((row) => !row.canonicalRank),
+    [canonicalRows]
   );
+  const measuredCount = useMemo(
+    () => ranked.filter((row) => evidenceTier(row, isAssessment) === "measured").length,
+    [ranked, isAssessment]
+  );
+  /* Expanded when every ranked candidate ran, because then these columns are the
+     comparison. Collapsed the moment any candidate could not be reached, because
+     then they are mostly blanks and the documentation scores carry the table.
+     An explicit click always wins over the default. */
+  const measuredOpen = showMeasured ?? (measuredCount > 0 && measuredCount === ranked.length);
+  const columns = useMemo(() => (
+    isAssessment
+      ? ASSESSMENT_COLUMNS
+      : [...(measuredOpen ? OCR_MEASURED_COLUMNS : []), ...OCR_RESEARCH_COLUMNS]
+  ), [isAssessment, measuredOpen]);
+  const sortable = useMemo(() => [RANK_COLUMN, ...columns], [columns]);
+  const activeSortKey = sortable.some((column) => column.key === sortKey)
+    ? sortKey
+    : RANK_COLUMN.key;
+  const rankedRows = useMemo(
+    () => sortResultRows(ranked, activeSortKey, sortDirection),
+    [ranked, activeSortKey, sortDirection]
+  );
+  /* Libraries are not table rows — they are parts of one self-built design, and
+     the report's plan is where that design lives. The decision still needs them
+     to say building is the answer, so they are read straight from the metrics. */
   const decision = useMemo(
-    () => (resultState === "ready" ? buildDecision(canonicalRows, isAssessment) : null),
-    [canonicalRows, isAssessment, resultState]
+    () => (resultState === "ready"
+      ? buildDecision(canonicalRows, isAssessment, componentRows(safeMetrics, isAssessment))
+      : null),
+    [canonicalRows, safeMetrics, isAssessment, resultState]
   );
   const basis = useMemo(
     () => executionBasisLabel(safeMetrics, executionMode),
@@ -340,7 +507,11 @@ export default function ResultsCard({
           <DecisionSummary
             decision={decision}
             basis={basis}
-            evidence={simulated ? "Historical synthetic" : "Measured"}
+            /* What the verdict itself rests on. A winner nothing could execute
+               is presented as documentation evidence, never as a measurement. */
+            evidence={simulated
+              ? "Historical synthetic"
+              : decision.evidence === "research" ? "Documentation" : "Measured"}
             documentCount={documentCount}
           />
         )}
@@ -373,18 +544,48 @@ export default function ResultsCard({
           </p>
         )}
 
-        {["loading", "ready"].includes(resultState) && (
+        {resultState === "ready" && !isAssessment && (
+          <MeasurementToggle
+            open={measuredOpen}
+            measured={measuredCount}
+            total={ranked.length}
+            onToggle={() => setShowMeasured(!measuredOpen)}
+          />
+        )}
+
+        {(resultState === "loading" || (resultState === "ready" && rankedRows.length > 0)) && (
           <div className="min-w-0 overflow-x-auto">
             <table className="pb-stack-table w-full min-w-[46rem] text-[13px]">
-              <caption className="sr-only">Candidate comparison, ranked by the primary metric</caption>
+              <caption className="sr-only">
+                Candidate comparison, ranked by evidence then score
+              </caption>
               <thead>
                 <tr>
-                  <th scope="col" className="px-3 py-2 text-left text-[12px] font-semibold text-[var(--ink-3)]">
-                    Rank
+                  <th
+                    scope="col"
+                    aria-sort={activeSortKey === RANK_COLUMN.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+                    className={`p-0 text-left text-[12px] font-semibold ${
+                      activeSortKey === RANK_COLUMN.key ? "text-[var(--accent)]" : "text-[var(--ink-3)]"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => changeSort(RANK_COLUMN)}
+                      className="inline-flex min-h-10 items-center px-3 py-2 text-inherit transition-colors duration-150 hover:text-[var(--ink)]"
+                      aria-label={`Sort by rank${activeSortKey === RANK_COLUMN.key ? `, currently ${sortDirection === "asc" ? "ascending" : "descending"}` : ""}`}
+                    >
+                      Rank
+                      {activeSortKey === RANK_COLUMN.key && <span className="ml-1" aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span>}
+                    </button>
                   </th>
                   <th scope="col" className="px-3 py-2 text-left text-[12px] font-semibold text-[var(--ink-3)]">
                     Candidate
                   </th>
+                  {!isAssessment && (
+                    <th scope="col" className="px-3 py-2 text-left text-[12px] font-semibold text-[var(--ink-3)]">
+                      Evidence
+                    </th>
+                  )}
                   {columns.map((c) => (
                     <th
                       key={c.key}
@@ -408,10 +609,10 @@ export default function ResultsCard({
                 </tr>
               </thead>
               {resultState === "loading" ? (
-                <SkeletonRows columns={columns} />
+                <SkeletonRows columns={columns} evidence={!isAssessment} />
               ) : (
                 <tbody>
-                  {rows.map((r) => (
+                  {rankedRows.map((r) => (
                     <tr key={r.name} className="text-[var(--ink-2)]">
                       <td data-label="Rank" className="px-3 py-3">
                         {r.isWinner ? (
@@ -419,26 +620,44 @@ export default function ResultsCard({
                             {r.canonicalRank || "1"}
                           </span>
                         ) : (
-                          <span className="pb-mono text-[13px] text-[var(--ink-3)]">{r.canonicalRank || "-"}</span>
+                          <span className="pb-mono text-[13px] text-[var(--ink-3)]">{r.canonicalRank}</span>
                         )}
                       </td>
                       <td data-primary className="px-3 py-3 font-medium text-[var(--ink)]">
-                        {safeVisibleText(r.name)}
+                        {safeVisibleText(candidateLabel(r))}
                       </td>
-                      {columns.map((c) => (
-                        <td data-label={c.label} key={c.key} className="pb-mono px-3 py-3 text-right text-[13px]">
-                          {c.bar || c.key === "exact_accuracy" || c.key === "field_f1" ? (
-                            <div className="flex flex-col items-end gap-1.5">
-                              <span>{fmt(c, r[c.key])}</span>
-                              <div className="w-16">
-                                <Bar value={r[c.key]} max={c.score ? 100 : 1} />
-                              </div>
-                            </div>
-                          ) : (
-                            fmt(c, r[c.key])
-                          )}
+                      {/* Which kind of evidence this row's numbers came from.
+                          Without it a documentation score and a measured
+                          accuracy sit in one table looking equally proven. */}
+                      {!isAssessment && (
+                        <td data-label="Evidence" className="px-3 py-3">
+                          <EvidenceTag tier={evidenceTier(r, isAssessment)} />
                         </td>
-                      ))}
+                      )}
+                      {columns.map((c) => {
+                        const value = r[c.key];
+                        const numeric = typeof value === "number" && Number.isFinite(value);
+                        const missing = value === null || value === undefined || (typeof value === "number" && !numeric);
+                        const barred = c.bar || c.key === "exact_accuracy" || c.key === "field_f1";
+                        return (
+                          <td data-label={c.label} key={c.key} className="pb-mono px-3 py-3 text-right text-[13px]">
+                            {/* No bar without a number behind it: an empty track
+                                beside "Unavailable" draws a zero never scored. */}
+                            {barred && numeric ? (
+                              <div className="flex flex-col items-end gap-1.5">
+                                <span>{fmt(c, value)}</span>
+                                <div className="w-16">
+                                  <Bar value={value} max={c.score ? 100 : 1} />
+                                </div>
+                              </div>
+                            ) : missing ? (
+                              <span className="text-[var(--ink-3)]">{fmt(c, value)}</span>
+                            ) : (
+                              fmt(c, value)
+                            )}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -447,7 +666,9 @@ export default function ResultsCard({
           </div>
         )}
 
-        {running && rows.length > 0 && !safeReport?.markdown && (
+        {resultState === "ready" && <NotCompared rows={unrankedRows} />}
+
+        {running && rankedRows.length > 0 && !safeReport?.markdown && (
           <p className="flex items-center gap-2 px-5 py-3 text-[12px] text-[var(--ink-3)]" aria-live="polite">
             <StatusIcon tone="running" size={13} pulse className="text-[var(--accent)]" />
             Preparing report

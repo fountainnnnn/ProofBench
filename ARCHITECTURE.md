@@ -41,7 +41,7 @@ ledger live on named volumes.
 | `server/runs.py` | Run admission, claims, quotas, terminal-state persistence. |
 | `engine/agent.py` | Orchestrator loop and capability-bound tool dispatch. |
 | `engine/tools.py` | Run-scoped capabilities; the only path to credentials. |
-| `engine/docs_intel.py` | Candidate discovery, Oxylabs scraping, and the bounded direct-fetch fallback. |
+| `engine/docs_intel.py`, `engine/scrapers.py` | Candidate discovery through an ordered Scrape.do, Oxylabs, and Bright Data chain, then the bounded direct-fetch fallback. |
 | `engine/llm_clients.py` | Capability-based provider resolution and hardened OpenAI-compatible clients. |
 | `engine/adapter_gen.py` | Generates one adapter per candidate from scraped docs. |
 | `engine/sandbox_pool.py` | Disposable sandbox lifecycle and ownership ledger. |

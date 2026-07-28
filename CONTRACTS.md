@@ -51,7 +51,9 @@ third-party-facing obligations in
   directory. Results and reports are addressed only by `run_id`.
 - A `dataset_id` is server issued and tenant owned. API responses never expose
   absolute filesystem paths, and client input cannot select a host path.
-- Session responses include `latest_run_id` and ordered `run_history` entries.
+- Session summaries include `created_at`, `updated_at`, and `latest_run_id`.
+  `updated_at` is the durable last-activity timestamp clients use when resuming
+  work. Full session responses also include ordered `run_history` entries.
 
 ## 3. Core HTTP API
 
@@ -80,6 +82,9 @@ GET    /api/runs/{run_id}/report.pdf
 GET    /api/settings/provider-keys       secret-free status + write policy
 POST   /api/settings/provider-keys       insecure-dev dual opt-in only
 DELETE /api/settings/provider-keys/{env} insecure-dev dual opt-in only
+GET    /api/settings/scrapers            ordered provider chain + readiness
+PUT    /api/settings/scrapers            persist tenant-scoped provider order
+GET    /api/brand                        cached marks for owned candidate names
 ```
 
 Quota rejection uses HTTP 429 and `Retry-After`. A referenced, active, or
@@ -167,14 +172,16 @@ OpenRouter. `OPENROUTER_API_KEY` alone therefore satisfies every capability.
 configuration only and issues no provider request. A run is blocked only when an
 essential capability has no configured provider.
 
-Documentation retrieval prefers Oxylabs, which resolves and fetches the target
-itself. When Oxylabs is unconfigured or fails, ProofBench falls back to a direct
-fetch that is strictly bounded: public HTTPS only, every redirect hop
-revalidated against the same outbound URL policy with a freshly pinned client,
-no process proxies, no private, loopback, link-local, or metadata addresses, and
-hard limits on redirect count, elapsed time, response bytes, permitted content
-types, and returned text length. Provider error text is never echoed to the
-caller.
+Documentation retrieval uses the tenant's ordered Scrape.do, Oxylabs, and
+Bright Data chain, skipping providers without the required capability
+credentials and falling through on errors or empty search results. The stored
+order cannot remove a provider from the fallback chain. If every configured
+scraper fails, ProofBench uses a direct fetch that is strictly bounded: public
+HTTPS only, every redirect hop revalidated against the same outbound URL policy
+with a freshly pinned client, no process proxies, no private, loopback,
+link-local, or metadata addresses, and hard limits on redirect count, elapsed
+time, response bytes, permitted content types, and returned text length.
+Provider error text is never echoed to the caller.
 
 ## 6. Deterministic evaluator
 
@@ -200,11 +207,11 @@ exactly `invoice_number`, `date`, `vendor`, and `total`, in that order.
   URLs, prompts, or generated code cannot grant credentials.
 - `DAYTONA`, orchestration, search/scrape, and report-writer credentials are
   permanently forbidden inside candidate sandboxes. The deny prefixes are
-  `DAYTONA_`, `DEEPSEEK_`, `DOUBLEWORD_`, `KIMI_`, `MOONSHOT_`, `OPENAI_`,
-  `OPENROUTER_`, `ORCHESTRATOR_`, and `OXYLABS_`. The only exceptions are the
-  exact names a first-party adapter genuinely needs, enumerated server side in
-  `engine/builtin_adapters.py`. Generated generic adapters and documentation
-  verification code are entitled to nothing at all.
+  `BRIGHTDATA_`, `DAYTONA_`, `DEEPSEEK_`, `DOUBLEWORD_`, `KIMI_`, `MOONSHOT_`,
+  `OPENAI_`, `OPENROUTER_`, `ORCHESTRATOR_`, `OXYLABS_`, and `SCRAPEDO_`. The
+  only exceptions are the exact names a first-party adapter genuinely needs,
+  enumerated server side in `engine/builtin_adapters.py`. Generated generic
+  adapters and documentation verification code are entitled to nothing at all.
 - The durable sandbox ledger records ownership before use and removes it only
   after confirmed deletion. Reconciliation is deployment scoped, leader
   coordinated, age/lease aware, and never lists or deletes unowned resources.

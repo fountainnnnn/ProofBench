@@ -280,19 +280,31 @@ export function useFitList(depsKey) {
   const [outer, setOuter] = useState(null);
   const [list, setList] = useState(null);
   const footerRef = useRef(null);
-  const [fit, setFit] = useState({ maxHeight: undefined, hidden: 0 });
+  const [fit, setFit] = useState({ maxHeight: undefined, hidden: 0, pad: 0 });
+
+  /* The applied pad, mirrored in a ref so measure() can subtract it back out
+     without taking `fit` as a dependency (which would re-run the effect and
+     re-attach observers on every pass). */
+  const padRef = useRef(0);
+  useEffect(() => { padRef.current = fit.pad; }, [fit.pad]);
 
   useLayoutEffect(() => {
     if (!outer || !list) return undefined;
 
+    const footerHeight = () => (footerRef.current ? footerRef.current.offsetHeight : 40);
+
     const measure = () => {
       const items = list.querySelectorAll("[data-fit-item]");
       if (!items.length) {
-        setFit((prev) => (prev.maxHeight === undefined && prev.hidden === 0 ? prev : { maxHeight: undefined, hidden: 0 }));
+        setFit((prev) => (prev.maxHeight === undefined && prev.hidden === 0 && prev.pad === 0 ? prev : { maxHeight: undefined, hidden: 0, pad: 0 }));
         return;
       }
       const listTop = list.getBoundingClientRect().top;
-      const bottoms = Array.from(items, (el) => el.getBoundingClientRect().bottom - listTop);
+      /* Measured back to UNPADDED heights. `pad` is fed into every visible row,
+         so row i's measured bottom carries (i+1) pads; leaving them in would
+         grow the rows on each pass and never settle. */
+      const pad = padRef.current;
+      const bottoms = Array.from(items, (el, i) => el.getBoundingClientRect().bottom - listTop - pad * (i + 1));
       const total = bottoms.length;
       const countWithin = (budget) => {
         let n = 0;
@@ -304,24 +316,35 @@ export function useFitList(depsKey) {
       };
 
       const full = outer.clientHeight;
-      const apply = (maxHeight, hidden) =>
-        setFit((prev) => (prev.maxHeight === maxHeight && prev.hidden === hidden ? prev : { maxHeight, hidden }));
+      /* Slack left over after the visible rows is spread back into those rows
+         rather than pooling as a void above the footer. Quantised to whole
+         pixels and ignored under 2px so a sub-pixel remainder cannot ping-pong
+         between two measurements. The cut includes the padding it just handed
+         out, otherwise the padded rows would be clipped by their own cap. */
+      const apply = (hidden, visible, used) => {
+        const slack = full - (hidden > 0 ? footerHeight() : 0) - used;
+        const pad = visible > 0 && slack > 2 ? Math.floor(slack / visible) : 0;
+        const maxHeight = hidden > 0 ? used + pad * visible : undefined;
+        setFit((prev) =>
+          prev.maxHeight === maxHeight && prev.hidden === hidden && prev.pad === pad
+            ? prev
+            : { maxHeight, hidden, pad },
+        );
+      };
 
       if (countWithin(full) >= total) {
-        apply(undefined, 0);
+        apply(0, total, bottoms[total - 1]);
         return;
       }
       // Something overflows, so a footer will show; reserve its height before
       // deciding how many rows fit above it. The cut is always a row boundary
       // (bottoms[n-1]).
-      const footerH = footerRef.current ? footerRef.current.offsetHeight : 40;
-      let n = countWithin(full - footerH);
-      // Prefer one row over an all-footer card, but only when a whole row fits
-      // in the budget without the footer reserve. If even one row is taller than
-      // the card, show none rather than clip a row mid-content — the footer then
-      // stands in for the whole list.
-      if (n === 0 && bottoms[0] <= full + 0.5) n = 1;
-      apply(n > 0 ? bottoms[n - 1] : 0, total - n);
+      /* A row is shown only when it fits WHOLE alongside the footer. The old
+         "show one row anyway if it fits without the footer" fallback traded a
+         header-and-footer card for a row sliced through its own content, which
+         reads as breakage rather than as truncation. */
+      const n = countWithin(full - footerHeight());
+      apply(total - n, n, n > 0 ? bottoms[n - 1] : 0);
     };
 
     measure();
@@ -333,7 +356,16 @@ export function useFitList(depsKey) {
     return () => observer.disconnect();
   }, [outer, list, depsKey]);
 
-  return { outerRef: setOuter, listRef: setList, footerRef, maxHeight: fit.maxHeight, hidden: fit.hidden };
+  return {
+    outerRef: setOuter,
+    listRef: setList,
+    footerRef,
+    maxHeight: fit.maxHeight,
+    hidden: fit.hidden,
+    /* Extra height each visible row should absorb, so the list fills its card
+       instead of leaving a void. Apply as padding-bottom on the row. */
+    pad: fit.pad,
+  };
 }
 
 /** Contextual inline error, rendered where the failing thing lives. */

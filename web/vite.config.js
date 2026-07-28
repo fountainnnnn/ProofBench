@@ -3,6 +3,12 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    // Playwright specs are driven by `npx playwright test`; collected under
+    // vitest they abort at import ("did not expect test.use() here") and
+    // paint the unit suite red without a single failing assertion.
+    exclude: ["e2e/**", "node_modules/**"],
+  },
   server: {
     port: 5173,
     // Mirror production security headers so local browser QA exercises the

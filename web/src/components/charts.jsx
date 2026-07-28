@@ -168,9 +168,9 @@ export function RankBars({ rows, metricKey, format, max, hue = "var(--accent)" }
               className={`w-[13ch] shrink-0 truncate text-[12px] ${
                 winner ? "font-medium text-[var(--ink)]" : "text-[var(--ink-2)]"
               }`}
-              title={row.name}
+              title={row.label || row.name}
             >
-              {row.name}
+              {row.label || row.name}
             </span>
             <span className="relative h-2 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--surface-2)]">
               <span

@@ -186,6 +186,27 @@ def list_sessions(owner: str) -> list[dict]:
     return sessions
 
 
+def candidate_docs_urls(owner: str) -> dict[str, str]:
+    """Every candidate this tenant has benchmarked, mapped to its docs URL.
+
+    The logo endpoint resolves marks only for names in here, from only these
+    URLs, so it can never be pointed at a host of the caller's choosing. Each
+    URL was validated as a public HTTP(S) address at the schema boundary and has
+    already been fetched by the run itself.
+    """
+    urls: dict[str, str] = {}
+    for summary in STORE.list_sessions(owner):
+        session = STORE.get_session(summary["id"], owner) or {}
+        spec = session.get("spec")
+        if not isinstance(spec, dict):
+            continue
+        for candidate in spec.get("candidates") or []:
+            name = str((candidate or {}).get("name") or "")
+            if name and name not in urls:
+                urls[name] = str(candidate.get("docs_url") or "")
+    return urls
+
+
 def delete_session(session_id: str, owner: str) -> bool:
     try:
         deleted, run_ids = STORE.delete_session(session_id, owner)
@@ -252,6 +273,51 @@ def add_message(session_id: str, role: str, text: str) -> None:
     clean = redact_event_data({"text": str(text)}, owner)["text"]
     STORE.add_message(session_id, "assistant" if role == "assistant" else "user",
                       clean[:MAX_MESSAGE_CHARS])
+
+
+SCRAPER_ORDER_KEY = "scraper_order"
+
+
+def scraper_order(owner: str) -> tuple[str, ...]:
+    """The tenant's provider order, falling back to the measured default."""
+    from engine import scrapers
+
+    return scrapers.parse_order(STORE.get_setting(owner, SCRAPER_ORDER_KEY))
+
+
+def set_scraper_order(owner: str, order) -> tuple[str, ...]:
+    """Store a provider order, normalized so a bad value cannot disable scraping."""
+    from engine import scrapers
+
+    cleaned = scrapers.parse_order(order)
+    STORE.set_setting(owner, SCRAPER_ORDER_KEY, " ".join(cleaned))
+    return cleaned
+
+
+def add_findings(session_id: str, items) -> None:
+    """Persist what the agent looked up, redacted the same way messages are.
+
+    Only titles and URLs, so nothing here can carry a scraped page — but it is
+    still model-influenced text bound for durable storage, and it goes through
+    the same redaction every other such value does.
+    """
+    owner = STORE.session_owner(session_id)
+    if not owner:
+        return
+    clean = []
+    for item in items or []:
+        url = str((item or {}).get("url") or "")
+        title = str((item or {}).get("title") or "")
+        if not url:
+            continue
+        safe = redact_event_data({"title": title, "url": url}, owner)
+        clean.append({"title": safe["title"], "url": safe["url"]})
+    if clean:
+        STORE.add_findings(session_id, clean)
+
+
+def list_findings(session_id: str) -> list[dict]:
+    return STORE.list_findings(session_id)
 
 
 def begin_run(session_id: str) -> bool:

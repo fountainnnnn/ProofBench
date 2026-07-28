@@ -15,7 +15,7 @@ import pytest
 
 from engine import docs_intel, evaluate, pdf_report, tool_assessment
 from engine.agent import Orchestrator
-from engine.candidates.base import Candidate
+from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
 from engine.evaluate import cer, evaluate_results
 from engine.network_security import (
     OutboundURLPolicy,
@@ -751,7 +751,13 @@ def test_sandbox_entitlements_are_explicit_not_candidate_label_derived(
 
     # Orchestration credentials that no first-party adapter needs stay
     # permanently un-entitleable, whatever the candidate claims to be.
-    for forbidden in ("DAYTONA_API_KEY", "DEEPSEEK_API_KEY", "OXYLABS_PASSWORD"):
+    for forbidden in (
+        "BRIGHTDATA_API_TOKEN",
+        "DAYTONA_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OXYLABS_PASSWORD",
+        "SCRAPEDO_API_TOKEN",
+    ):
         orchestrator.ctx.env_passthrough[forbidden] = "orchestration-secret"
         with pytest.raises(ValueError, match="orchestration credentials"):
             orchestrator.register_trusted_candidate(
@@ -1211,7 +1217,10 @@ def test_clients_and_tools_use_immutable_orchestrator_runtime_snapshot(
     monkeypatch.setattr(
         docs_intel,
         "web_search",
-        lambda _query, env=None: observed.append(env["SNAPSHOT_MARKER"]) or [],
+        # `n` is accepted because the tool passes it; a stub narrower than the
+        # real signature swallows the call and this assertion then counts a
+        # missing invocation rather than a wrong environment.
+        lambda _query, n=5, env=None: observed.append(env["SNAPSHOT_MARKER"]) or [],
     )
     monkeypatch.setattr(
         adapter_gen,
@@ -1268,8 +1277,13 @@ def test_assessment_redacts_files_pdf_citations_and_events(tmp_path, monkeypatch
         },
     )
 
-    def fake_report(metrics, citations, out_path):
-        text = json.dumps({"metrics": metrics, "citations": citations})
+    # Mirrors the real signature: a stub narrower than what the caller passes
+    # makes report generation raise, and the run then reports "report
+    # unavailable" rather than the redaction failure this test is about.
+    def fake_report(metrics, citations, out_path, excluded=None, build_plan=None,
+                    self_check=None):
+        text = json.dumps({"metrics": metrics, "citations": citations, "excluded": excluded or [],
+                           "build_plan": build_plan})
         Path(out_path).write_text(text, encoding="utf-8")
         return text
 
@@ -1904,6 +1918,11 @@ def _intake_orchestrator(tmp_path, monkeypatch, events, texts, dataset_available
     )
     monkeypatch.setattr(agent, "_orchestrator_client", lambda _env: client)
     monkeypatch.setattr(agent, "_orchestrator_model", lambda _env: "test-model")
+    # The opening prompt brief runs through the same client, so leaving it live
+    # would consume one scripted turn and shift every `client.calls` assertion
+    # below by one. These tests are about the intake loop; the brief has its own
+    # file (engine/test_prompt_brief.py) covering its own behaviour.
+    orchestrator._prepare_brief = lambda _message: ("", None)
     return orchestrator, client
 
 
@@ -2074,6 +2093,9 @@ def test_chat_tool_history_bounds_scraped_pages_and_preserves_safe_citation(
     )
     monkeypatch.setattr(agent, "_orchestrator_client", lambda _env: client)
     monkeypatch.setattr(agent, "_orchestrator_model", lambda _env: "test-model")
+    # As above: the brief would take request slot 0 and shift the post-tool round
+    # this test reads from client.requests[1].
+    orchestrator._prepare_brief = lambda _message: ("", None)
     secret = "provider-secret-value"
     safe_evidence_url = "https://docs.example.test/guide/install"
     oversized = (
@@ -2102,3 +2124,197 @@ def test_history_url_removes_userinfo_and_query(tmp_path):
     assert orchestrator._history_url(
         "https://user:password@Docs.Example.test:8443/guide?token=secret#part"
     ) == "https://docs.example.test:8443/guide"
+
+
+def test_provider_error_is_reduced_to_the_sentence_a_buyer_can_act_on():
+    """An SDK error arrives wrapped in a payload that truncates into noise."""
+    from engine.agent import _readable_error
+
+    summary = _readable_error(
+        "RateLimitError: Error code: 429 - {'error': {'message': 'You exceeded your "
+        "current quota, please check your plan and billing details.', 'type': "
+        "'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}"
+    )
+
+    assert summary == (
+        "RateLimitError: Error code: 429 - You exceeded your current quota, "
+        "please check your plan and billing details."
+    )
+    assert "insufficient_quota" not in summary
+
+
+def test_a_plain_exception_is_left_alone():
+    from engine.agent import _readable_error
+
+    assert _readable_error("KeyError: 'OPENAI_API_KEY'") == "KeyError: 'OPENAI_API_KEY'"
+
+
+def test_adapter_error_summary_prefers_the_result_json_error():
+    from engine.agent import _adapter_error_summary
+
+    lines = [
+        "Traceback (most recent call last):",
+        'RESULT_JSON:{"ok": false, "error": "ConnectionError: connection timed out"}',
+    ]
+
+    assert _adapter_error_summary(lines) == "ConnectionError: connection timed out"
+    assert _adapter_error_summary([]) == "the adapter produced no output"
+
+
+def test_orchestration_fails_over_to_the_next_configured_provider(monkeypatch):
+    """A rate-limited preferred provider must not end the turn."""
+    from engine import agent
+
+    class _Failing:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**_kwargs):
+                    raise RuntimeError("429 rate limited")
+
+    class _Working:
+        def __init__(self):
+            self.models = []
+
+        @property
+        def chat(self):
+            outer = self
+
+            class _Completions:
+                @staticmethod
+                def create(model=None, **_kwargs):
+                    outer.models.append(model)
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+                    )
+
+            return SimpleNamespace(completions=_Completions)
+
+    working = _Working()
+    monkeypatch.setattr(agent, "_orchestrator_client", lambda _env: _Failing())
+    monkeypatch.setattr(agent, "_orchestrator_model", lambda _env: "preferred-model")
+    monkeypatch.setattr("engine.llm_clients.capability_providers",
+                        lambda capability, env=None: ("openai", "deepseek"))
+    monkeypatch.setattr("engine.llm_clients.chat_client", lambda provider, env: working)
+    monkeypatch.setattr("engine.llm_clients.provider_model",
+                        lambda provider, env: f"{provider}-model")
+
+    resp = agent._orchestrator_complete({}, messages=[])
+
+    assert resp.choices[0].message.content == "ok"
+    assert working.models == ["deepseek-model"]
+
+
+def test_orchestration_raises_when_every_provider_fails(monkeypatch):
+    from engine import agent
+
+    class _Failing:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**_kwargs):
+                    raise RuntimeError("provider down")
+
+    monkeypatch.setattr(agent, "_orchestrator_client", lambda _env: _Failing())
+    monkeypatch.setattr(agent, "_orchestrator_model", lambda _env: "m")
+    monkeypatch.setattr("engine.llm_clients.capability_providers",
+                        lambda capability, env=None: ("openai",))
+
+    with pytest.raises(RuntimeError, match="provider down"):
+        agent._orchestrator_complete({}, messages=[])
+
+
+# ------------------------------------------- multi-step adapter repair
+def _repair_test_candidate():
+    from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
+
+    return Candidate(
+        name="repairable", display_name="Repairable", docs_url="",
+        kind="local_tool", build_commands=[],
+        adapter_code="def extract(image_path):\n    raise KeyError('boom')\n" + RESULT_JSON_WRAPPER,
+    )
+
+
+def test_repair_feeds_each_new_error_back_and_stops_once_it_passes(tmp_path, monkeypatch):
+    """Each attempt must see the LATEST sandbox error, not the first one repeated,
+    and the loop must stop the moment validation actually passes."""
+    from engine import agent as agent_mod
+
+    orchestrator = agent_mod.Orchestrator("repair", str(tmp_path), lambda *_a: None)
+    candidate = _repair_test_candidate()
+
+    # Sandbox output for attempt 0 (initial), 1 (after first repair): both fail
+    # with DIFFERENT errors; attempt 2 (after second repair) passes.
+    outputs = iter([
+        'RESULT_JSON:{"ok": false, "error": "KeyError: boom"}',
+        'RESULT_JSON:{"ok": false, "error": "ValueError: still broken"}',
+        'RESULT_JSON:{"ok": true, "fields": {}, "latency_s": 0.1, "doc_id": "d"}',
+    ])
+    monkeypatch.setattr(orchestrator, "pool", SimpleNamespace(run_python=lambda *_a, **_k: next(outputs)))
+    monkeypatch.setattr(orchestrator, "_first_image", lambda: "doc.png")
+    monkeypatch.setattr("engine.llm_clients.capability_providers", lambda *_a, **_k: ("deepseek",))
+
+    seen_errors: list[str] = []
+
+    def fake_repair_adapter(code, error_output, env=None):
+        seen_errors.append(error_output)
+        return "def extract(image_path):\n    return {}\n" + RESULT_JSON_WRAPPER
+
+    monkeypatch.setattr("engine.adapter_gen.repair_adapter", fake_repair_adapter)
+    monkeypatch.setattr(orchestrator, "_revoke_adapter_credentials", lambda *_a: None)
+
+    ok = orchestrator._validate(SimpleNamespace(id="h", label="repairable"), candidate)
+
+    assert ok is True
+    assert len(seen_errors) == 2, "must stop repairing once validation passes"
+    assert "boom" in seen_errors[0]
+    assert "still broken" in seen_errors[1], "second attempt must see the NEW error, not the first one again"
+
+
+def test_repair_gives_up_after_the_bounded_number_of_attempts(tmp_path, monkeypatch):
+    from engine import agent as agent_mod
+
+    orchestrator = agent_mod.Orchestrator("repair-cap", str(tmp_path), lambda *_a: None)
+    candidate = _repair_test_candidate()
+
+    monkeypatch.setattr(orchestrator, "pool", SimpleNamespace(
+        run_python=lambda *_a, **_k: 'RESULT_JSON:{"ok": false, "error": "PersistentError: nope"}'))
+    monkeypatch.setattr(orchestrator, "_first_image", lambda: "doc.png")
+    monkeypatch.setattr("engine.llm_clients.capability_providers", lambda *_a, **_k: ("deepseek",))
+
+    attempts = {"n": 0}
+
+    def fake_repair_adapter(code, error_output, env=None):
+        attempts["n"] += 1
+        return "def extract(image_path):\n    raise KeyError('still boom')\n" + RESULT_JSON_WRAPPER
+
+    monkeypatch.setattr("engine.adapter_gen.repair_adapter", fake_repair_adapter)
+    monkeypatch.setattr(orchestrator, "_revoke_adapter_credentials", lambda *_a: None)
+
+    ok = orchestrator._validate(SimpleNamespace(id="h", label="repairable"), candidate)
+
+    assert ok is False
+    assert attempts["n"] == agent_mod.MAX_ADAPTER_REPAIR_ATTEMPTS, "must not exceed the bound"
+
+
+def test_a_trusted_builtin_is_never_sent_for_repair(tmp_path, monkeypatch):
+    """A trusted built-in already IS the first-party adapter; repairing a copy
+    of it would carry no credential entitlement, so it must not be attempted."""
+    from engine import agent as agent_mod
+
+    orchestrator = agent_mod.Orchestrator("repair-trusted", str(tmp_path), lambda *_a: None)
+    candidate = _repair_test_candidate()
+    orchestrator._trusted_candidate_names.add(candidate.name)
+
+    monkeypatch.setattr(orchestrator, "pool", SimpleNamespace(
+        run_python=lambda *_a, **_k: 'RESULT_JSON:{"ok": false, "error": "boom"}'))
+    monkeypatch.setattr(orchestrator, "_first_image", lambda: "doc.png")
+
+    def fail_if_called(*_a, **_k):
+        raise AssertionError("a trusted built-in must never be repaired")
+
+    monkeypatch.setattr("engine.adapter_gen.repair_adapter", fail_if_called)
+
+    ok = orchestrator._validate(SimpleNamespace(id="h", label="repairable"), candidate)
+
+    assert ok is False

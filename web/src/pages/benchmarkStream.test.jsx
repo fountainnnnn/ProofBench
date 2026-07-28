@@ -27,7 +27,17 @@ const api = vi.hoisted(() => ({
 vi.mock("../api.js", () => api);
 vi.mock("../components/Sidebar.jsx", () => ({ default: () => null }));
 vi.mock("../components/ChatThread.jsx", () => ({
-  default: ({ running }) => <output data-testid="running">{String(running)}</output>,
+  /* Stream status is rendered by the thread now (it is prose about this
+     conversation, not page chrome), so the stub has to forward it or these
+     assertions would be testing the stub instead of the behaviour. */
+  default: ({ running, statusMessage }) => (
+    <>
+      {/* Kept OUTSIDE the running output: tests read that element's exact
+          textContent, so anything else inside it would corrupt the assertion. */}
+      <output data-testid="running">{String(running)}</output>
+      {statusMessage ? <p>{statusMessage}</p> : null}
+    </>
+  ),
 }));
 vi.mock("../components/Composer.jsx", () => ({
   default: ({ onSend }) => (

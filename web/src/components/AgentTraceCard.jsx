@@ -252,6 +252,10 @@ export default function AgentTraceCard({
   simulated,
   defaultOpen = true,
   headingId,
+  /* Inside the side panel the surrounding dialog already names and frames this,
+     so the card chrome and its own title would be the second frame and the
+     second heading for one thing. */
+  bare = false,
 }) {
   const safeTrace = useMemo(() => sanitizeForDisplay(trace || []), [trace]);
   const safeLogs = useMemo(() => sanitizeForDisplay(sandboxLogs || {}), [sandboxLogs]);
@@ -262,29 +266,43 @@ export default function AgentTraceCard({
   const summary = traceSummaryText(safeTrace, sandboxes.length);
 
   return (
-    <section className={`${PANEL} min-w-0 p-5`} aria-labelledby={headingId}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        className={`${disclosureButton} flex-wrap justify-between rounded-[12px]`}
-      >
-        <span className="flex min-w-0 flex-wrap items-center gap-2">
-          <Caret open={open} />
-          <span id={headingId} className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
-            Execution trace
+    <section className={bare ? "min-w-0" : `${PANEL} min-w-0 p-5`} aria-labelledby={headingId}>
+      {bare ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            {safePhase?.phase && <PhaseBadge label={safePhase.phase} />}
+            {simulated && (
+              <span className="rounded-full bg-[var(--warn-tint)] px-2.5 py-0.5 text-[12px] font-medium text-[var(--warn)]">
+                Historical synthetic trace
+              </span>
+            )}
           </span>
-          {safePhase?.phase && <PhaseBadge label={safePhase.phase} />}
-          {simulated && (
-            <span className="rounded-full bg-[var(--warn-tint)] px-2.5 py-0.5 text-[12px] font-medium text-[var(--warn)]">
-              Historical synthetic trace
+          {summary && <span className="text-[12px] text-[var(--ink-2)]">{summary}</span>}
+        </div>
+      ) : (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className={`${disclosureButton} flex-wrap justify-between rounded-[12px]`}
+        >
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <Caret open={open} />
+            <span id={headingId} className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
+              Execution trace
             </span>
-          )}
-        </span>
-        {summary && <span className="text-[12px] text-[var(--ink-2)]">{summary}</span>}
-      </button>
+            {safePhase?.phase && <PhaseBadge label={safePhase.phase} />}
+            {simulated && (
+              <span className="rounded-full bg-[var(--warn-tint)] px-2.5 py-0.5 text-[12px] font-medium text-[var(--warn)]">
+                Historical synthetic trace
+              </span>
+            )}
+          </span>
+          {summary && <span className="text-[12px] text-[var(--ink-2)]">{summary}</span>}
+        </button>
+      )}
 
-      {open && (
+      {(open || bare) && (
         <div className="mt-4 flex flex-col gap-3">
           {safePhase?.candidates && (
             <ul className="flex flex-wrap gap-x-4 gap-y-1">

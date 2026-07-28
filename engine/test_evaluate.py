@@ -184,3 +184,84 @@ def test_evaluate_results_two_document_fixture(tmp_path) -> None:
     assert metrics["flaky_api"]["failure_rate"] == 0.5
     assert metrics["flaky_api"]["cost_per_1k_docs"] == 2.0
     assert metrics["flaky_api"]["n_docs"] == 2
+
+
+def _fixture_ground_truth(tmp_path: Path) -> Path:
+    path = tmp_path / "ground_truth.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["doc_id", "invoice_number", "date", "vendor", "total"]
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "doc_id": "inv_001",
+                "invoice_number": "INV-1001",
+                "date": "2026-06-01",
+                "vendor": "Acme Pte Ltd",
+                "total": "128.50",
+            }
+        )
+    return path
+
+
+def test_candidate_that_never_ran_is_not_scored_zero(tmp_path) -> None:
+    """A candidate with no successful document was not measured, so no score."""
+    ground_truth_path = _fixture_ground_truth(tmp_path)
+    results_path = tmp_path / "results.jsonl"
+    results_path.write_text(
+        json.dumps(
+            {
+                "candidate": "openai_vision",
+                "doc_id": "inv_001",
+                "ok": False,
+                "prediction": None,
+                "latency_s": 0.0,
+                "error": "RateLimitError: Error code: 429 - quota exceeded",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = evaluate_results(str(results_path), str(ground_truth_path))["openai_vision"]
+
+    assert metrics["status"] == "no_result"
+    assert metrics["documents_scored"] == 0
+    # Withheld, not zero: 0.0 would claim a measurement the run never made.
+    assert metrics["exact_accuracy"] is None
+    assert metrics["field_f1"] is None
+    assert metrics["cer"] is None
+    assert metrics["mean_latency_s"] is None
+    assert metrics["failure_rate"] == 1.0
+    assert "429" in metrics["error_summary"]
+
+
+def test_unknown_cost_is_withheld_rather_than_reported_as_free(tmp_path) -> None:
+    ground_truth_path = _fixture_ground_truth(tmp_path)
+    results_path = tmp_path / "results.jsonl"
+    results_path.write_text(
+        json.dumps(
+            {
+                "candidate": "tesseract",
+                "doc_id": "inv_001",
+                "ok": True,
+                "prediction": {
+                    "invoice_number": "INV-1001",
+                    "date": "2026-06-01",
+                    "vendor": "Acme Pte Ltd",
+                    "total": "128.50",
+                },
+                "latency_s": 1.0,
+                "error": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = evaluate_results(str(results_path), str(ground_truth_path))["tesseract"]
+
+    assert metrics["status"] == "ok"
+    assert metrics["exact_accuracy"] == 1.0
+    assert metrics["cost_per_1k_docs"] is None

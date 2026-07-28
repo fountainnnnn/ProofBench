@@ -2,8 +2,10 @@ import { useEffect, useId, useState } from "react";
 import {
   deleteProviderKey,
   getProviderReadiness,
+  getScraperOrder,
   listProviderKeys,
   saveProviderKey,
+  saveScraperOrder,
 } from "../api.js";
 import { BTN_DANGER, BTN_PRIMARY, BTN_SECONDARY, Collapse, INPUT, PAGE_HEADER, PAGE_TITLE, PANEL, SHEEN_SWIPE, Skeleton, useSelectionSheen } from "../components/ui.jsx";
 import HeaderActions from "../components/HeaderActions.jsx";
@@ -237,6 +239,121 @@ function ServiceRow({ item, canWrite, onSaveMissing }) {
   );
 }
 
+/* Which scraping provider answers first.
+ *
+ * A list rather than a single choice, because the others are not disabled by
+ * demoting them — a search that returns nothing ends an intake turn, so every
+ * provider holding credentials stays in the chain as a fallback. Reordering is
+ * by button rather than drag: three rows do not justify a drag implementation,
+ * and buttons are reachable by keyboard without any extra work. */
+function ScraperOrder() {
+  const [state, setState] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    getScraperOrder()
+      .then((data) => { if (alive) setState(data); })
+      .catch(() => { if (alive) setError("Could not load the scraping order."); });
+    return () => { alive = false; };
+  }, []);
+
+  const move = async (index, delta) => {
+    const target = index + delta;
+    const rows = state?.providers || [];
+    if (target < 0 || target >= rows.length) return;
+    const next = [...rows];
+    [next[index], next[target]] = [next[target], next[index]];
+    /* Optimistic, then reconciled with what the server normalized: the order is
+       a preference, so waiting on a round trip to redraw makes it feel broken. */
+    setState({ ...state, providers: next, order: next.map((row) => row.name) });
+    setSaving(true);
+    setError("");
+    try {
+      const saved = await saveScraperOrder(next.map((row) => row.name));
+      setState((current) => ({
+        ...current,
+        order: saved.order,
+        providers: saved.order.map(
+          (name) => next.find((row) => row.name === name) || { name, label: name },
+        ),
+      }));
+    } catch {
+      setState({ ...state, providers: rows, order: rows.map((row) => row.name) });
+      setError("Could not save the order.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className={`${PANEL} mt-8 p-5`} aria-labelledby="scrapers-heading">
+      <h2 id="scrapers-heading" className="text-[16px] font-semibold text-[var(--ink)]">
+        Documentation sources
+      </h2>
+      <p className="mt-1 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+        The order these providers are tried when searching for tools and reading their
+        documentation. The first one that answers is used; the rest stay as fallbacks, so a
+        provider being slow or down never ends a benchmark without candidates.
+      </p>
+
+      {!state && !error && <Skeleton className="mt-4 h-24 w-full" />}
+      {error && (
+        <p className="mt-3 text-[13px] text-[var(--danger)]" role="status">{error}</p>
+      )}
+
+      {state && (
+        <ol className="mt-4 divide-y divide-[var(--line)] overflow-hidden rounded-[16px] border border-[var(--line)]">
+          {state.providers.map((row, index) => (
+            <li key={row.name} className="flex items-center gap-3 px-3.5 py-2.5">
+              <span className="pb-mono w-5 shrink-0 text-[12px] text-[var(--ink-3)]">
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px] text-[var(--ink)]">{row.label}</span>
+                {!row.configured && (
+                  /* First in line but unable to answer is worth saying out loud;
+                     it is otherwise invisible until a benchmark is slow. */
+                  <span className="block text-[12px] text-[var(--ink-3)]">
+                    No credentials configured — skipped
+                  </span>
+                )}
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => move(index, -1)}
+                  disabled={index === 0 || saving}
+                  aria-label={`Move ${row.label} earlier`}
+                  className="flex h-7 w-7 items-center justify-center rounded-[8px] text-[var(--ink-2)] transition-colors duration-150 hover:bg-[var(--surface-2)] hover:text-[var(--ink)] disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M4 10 8 6l4 4" stroke="currentColor" strokeWidth="1.5"
+                          strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => move(index, 1)}
+                  disabled={index === state.providers.length - 1 || saving}
+                  aria-label={`Move ${row.label} later`}
+                  className="flex h-7 w-7 items-center justify-center rounded-[8px] text-[var(--ink-2)] transition-colors duration-150 hover:bg-[var(--surface-2)] hover:text-[var(--ink)] disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5"
+                          strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export default function Settings() {
   const [theme, setThemeState] = useState(storedTheme);
   const themeSheen = useSelectionSheen(theme);
@@ -434,7 +551,8 @@ export default function Settings() {
       <header className={`${PAGE_HEADER} px-4 sm:px-8`}>
         <div className="mx-auto flex w-full max-w-canvas items-start justify-between gap-x-6 pb-3 pt-3.5">
           <div className="min-w-0">
-            <h1 className={PAGE_TITLE}>Settings</h1>
+            <span className="pb-eyebrow-glow">Configuration</span>
+            <h1 className={`${PAGE_TITLE} mt-1`}>Settings</h1>
             <p className="mt-0.5 max-w-[70ch] text-[13px] text-[var(--ink-2)]">
               What this deployment can currently prove, and which credentials it holds.
             </p>
@@ -554,6 +672,8 @@ export default function Settings() {
           )}
         </section>
 
+        <ScraperOrder />
+
         <section className={`${PANEL} mt-8 p-5`} aria-labelledby="appearance-heading">
           <h2 id="appearance-heading" className="text-[16px] font-semibold text-[var(--ink)]">
             Appearance
@@ -587,7 +707,7 @@ export default function Settings() {
           </h2>
           <p className="mt-1.5 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
             ProofBench benchmarks invoice-extraction tools against your own labelled data, runs them
-            in isolated Daytona sandboxes, and scores results deterministically against ground truth.
+            in isolated sandboxes, and scores results deterministically against ground truth.
           </p>
 
           <dl className="mt-6 grid grid-cols-1 gap-x-[24px] gap-y-8 md:grid-cols-2">

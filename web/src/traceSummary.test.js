@@ -3,6 +3,7 @@ import {
   DETAIL_PREVIEW_CHARS,
   condenseDetail,
   summarizeTrace,
+  toolVerbs,
   traceSummaryText,
   traceTotals,
 } from "./traceSummary.js";
@@ -147,5 +148,36 @@ describe("traceSummaryText", () => {
     // a's start and error are one failed call, so this is 2 calls, not 3 events
     expect(traceTotals([{ tool: "a" }, { tool: "a", status: "error" }, { tool: "b", status: "ok" }]))
       .toEqual({ tools: 2, calls: 2, errors: 1 });
+  });
+});
+
+describe("toolVerbs", () => {
+  it("never repeats the tool name as a row prefix for unmapped tools", () => {
+    // The group header already says "assess documentation batch"; a fallback
+    // act of the same string printed the tool name twice in a row.
+    const words = toolVerbs("some_new_tool");
+    expect(words.verb).toBe("some new tool");
+    expect(words.act).toBe("");
+    expect(words.acting).toBe("");
+  });
+
+  it("gives the assessment tools their own vocabulary", () => {
+    expect(toolVerbs("assess_documentation_batch").verb).toBe("Assessed documentation");
+    expect(toolVerbs("assess_documentation_batch").act).toBe("");
+    expect(toolVerbs("assess_implementation").verb).toBe("Rated candidates");
+    expect(toolVerbs("shortlist_review").verb).toBe("Reviewed the shortlist");
+  });
+
+  it("names the prompt brief in words rather than as a slug", () => {
+    // Unmapped, this rendered "prompt brief" mid-sentence, which reads as a
+    // fragment rather than as something the agent did.
+    const words = toolVerbs("prompt_brief");
+    expect(words.verb).toBe("Prepared the research brief");
+    expect(words.gerund).toBe("Preparing the research brief");
+    expect(words.noun).toBe("brief");
+    expect(words.plural).toBe("briefs");
+    // One call per session, so its rows carry no action prefix.
+    expect(words.act).toBe("");
+    expect(words.acting).toBe("");
   });
 });

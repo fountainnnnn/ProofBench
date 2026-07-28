@@ -8,6 +8,8 @@ const api = vi.hoisted(() => ({
   deleteProviderKey: vi.fn(),
   getHealth: vi.fn(),
   getProviderReadiness: vi.fn(),
+  getScraperOrder: vi.fn(),
+  saveScraperOrder: vi.fn(),
   listProviderKeys: vi.fn(),
   listSessions: vi.fn(),
   saveProviderKey: vi.fn(),
@@ -24,6 +26,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.getHealth.mockResolvedValue({});
   api.listSessions.mockResolvedValue([]);
+  api.getScraperOrder.mockResolvedValue({ order: [], default: [], providers: [] });
   // Readiness is a configuration check only; a ready deployment keeps these
   // tests focused on the destructive-action confirmations.
   api.getProviderReadiness.mockResolvedValue({

@@ -157,7 +157,38 @@ export async function openEvents(sessionId) {
 
 export async function listSessions() {
   const res = await apiFetch(`${BASE}/api/sessions`);
-  return jsonOrThrow(res);
+  const sessions = await jsonOrThrow(res);
+  if (!Array.isArray(sessions)) return sessions;
+  /* Newest first. The API returns sessions oldest-first, so a freshly created
+     one landed at the BOTTOM of a long history — below the fold in the rail,
+     which read as "new benchmarks never appear in the list". Sorted here rather
+     than in each list so every surface agrees on the order. */
+  return [...sessions].sort(
+    (a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0),
+  );
+}
+
+export async function getScraperOrder() {
+  return jsonOrThrow(await apiFetch(`${BASE}/api/settings/scrapers`));
+}
+
+export async function saveScraperOrder(order) {
+  return jsonOrThrow(await apiFetch(`${BASE}/api/settings/scrapers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order }),
+  }));
+}
+
+/* Vendor marks for candidates this deployment has benchmarked, as data URIs.
+   The bundled manifest can only cover tools that existed when the frontend was
+   built, so anything benchmarked since is resolved by the backend instead. */
+export async function fetchBrandLogos(names) {
+  const wanted = [...new Set((names || []).filter(Boolean))];
+  if (wanted.length === 0) return {};
+  const res = await apiFetch(`${BASE}/api/brand?names=${encodeURIComponent(wanted.join(","))}`);
+  const data = await jsonOrThrow(res);
+  return data?.logos && typeof data.logos === "object" ? data.logos : {};
 }
 
 export async function createSession() {

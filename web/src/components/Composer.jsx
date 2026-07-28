@@ -74,7 +74,9 @@ export default function Composer({ onSend, onUpload, dataset, disabled, provenan
 
   return (
     <div className="shrink-0 px-4 pb-4 pt-2 sm:px-8">
-      <div className="mx-auto w-full max-w-[840px]">
+      {/* Tracks the thread's width so the composer stays flush with the
+          conversation it belongs to. */}
+      <div className="mx-auto w-full max-w-[var(--thread-w)]">
         <div
           onDragOver={(e) => {
             e.preventDefault();

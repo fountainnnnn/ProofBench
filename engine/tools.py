@@ -294,10 +294,18 @@ def validate_result_record(ctx: RunContext, record: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Google's first page is the popular answer by construction, so five results is
+# a shortlist of whatever is famous. Niche tools sit at ranks 10-30, which is
+# two or three pages in — cheap here, because SERP is billed per request and
+# pages are fetched concurrently.
+WEB_SEARCH_RESULTS = 25
+
+
 def _tool_web_search(args: dict, ctx: RunContext) -> str:
     from engine import docs_intel
 
-    return json.dumps(docs_intel.web_search(args["query"], env=ctx.runtime_env))
+    return json.dumps(docs_intel.web_search(
+        args["query"], n=WEB_SEARCH_RESULTS, env=ctx.runtime_env))
 
 
 def _tool_scrape_docs(args: dict, ctx: RunContext) -> str:

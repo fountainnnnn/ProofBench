@@ -164,8 +164,8 @@ function useSidebarGeometry() {
   return { width, collapsed, setWidth: persistWidth, toggle };
 }
 
-/* The drag handle is a real separator: pointer drag for the mouse, arrow keys
-   for the keyboard, so the width is not a mouse-only affordance. */
+/* The drag handle exposes the sidebar width as a slider: pointer drag for the
+   mouse, arrow keys for the keyboard, so width is not a mouse-only affordance. */
 function SidebarResizer({ width, onWidth }) {
   const onPointerDown = (event) => {
     event.preventDefault();
@@ -196,8 +196,8 @@ function SidebarResizer({ width, onWidth }) {
 
   return (
     <div
-      role="separator"
-      aria-orientation="vertical"
+      role="slider"
+      aria-orientation="horizontal"
       aria-label="Resize sidebar"
       aria-valuenow={width}
       aria-valuemin={SIDEBAR_MIN}
@@ -280,6 +280,7 @@ function ProfileMenu({ collapsed }) {
           ref={menuRef}
           role="menu"
           aria-label="Profile"
+          tabIndex={-1}
           onKeyDown={onMenuKeyDown}
           className="pb-glass-float absolute bottom-full left-0 right-0 z-20 mb-2 rounded-[14px] p-1.5 shadow-[var(--shadow-lift)]"
         >

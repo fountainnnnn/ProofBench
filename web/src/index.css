@@ -26,8 +26,8 @@
 
   /* Canvas wash: cool at the head, settling toward mist at the foot.
      --paper stays the solid mid-tone components reference. */
-  --canvas-top: oklch(0.984 0.002 275);
-  --canvas-bottom: oklch(0.958 0.004 305);
+  --canvas-top: oklch(0.986 0.002 275);
+  --canvas-bottom: oklch(0.944 0.008 305);
   /* The left frame, carrying mauve's 328deg so the rail reads warm against a
      cool canvas rather than relying on lightness alone. */
   --sidebar-bg: oklch(0.940 0.009 322);
@@ -122,6 +122,41 @@
   --shadow-lift: 0 8px 30px oklch(0.24 0.014 255 / 0.14), 0 24px 60px oklch(0.24 0.014 255 / 0.11);
   --shadow-btn: none;
 
+  /* --- Glow-card layer (marketing grammar) --------------------------------
+     The console palette is deliberately muted; a radial glow and gradient text
+     need more chroma to read, so these three brand hues sit richer than the UI
+     set while staying in the same family (teal 224, mauve 330, steel 260).
+     Consumed by the section eyebrow, the glow cards, and the ambient orb. */
+  --glow-base: oklch(0.977 0.006 264);
+  --glow-teal: oklch(0.620 0.110 224);
+  --glow-mauve: oklch(0.720 0.085 330);
+  --glow-steel: oklch(0.650 0.085 260);
+  /* Eyebrow gradient references the hue tokens, so it re-resolves per theme. */
+  --glow-eyebrow: linear-gradient(90deg, var(--glow-teal), var(--glow-mauve), var(--glow-steel));
+  --glow-shadow: 0 10px 30px -10px oklch(0.24 0.02 255 / 0.16);
+  /* Deep brand tone for dark bands — not pure black. */
+  --band: oklch(0.232 0.018 252);
+  --band-2: oklch(0.300 0.020 252);
+  --band-text: oklch(0.985 0.004 270);
+  --band-ink-2: oklch(0.740 0.020 258);
+
+  /* Responsive spacing. The console is a fit-to-viewport dashboard, so its
+     rhythm scales with the window rather than being fixed: horizontal padding
+     tracks width, vertical padding and the grid gap track HEIGHT, because a
+     short laptop screen needs to give its pixels to content, not to margin.
+     clamp keeps both ends sane — never cramped, never cavernous. */
+  --space-page-x: clamp(1rem, 0.35rem + 1.6vw, 2rem);
+  --space-page-y: clamp(0.75rem, 0.1rem + 1.4vh, 1.5rem);
+  --space-gap: clamp(0.625rem, 0.05rem + 1.2vh, 1rem);
+  --space-card-x: clamp(0.875rem, 0.45rem + 0.9vw, 1.25rem);
+  --space-card-y: clamp(0.5rem, 0.1rem + 0.9vh, 0.875rem);
+
+  /* The conversation column. Wider than a prose measure on purpose: this thread
+     carries spec JSON, execution traces and results tables, not just sentences,
+     and 840px forced those to wrap while the canvas beside them sat empty. The
+     message bodies keep their own ~68ch cap, so reading length is unaffected. */
+  --thread-w: clamp(46rem, 62vw, 74rem);
+
   /* Shape: generous, consistent. */
   --radius-control: 12px;
   --radius-surface: 24px;
@@ -191,6 +226,16 @@
     --sheen-swipe: oklch(0 0 0 / 0.22);
     --shadow-card: 0 1px 2px oklch(0 0 0 / 0.32), 0 3px 10px oklch(0 0 0 / 0.28), 0 14px 34px oklch(0 0 0 / 0.32);
     --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.38), 0 24px 60px oklch(0 0 0 / 0.38);
+    --glow-base: oklch(0.248 0.014 258);
+    --glow-teal: oklch(0.680 0.100 224);
+    --glow-mauve: oklch(0.760 0.080 330);
+    --glow-steel: oklch(0.700 0.080 260);
+    --glow-eyebrow: linear-gradient(90deg, var(--glow-teal), var(--glow-mauve), var(--glow-steel));
+    --glow-shadow: 0 10px 30px -10px oklch(0 0 0 / 0.55);
+    --band: oklch(0.180 0.012 258);
+    --band-2: oklch(0.262 0.016 252);
+    --band-text: oklch(0.985 0.004 270);
+    --band-ink-2: oklch(0.740 0.020 258);
     color-scheme: dark;
   }
 }
@@ -236,6 +281,16 @@
   --sheen-swipe: oklch(0 0 0 / 0.22);
   --shadow-card: 0 1px 2px oklch(0 0 0 / 0.32), 0 3px 10px oklch(0 0 0 / 0.28), 0 14px 34px oklch(0 0 0 / 0.32);
   --shadow-lift: 0 8px 30px oklch(0 0 0 / 0.38), 0 24px 60px oklch(0 0 0 / 0.38);
+  --glow-base: oklch(0.248 0.014 258);
+  --glow-teal: oklch(0.680 0.100 224);
+  --glow-mauve: oklch(0.760 0.080 330);
+  --glow-steel: oklch(0.700 0.080 260);
+  --glow-eyebrow: linear-gradient(90deg, var(--glow-teal), var(--glow-mauve), var(--glow-steel));
+  --glow-shadow: 0 10px 30px -10px oklch(0 0 0 / 0.55);
+  --band: oklch(0.180 0.012 258);
+  --band-2: oklch(0.262 0.016 252);
+  --band-text: oklch(0.985 0.004 270);
+  --band-ink-2: oklch(0.740 0.020 258);
   color-scheme: dark;
 }
 
@@ -336,15 +391,17 @@ body {
 
 /* The rail is glass too, so the atmosphere drifting behind it keeps the whole
    console on one material instead of a translucent canvas bolted to an opaque
-   slab. Held denser than a card (72% vs 52%): this is a persistent surface
-   carrying 13px secondary-ink labels, and it must stay readable while the
-   coral blob passes under it. */
+   slab. Held denser than a card (72%): this is a persistent surface carrying
+   13px secondary-ink labels, and it must stay readable while the wash passes
+   under it.
+
+   Like the cards it is translucent WITHOUT a backdrop blur: it is the largest
+   always-on surface in the console, so re-blurring it on every frame of the
+   drift was the single most expensive thing on screen. */
 .pb-sidebar-shell {
   background:
     linear-gradient(168deg, var(--glass-sheen) 0%, transparent 22%),
     color-mix(in oklab, var(--sidebar-bg) 72%, transparent);
-  backdrop-filter: blur(28px) saturate(1.5);
-  -webkit-backdrop-filter: blur(28px) saturate(1.5);
   border-right-color: var(--gloss-rim-soft);
 }
 
@@ -430,11 +487,8 @@ body {
   }
 }
 
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .pb-sidebar-shell {
-    background: var(--sidebar-bg);
-  }
-}
+/* The rail no longer uses backdrop-filter, so it needs no fallback: its
+   translucency is a plain colour-mix that every engine renders. */
 
 .pb-nav-item {
   border-radius: var(--radius-control);
@@ -532,12 +586,51 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+/* The chat workspace's top strip: a thin fixed band holding the session title
+   and the live controls. It is a FADE, not a bar — no border, no solid fill —
+   so the thread appears to pass under it and dissolve rather than being cut by
+   a hard edge. Height is one control tall and no more; the point of removing
+   the old page-header was to give that space back to the conversation. */
+.pb-chat-bar {
+  height: 3.25rem;
+  isolation: isolate;
+}
+
+/* The fade is a LAYER BEHIND the bar's content, never the bar itself: a mask on
+   the element applies to its descendants too, which faded the bottom of the
+   title and of the button inside it — the button looked like it had a gradient
+   baked into its own fill. Painting the gradient, the blur and the mask on a
+   pseudo-element leaves the controls fully opaque. */
+.pb-chat-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    var(--paper) 0%,
+    color-mix(in oklab, var(--paper) 82%, transparent) 55%,
+    transparent 100%
+  );
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  /* Without this the blur would extend across the fully transparent foot and
+     stop at a hard line, leaving a visible seam. */
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 55%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 55%, transparent 100%);
+}
+
 /* Console route title: the sans replacement for .pb-display on every console
    route (Benchmark, Runs, Datasets, Settings). */
+/* Console page title, in the glow grammar's display voice: weight 500 (not 650)
+   is most of why it reads expensive, tracked tight, one notch larger. Kept at a
+   console scale rather than the landing's 2.75rem so a working header does not
+   dominate the data under it. */
 .pb-page-title {
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
   color: var(--ink);
 }
 
@@ -820,8 +913,8 @@ body {
      blobs masks their motion. Keeping it thin lets the moving blobs read as the
      thing that actually moves, and keeps the canvas whiter. */
   background:
-    radial-gradient(155% 85% at 50% -5%, oklch(0.895 0.015 328 / 0.30) 0%, transparent 62%),
-    radial-gradient(145% 80% at 50% 105%, oklch(0.905 0.017 226 / 0.28) 0%, transparent 58%);
+    radial-gradient(155% 85% at 50% -5%, oklch(0.878 0.022 328 / 0.40) 0%, transparent 62%),
+    radial-gradient(145% 80% at 50% 105%, oklch(0.888 0.024 226 / 0.38) 0%, transparent 58%);
 }
 
 .pb-atmosphere::before,
@@ -840,15 +933,15 @@ body {
 .pb-atmosphere::before {
   top: -10%;
   left: 16%;
-  background: radial-gradient(closest-side, oklch(0.855 0.030 328 / 0.56) 0%, oklch(0.855 0.030 328 / 0.24) 45%, transparent 72%);
-  animation: pb-drift-a 12s ease-in-out infinite alternate;
+  background: radial-gradient(closest-side, oklch(0.838 0.040 328 / 0.66) 0%, oklch(0.838 0.040 328 / 0.30) 45%, transparent 72%);
+  animation: pb-drift-a 8s ease-in-out infinite alternate;
 }
 
 .pb-atmosphere::after {
   bottom: -16%;
   right: 12%;
-  background: radial-gradient(closest-side, oklch(0.868 0.032 226 / 0.56) 0%, oklch(0.868 0.032 226 / 0.24) 45%, transparent 72%);
-  animation: pb-drift-b 15s ease-in-out infinite alternate;
+  background: radial-gradient(closest-side, oklch(0.852 0.042 226 / 0.66) 0%, oklch(0.852 0.042 226 / 0.30) 45%, transparent 72%);
+  animation: pb-drift-b 11s ease-in-out infinite alternate;
 }
 
 :root[data-theme="dark"] .pb-atmosphere {
@@ -881,21 +974,31 @@ body {
   }
 }
 
+/* Curved paths, not a straight there-and-back. A two-stop `alternate` animation
+   retraces its own line, which the eye reads as a pulse rather than as travel;
+   the midpoint pushes the return along a different arc, so the wash genuinely
+   wanders. Wide enough that the colour under a given card actually changes. */
 @keyframes pb-drift-a {
-  from {
-    transform: translate3d(-18%, -12%, 0) scale(0.88);
+  0% {
+    transform: translate3d(-26%, -18%, 0) scale(0.82);
   }
-  to {
-    transform: translate3d(44%, 30%, 0) scale(1.4);
+  50% {
+    transform: translate3d(22%, 34%, 0) scale(1.24);
+  }
+  100% {
+    transform: translate3d(62%, -6%, 0) scale(1.5);
   }
 }
 
 @keyframes pb-drift-b {
-  from {
-    transform: translate3d(16%, 12%, 0) scale(1.32);
+  0% {
+    transform: translate3d(24%, 18%, 0) scale(1.38);
   }
-  to {
-    transform: translate3d(-42%, -28%, 0) scale(0.8);
+  50% {
+    transform: translate3d(-20%, -32%, 0) scale(0.96);
+  }
+  100% {
+    transform: translate3d(-58%, 8%, 0) scale(0.74);
   }
 }
 
@@ -936,15 +1039,16 @@ body {
    visible gradient onto every card — bright top-left corner, shaded
    bottom-right — which read as a gradient FILL rather than as glass. A frosted
    pane is defined by its even body and its lit edge, so that is all this is. */
+/* No backdrop-filter on cards, deliberately. Measured on the Overview with the
+   atmosphere drifting: 21fps with it, 33fps without, and 48fps with every blur
+   off — the blur, not the motion, was eating the frames (pausing the drift
+   changed nothing). A card sits at 72% opacity, so what the blur actually
+   contributed was a softening almost nobody could see, paid for on every frame
+   the backdrop moved. Translucency stays; only the re-blur is gone. */
 .pb-glass {
   background:
     linear-gradient(180deg, var(--glass-sheen) 0%, transparent 32%),
     color-mix(in oklab, var(--surface) 72%, transparent);
-  /* More opaque than before (72% vs 52%): at high translucency the moving
-     coloured atmosphere bled through and tinted each card unevenly, which also
-     read as a gradient. Saturate stays modest for the same reason. */
-  backdrop-filter: blur(20px) saturate(1.2);
-  -webkit-backdrop-filter: blur(20px) saturate(1.2);
   border: 1px solid var(--glass-edge);
   border-top-color: var(--gloss-rim);
 }
@@ -963,9 +1067,243 @@ body {
 
 /* No backdrop-filter support: fall back to the opaque surface rather than a
    washed-out translucent panel with unreadable text behind it. */
+/* Only floating surfaces still blur their backdrop, and only they need the
+   opaque fallback: a menu or dialog over live content must stay readable where
+   backdrop-filter is unsupported. Cards use plain translucency and need none. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .pb-glass,
   .pb-glass-float {
     background: var(--surface);
   }
+}
+
+/* =========================================================================
+   Glow-card marketing grammar
+   A centered header block (gradient eyebrow, weight-500 title, subtitle) then
+   content in soft radial-top-glow cards. Same grammar on every section, so the
+   page reads as designed rather than assembled. Colours come from the glow
+   token layer above; geometry lives here.
+   ========================================================================= */
+
+/* Eyebrow: gradient text. One of the two or three gradient moments a page is
+   allowed — used on section eyebrows and the odd highlighted word, nowhere
+   else. Falls back to the accent where background-clip:text is unsupported. */
+.pb-eyebrow-glow {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .pb-eyebrow-glow {
+    background: var(--glow-eyebrow);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+}
+
+/* Highlighted word inside a headline — the same clipped-gradient treatment. */
+.pb-glow-word {
+  color: var(--accent);
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .pb-glow-word {
+    background: var(--glow-eyebrow);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+}
+
+/* Display title: weight 500 (not 600/700) is most of why this reads expensive.
+   Ends with a period, five or six words. */
+.pb-glow-title {
+  font-size: clamp(1.9rem, 1.1rem + 2.6vw, 2.75rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.06;
+  color: var(--ink);
+}
+
+.pb-glow-sub {
+  font-size: 1.075rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* Glow card: radial-top-glow surface that fully resolves to the base colour by
+   60% so the label sits on flat colour. The hue pair is set per card via
+   data-glow, cycling three pairings so no two neighbours match. */
+.pb-glow-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  text-align: left;
+  --g1: var(--glow-teal);
+  --g2: var(--glow-mauve);
+  background:
+    radial-gradient(125% 82% at 50% 0%,
+      color-mix(in oklab, var(--g1) 30%, var(--glow-base)) 0%,
+      color-mix(in oklab, var(--g2) 18%, var(--glow-base)) 30%,
+      var(--glow-base) 60%,
+      var(--glow-base) 100%);
+  border: 1px solid var(--line);
+  box-shadow: var(--glow-shadow);
+}
+.pb-glow-card[data-glow="0"] { --g1: var(--glow-teal);  --g2: var(--glow-mauve); }
+.pb-glow-card[data-glow="1"] { --g1: var(--glow-mauve); --g2: var(--glow-steel); }
+.pb-glow-card[data-glow="2"] { --g1: var(--glow-steel); --g2: var(--glow-teal); }
+
+/* Mesh overlay: faint grid texture under a centered visual, masked to fade out
+   before it competes with content. */
+.pb-glow-mesh {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(0deg, oklch(1 0 0 / 0.7) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(1 0 0 / 0.7) 1px, transparent 1px);
+  background-size: 16px 16px;
+  -webkit-mask-image: radial-gradient(circle at center top, black 0%, transparent 80%);
+  mask-image: radial-gradient(circle at center top, black 0%, transparent 80%);
+}
+
+/* Ambient orb: one large soft blob drifting behind the whole page. One orb is
+   atmosphere; several is a lava lamp. Frozen by the global reduced-motion rule. */
+.pb-glow-orb {
+  position: fixed;
+  z-index: 0;
+  pointer-events: none;
+  width: 72vw;
+  height: 72vw;
+  max-width: 1100px;
+  max-height: 1100px;
+  border-radius: 50%;
+  filter: blur(130px);
+  opacity: 0.12;
+  background: radial-gradient(circle at 50% 50%, var(--glow-teal) 0%, var(--glow-mauve) 46%, transparent 72%);
+  animation: pb-orb-drift 34s ease-in-out infinite alternate;
+}
+:root[data-theme="dark"] .pb-glow-orb,
+.pb-band .pb-glow-orb { opacity: 0.16; }
+
+@keyframes pb-orb-drift {
+  from { transform: translate3d(-7%, -5%, 0) scale(1); }
+  to   { transform: translate3d(9%, 7%, 0) scale(1.16); }
+}
+
+/* Dark band: a deep brand tone, not pure black. Titles and subtitles invert to
+   read on the deep tone — .pb-glow-title hard-sets --ink, so the band scope has
+   to win rather than relying on a utility class order. */
+.pb-band {
+  background: linear-gradient(158deg, var(--band) 0%, var(--band-2) 100%);
+  color: var(--band-text);
+}
+.pb-band .pb-glow-title { color: var(--band-text); }
+.pb-band .pb-glow-sub { color: var(--band-ink-2); }
+
+/* Glow buttons: primary is an accent fill with a layered shadow that lifts on
+   hover; secondary is a glass pill with a hairline. */
+.pb-btn-glow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 44px;
+  padding: 0 1.375rem;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--surface);
+  box-shadow: 0 1px 2px oklch(0.20 0.02 255 / 0.20), 0 8px 24px oklch(0.529 0.033 224 / 0.30);
+  transition:
+    transform 150ms var(--ease),
+    box-shadow 150ms var(--ease),
+    background-color 150ms var(--ease);
+}
+.pb-btn-glow:hover { transform: translateY(-1px); background: var(--accent-hover); }
+.pb-btn-glow:active { transform: translateY(0); }
+.pb-btn-glow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pb-btn-glass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 44px;
+  padding: 0 1.25rem;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: color-mix(in oklab, var(--surface) 70%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+  transition:
+    transform 150ms var(--ease),
+    background-color 150ms var(--ease);
+}
+.pb-btn-glass:hover { background: var(--surface); transform: translateY(-1px); }
+.pb-btn-glass:active { transform: translateY(0); }
+.pb-btn-glass:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* On a dark band the glass button inverts to read on the deep tone. */
+.pb-band .pb-btn-glass {
+  color: var(--band-text);
+  background: oklch(1 0 0 / 0.08);
+  border-color: oklch(1 0 0 / 0.18);
+}
+.pb-band .pb-btn-glass:hover { background: oklch(1 0 0 / 0.14); }
+
+/* Detaching nav: an inline transparent bar over the hero that becomes a
+   floating glass island once the page scrolls. State toggled by a data attr. */
+.pb-nav-float {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  transition:
+    background-color 240ms var(--ease),
+    box-shadow 240ms var(--ease),
+    border-color 240ms var(--ease),
+    backdrop-filter 240ms var(--ease);
+  background: transparent;
+  border-bottom: 1px solid transparent;
+}
+.pb-nav-float[data-stuck="true"] {
+  background: color-mix(in oklab, var(--surface) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(1.1);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  border-bottom-color: var(--line);
+  box-shadow: var(--shadow-card);
+}
+
+/* Scroll-reveal: opacity + a short rise, played once when the section enters.
+   Frozen to a plain appearance under reduced motion by the global rule. */
+.pb-reveal {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.pb-reveal[data-shown="true"] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 600ms var(--ease),
+    transform 600ms var(--ease);
+}
+/* Never leave reduced-motion (or a missed observer) users staring at a hidden
+   section: the rise is an enhancement, the content is not. */
+@media (prefers-reduced-motion: reduce) {
+  .pb-reveal { opacity: 1; transform: none; }
 }

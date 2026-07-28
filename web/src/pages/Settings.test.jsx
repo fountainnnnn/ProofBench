@@ -6,6 +6,8 @@ const api = vi.hoisted(() => ({
   deleteProviderKey: vi.fn(),
   getHealth: vi.fn(),
   getProviderReadiness: vi.fn(),
+  getScraperOrder: vi.fn(),
+  saveScraperOrder: vi.fn(),
   listProviderKeys: vi.fn(),
   saveProviderKey: vi.fn(),
 }));
@@ -60,6 +62,7 @@ describe("Settings about disclosure", () => {
     vi.clearAllMocks();
     api.getHealth.mockResolvedValue({});
     api.getProviderReadiness.mockResolvedValue(READINESS);
+    api.getScraperOrder.mockResolvedValue({ order: [], default: [], providers: [] });
     api.listProviderKeys.mockResolvedValue({
       keys: [],
       runtime_writes_enabled: false,
