@@ -1,6 +1,6 @@
 # Runtime dependencies. Pin direct versions here, then regenerate requirements.txt
 # with: python -m piptools compile --generate-hashes requirements.in
-daytona==0.199.0
+daytona==0.201.0
 openai==2.46.0
 autobatcher==0.10.0
 fastapi==0.139.2
