@@ -19,11 +19,55 @@ outcome the product has, so a second opinion is always worth one more call.
 """
 from __future__ import annotations
 
-DEFAULT_ORDER = ("scrapedo", "oxylabs", "brightdata")
+# The three paid providers lead; the free self-hosted option trails, so a
+# deployment with commercial keys is unaffected and one with none can still
+# scrape. That option is a single provider by design — SearXNG finds pages and
+# Crawl4AI reads them, and neither is a scraper alone — reachable only when
+# PROOFBENCH_INSECURE_DEV=1 opens the local-service path (see engine.selfhosted).
+DEFAULT_ORDER = ("scrapedo", "oxylabs", "brightdata", "selfhosted")
 KNOWN = frozenset(DEFAULT_ORDER)
 
 # Shown in Settings so the choice is a name a person recognises rather than a slug.
-LABELS = {"scrapedo": "Scrape.do", "oxylabs": "Oxylabs", "brightdata": "Bright Data"}
+LABELS = {"scrapedo": "Scrape.do", "oxylabs": "Oxylabs", "brightdata": "Bright Data",
+          "selfhosted": "SearXNG + Crawl4AI"}
+
+# The self-hosted option costs nothing to run; the paid three bill per call.
+FREE = frozenset({"selfhosted"})
+
+# What each provider answers, and a one-line note for the Settings tooltip.
+META = {
+    "scrapedo": {"role": "search+read",
+                 "hint": "Searches and fetches pages through Scrape.do. Paid, fastest measured."},
+    "oxylabs": {"role": "search+read",
+                "hint": "Searches and fetches pages through Oxylabs. Paid."},
+    "brightdata": {"role": "search+read",
+                   "hint": "Searches and fetches pages through Bright Data. Paid."},
+    "selfhosted": {"role": "search+read",
+                   "hint": "Self-hosted and free: SearXNG finds candidate pages and Crawl4AI "
+                           "reads them. Available whenever both services answer — the row "
+                           "below reports which are up."},
+}
+
+
+def provider_meta(name: str, env: dict[str, str] | None = None) -> dict:
+    """Label, role, free flag, and tooltip for one provider.
+
+    A self-hosted provider also reports whether its services are actually up, so
+    the UI can say "running" rather than leaving the operator to guess whether
+    the thing it just called ready can answer.
+    """
+    info = META.get(name, {})
+    meta = {
+        "label": LABELS.get(name, name),
+        "role": info.get("role", "search+read"),
+        "free": name in FREE,
+        "hint": info.get("hint", ""),
+    }
+    if name == "selfhosted":
+        from engine import selfhosted
+
+        meta["status"] = selfhosted.status(env)
+    return meta
 
 ORDER_ENV = "PROOFBENCH_SCRAPER_ORDER"
 
@@ -53,9 +97,10 @@ def order_from_env(env: dict[str, str] | None) -> tuple[str, ...]:
 
 
 def _module(name: str):
-    from engine import brightdata, scrapedo
+    from engine import brightdata, scrapedo, selfhosted
 
-    return {"scrapedo": scrapedo, "brightdata": brightdata}.get(name)
+    return {"scrapedo": scrapedo, "brightdata": brightdata,
+            "selfhosted": selfhosted}.get(name)
 
 
 def configured_providers(env: dict[str, str] | None, capability: str) -> list[str]:

@@ -226,3 +226,26 @@ class ProviderKeyRequest(StrictModel):
         if self.env.upper().endswith("_API_KEY") and len(self.value) < 8:
             raise ValueError("provider API keys must contain at least 8 characters")
         return self
+
+
+class ProviderKeyRevealRequest(StrictModel):
+    env: str = Field(min_length=2, max_length=128)
+
+
+class DefaultsRequest(StrictModel):
+    """An omitted field leaves that default alone; an empty string clears it."""
+
+    orchestration: str | None = Field(default=None, max_length=64)
+    assessment: str | None = Field(default=None, max_length=64)
+    codegen: str | None = Field(default=None, max_length=64)
+    scraper_order: list[str] | None = Field(default=None, min_length=1, max_length=8)
+
+
+class IntegrationAgentHistoryItem(StrictModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4_000)
+
+
+class IntegrationAgentMessageRequest(StrictModel):
+    message: str = Field(min_length=1, max_length=4_000)
+    history: list[IntegrationAgentHistoryItem] = Field(default_factory=list, max_length=12)

@@ -22,15 +22,33 @@ ALL = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_local_fallback(monkeypatch):
+    """These tests pin the paid-provider chain, so the self-hosted fallback is
+    switched off by default. The fallback has its own tests below that turn it on
+    deliberately. Liveness is cached, so the cache is cleared around every test."""
+    from engine import selfhosted
+
+    monkeypatch.delenv("PROOFBENCH_INSECURE_DEV", raising=False)
+    selfhosted.reset_cache()
+    yield
+    selfhosted.reset_cache()
+
+
 # ------------------------------------------------------------------- the order
 
 def test_the_default_leads_with_the_fastest_measured_provider():
-    assert scrapers.DEFAULT_ORDER == ("scrapedo", "oxylabs", "brightdata")
+    # Paid providers lead by measured latency; the free self-hosted option (one
+    # entry: SearXNG + Crawl4AI) trails so a keyed deployment is unaffected.
+    assert scrapers.DEFAULT_ORDER == (
+        "scrapedo", "oxylabs", "brightdata", "selfhosted")
 
 
 def test_an_operator_order_is_honoured():
+    # An operator order reorders the providers it names; the rest are appended in
+    # default order rather than dropped, so a demotion never loses a fallback.
     assert scrapers.parse_order("brightdata oxylabs scrapedo") == (
-        "brightdata", "oxylabs", "scrapedo")
+        "brightdata", "oxylabs", "scrapedo", "selfhosted")
     assert scrapers.parse_order(["oxylabs", "scrapedo"])[0] == "oxylabs"
 
 
@@ -56,6 +74,54 @@ def test_only_providers_holding_credentials_are_tried():
 def test_the_order_travels_in_the_runtime_environment():
     env = {scrapers.ORDER_ENV: "oxylabs scrapedo brightdata"}
     assert scrapers.order_from_env(env)[0] == "oxylabs"
+
+
+def test_self_hosted_fallback_answers_when_its_services_are_up(monkeypatch):
+    """The point of the fallback: with zero commercial credentials but both local
+    services answering, the one self-hosted provider covers both halves of intake,
+    so a deployment is never left unable to scrape at all."""
+    from engine import crawl4ai, searxng, selfhosted
+
+    monkeypatch.setenv("PROOFBENCH_INSECURE_DEV", "1")
+    monkeypatch.setattr(searxng, "reachable", lambda env=None: True)
+    monkeypatch.setattr(crawl4ai, "reachable", lambda env=None: True)
+    selfhosted.reset_cache()
+
+    assert scrapers.configured_providers({}, "search") == ["selfhosted"]
+    assert scrapers.configured_providers({}, "scrape") == ["selfhosted"]
+    assert selfhosted.status({})["running"] is True
+
+
+def test_a_self_hosted_service_that_is_down_is_not_reported_as_available(monkeypatch):
+    """Availability means answering, not merely enabled. Claiming otherwise would
+    let readiness promise a capability a run cannot deliver, and each half is
+    reported separately so the operator knows which service to start."""
+    from engine import crawl4ai, searxng, selfhosted
+
+    monkeypatch.setenv("PROOFBENCH_INSECURE_DEV", "1")
+    monkeypatch.setattr(searxng, "reachable", lambda env=None: True)
+    monkeypatch.setattr(crawl4ai, "reachable", lambda env=None: False)
+    selfhosted.reset_cache()
+
+    # SearXNG alone still covers search; the read half is genuinely unavailable.
+    assert scrapers.configured_providers({}, "search") == ["selfhosted"]
+    assert scrapers.configured_providers({}, "scrape") == []
+    state = selfhosted.status({})
+    assert state["running"] is False
+    assert [(half["name"], half["running"]) for half in state["services"]] == [
+        ("SearXNG", True), ("Crawl4AI", False)]
+
+
+def test_self_hosted_fallback_needs_the_local_path_open(monkeypatch):
+    """Without insecure-dev the local HTTP path is closed, so the fallback cannot
+    answer and a keyless deployment has no scraper — readiness must not claim
+    otherwise."""
+    from engine import selfhosted
+
+    monkeypatch.delenv("PROOFBENCH_INSECURE_DEV", raising=False)
+    selfhosted.reset_cache()
+    assert scrapers.configured_providers({}, "search") == []
+    assert scrapers.configured_providers({}, "scrape") == []
 
 
 # ------------------------------------------------------------------- the search

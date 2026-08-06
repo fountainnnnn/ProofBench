@@ -228,6 +228,18 @@ function PanelIcon() {
   );
 }
 
+function HomeLogoLink() {
+  return (
+    <Link
+      to="/"
+      aria-label="ProofBench home"
+      className="inline-flex rounded-[8px] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+    >
+      <Logo />
+    </Link>
+  );
+}
+
 /* The profile block is one button, and the menu it opens is a real menu:
    Escape closes it and returns focus, a click outside dismisses it, and arrow
    keys walk the items. It opens upward because the block sits at the bottom of
@@ -503,7 +515,7 @@ export default function Shell() {
         className={`pb-sidebar-shell relative hidden shrink-0 flex-col border-r border-[var(--line)] md:flex ${collapsed ? "px-2" : ""}`}
       >
         <div className={`flex h-14 shrink-0 items-center ${collapsed ? "justify-center" : "justify-between px-5"}`}>
-          {collapsed ? null : <Logo />}
+          {collapsed ? null : <HomeLogoLink />}
           <button
             type="button"
             onClick={toggle}
@@ -575,7 +587,7 @@ export default function Shell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="pb-safe-top flex h-14 shrink-0 items-center border-b border-[var(--line)] bg-[var(--surface)] px-4 md:hidden">
-          <Logo />
+          <HomeLogoLink />
         </header>
 
         {/* Scrollable region must be keyboard-reachable: pages whose content is

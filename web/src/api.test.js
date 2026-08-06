@@ -8,6 +8,7 @@ import {
   listSessions,
   openEvents,
   prepareReportPdf,
+  fetchBrandLogos,
   saveProviderKey,
   startRun,
 } from "./api.js";
@@ -215,5 +216,26 @@ describe("API authentication", () => {
     expect(fetchMock.mock.calls[1][0]).toContain("/api/datasets/dataset%2F1");
     expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
     expect(fetchMock.mock.calls[2][0]).toContain("/api/sessions/session%2F1/run");
+  });
+
+  it("batches brand resolution so every requested name reaches the capped endpoint", async () => {
+    const names = Array.from({ length: 50 }, (_, index) => `tool_${index}`);
+    const fetchMock = vi.fn().mockImplementation(async (url) => {
+      const query = new URL(url, "http://local.test").searchParams.get("names");
+      const batch = query.split(",");
+      return new Response(JSON.stringify({
+        logos: Object.fromEntries(batch.map((name) => [name, `data:image/png;base64,${name}`])),
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const logos = await fetchBrandLogos(names);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.map(([url]) =>
+      new URL(url, "http://local.test").searchParams.get("names").split(",").length
+    )).toEqual([24, 24, 2]);
+    expect(Object.keys(logos)).toHaveLength(50);
+    expect(logos.tool_49).toContain("tool_49");
   });
 });

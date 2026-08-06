@@ -62,6 +62,12 @@ describe("completed run is decision first", () => {
     expect(activity).toBeGreaterThan(conversation);
   });
 
+  it("removes the benchmark specification after a completed run", () => {
+    renderCompleted();
+    expect(screen.queryByRole("heading", { name: "Benchmark spec" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run benchmark" })).toBeNull();
+  });
+
   it("names the winning candidate and its margin over the runner up", () => {
     renderCompleted();
     expect(screen.getAllByText("tesseract").length).toBeGreaterThan(0);
@@ -72,7 +78,12 @@ describe("completed run is decision first", () => {
   it("folds the conversation away by default and opens it on request", () => {
     renderCompleted();
     const toggle = screen.getByRole("button", { name: /Conversation/ });
+    const disclosure = toggle.closest("[data-post-run-conversation]");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(disclosure).toBeTruthy();
+    expect(disclosure.className).toContain("border-y");
+    expect(disclosure.className).not.toContain("pb-glass");
+    expect(disclosure.className).not.toContain("shadow");
     expect(screen.queryByText("compare tesseract and easyocr")).toBeNull();
 
     fireEvent.click(toggle);
@@ -123,6 +134,7 @@ describe("completed run is decision first", () => {
        fixture's one call has already returned, so the line reads in the past
        tense — the gerund ("Reading…") is reserved for calls still in flight. */
     expect(text.indexOf("compare tesseract and easyocr")).toBeLessThan(text.indexOf("Read documentation"));
+    expect(screen.getByRole("heading", { name: "Benchmark spec" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Execution trace/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Conversation/ })).toBeNull();
   });
@@ -152,6 +164,90 @@ describe("completed run is decision first", () => {
     expect(screen.getByText("Recommendation")).toBeTruthy();
     expect(screen.getByText(/Report body text/)).toBeTruthy();
   });
+
+  it("lets a wide report table use the card while keeping its own overflow", () => {
+    renderCompleted({
+      report: {
+        provenance: measured,
+        markdown: [
+          "Report introduction.",
+          "",
+          "| Tool | Suitability | Basis | Implementable | Verification | Docs | Feasibility | Auth | Pricing |",
+          "|---|---:|---|---|---|---:|---:|---:|---|",
+          "| Tesseract | 93/100 | Execution | Yes | Verified | 90 | 88 | 75 | Open source |",
+        ].join("\n"),
+      },
+    });
+
+    const report = screen.getByRole("heading", { name: "Report" }).closest("section");
+    const tableRegion = within(report).getByRole("region", { name: "Report table" });
+    expect(tableRegion.className).toContain("overflow-x-auto");
+    expect(tableRegion.querySelector("table")).toBeTruthy();
+
+    const markdown = report.querySelector(".md-report");
+    expect(markdown.className).not.toContain("max-w-[75ch]");
+    expect(markdown.className).not.toContain("overflow-x-auto");
+  });
+
+  it("turns report status enums into icons with a shared legend", () => {
+    renderCompleted({
+      report: {
+        provenance: measured,
+        markdown: [
+          "## Ranked assessment",
+          "",
+          "| Tool | Verification | Pricing |",
+          "|---|---|---:|",
+          "| Alpha | passed | 80 |",
+          "| Beta | not_applicable | n/a |",
+          "| Gamma | not_implementable | n/a |",
+        ].join("\n"),
+      },
+    });
+
+    expect(screen.queryByText("not_applicable")).toBeNull();
+    expect(screen.queryByText("not_implementable")).toBeNull();
+    expect(document.querySelectorAll('[data-report-status="not_applicable"]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-report-status="not_implementable"]')).toHaveLength(1);
+    expect(document.querySelector('[data-report-status="not_implementable"] img')?.getAttribute("src"))
+      .toBe("/status/not-implementable-v2.png");
+    expect(screen.getByLabelText("Table status legend")).toBeTruthy();
+    expect(within(screen.getByLabelText("Table status legend")).getAllByText("Not applicable")).toHaveLength(1);
+  });
+
+  it("groups each candidate finding into an organized report section", () => {
+    renderCompleted({
+      report: {
+        provenance: measured,
+        markdown: [
+          "# Report",
+          "",
+          "## Findings",
+          "",
+          "### Tesseract",
+          "",
+          "Measured finding.",
+          "",
+          "### EasyOCR",
+          "",
+          "Second finding.",
+          "",
+          "## Sources",
+          "",
+          "- source",
+        ].join("\n"),
+      },
+    });
+
+    const group = document.querySelector("[data-report-findings]");
+    expect(group).toBeTruthy();
+    const findings = group.querySelectorAll("section.pb-finding-section");
+    expect(findings).toHaveLength(2);
+    expect(findings[0].textContent).toContain("Tesseract");
+    expect(findings[1].textContent).toContain("EasyOCR");
+    expect(group.querySelector(".pb-finding-panel")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Sources" })).toBeTruthy();
+  });
 });
 
 describe("execution basis is taken from the backend", () => {
@@ -168,6 +264,24 @@ describe("execution basis is taken from the backend", () => {
       />
     );
     expect(screen.getByText("Compared from documentation")).toBeTruthy();
+  });
+
+  it("gives the assessment rating more width than the candidate name", () => {
+    const { container } = render(
+      <ResultsCard
+        metrics={{
+          acme: { rating: 70, daytona_triggered: false },
+          beta: { rating: 40, daytona_triggered: false },
+        }}
+        phase="DONE"
+      />
+    );
+
+    const columns = container.querySelectorAll("colgroup col");
+    expect(columns).toHaveLength(9);
+    expect(columns[1].className).toContain("w-[26%]");
+    expect(columns[2].className).toContain("w-[18%]");
+    expect(container.querySelector('[data-column="rating"] .min-\\[721px\\]\\:w-full')).toBeTruthy();
   });
 
   it("does not claim a partly verified comparison was fully verified", () => {

@@ -26,6 +26,7 @@ import { authoritativeProvenance, hasAuthoritativeProvenance } from "../provenan
 import { safeVisibleText } from "../displaySafety.js";
 import { phaseLabel, phaseTone } from "../phaseLabel.js";
 import StatusIcon from "../components/StatusIcon.jsx";
+import SandboxExecutionPanel from "../components/SandboxExecutionPanel.jsx";
 
 const MAX_LOG_LINES = 400;
 const MAX_TRACE_EVENTS = 300;
@@ -67,6 +68,7 @@ const emptyState = (scope) => ({
   messages: [],
   trace: [],
   sandboxLogs: {},
+  sandboxFiles: {},
   phaseState: null,
   spec: null,
   results: null,
@@ -99,6 +101,7 @@ export default function Benchmark() {
   const [datasetError, setDatasetError] = useState(() => searchParams.get("dataset") ? "Verifying dataset access…" : "");
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [followUpOpen, setFollowUpOpen] = useState(false);
+  const [sandboxPanelOpen, setSandboxPanelOpen] = useState(false);
   // Carrying on after a run is a property of the session, not of this page
   // load. Without it, closing the tab folded the conversation away again and
   // the user had to reopen it to see replies they had already been given.
@@ -139,6 +142,7 @@ export default function Benchmark() {
   const uploadBusyRef = useRef(false);
   const chatBusyRef = useRef(false);
   const runBusyRef = useRef(false);
+  const sandboxPanelDismissedRef = useRef(false);
 
   useEffect(() => { datasetRef.current = dataset; }, [dataset]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
@@ -321,6 +325,10 @@ export default function Benchmark() {
       markActivity();
       const data = parseEvent(e);
       if (!data) return;
+      if (["sandbox_log", "sandbox_file"].includes(data.kind) &&
+          !sandboxPanelDismissedRef.current) {
+        setSandboxPanelOpen(true);
+      }
       const applyArtifact = () => setState((s) => {
         if (s.scope !== scope) return s;
         const artifactProvenance = provenanceFor(data);
@@ -363,6 +371,20 @@ export default function Benchmark() {
             arr.push({ line: data.line, phase: data.phase, provenance: artifactProvenance });
             logs[data.sandbox] = arr.slice(-MAX_LOG_LINES);
             return { ...s, sandboxLogs: logs, provenance };
+          }
+          case "sandbox_file": {
+            const files = { ...s.sandboxFiles };
+            const arr = files[data.sandbox] ? [...files[data.sandbox]] : [];
+            arr.push({
+              path: data.path,
+              content: data.content,
+              language: data.language,
+              revision: data.revision,
+              phase: data.phase,
+              provenance: artifactProvenance,
+            });
+            files[data.sandbox] = arr.slice(-20);
+            return { ...s, sandboxFiles: files, provenance };
           }
           case "results":
             return {
@@ -466,6 +488,8 @@ export default function Benchmark() {
     setActiveRunId(null);
     activeRunIdRef.current = null;
     setState(emptyState(selection));
+    sandboxPanelDismissedRef.current = false;
+    setSandboxPanelOpen(false);
     setFollowUpOpen(false);
     setRunning(false);
     setStopping(false);
@@ -508,6 +532,8 @@ export default function Benchmark() {
       return next;
     });
     setState(emptyState(selection));
+    sandboxPanelDismissedRef.current = false;
+    setSandboxPanelOpen(false);
     // Restore whether this session had already been carried on past its run.
     setFollowUpOpen(() => {
       try {
@@ -595,6 +621,19 @@ export default function Benchmark() {
           if (logs.length > MAX_LOG_LINES) logs.shift();
           restored.sandboxLogs[data.sandbox] = logs;
         }
+        if (data.kind === "sandbox_file") {
+          const files = restored.sandboxFiles[data.sandbox] || [];
+          files.push({
+            path: data.path,
+            content: data.content,
+            language: data.language,
+            revision: data.revision,
+            phase: data.phase,
+            provenance: restoredArtifactProvenance,
+          });
+          if (files.length > 20) files.shift();
+          restored.sandboxFiles[data.sandbox] = files;
+        }
         if (data.kind === "results") {
           restored.resultsProvenance = restoredArtifactProvenance;
           restored.executionMode = restored.executionMode ||
@@ -640,6 +679,10 @@ export default function Benchmark() {
       }
       sessionIsRunning = Boolean(full.is_running);
       setRunning(sessionIsRunning);
+      if (sessionIsRunning &&
+          (Object.keys(restored.sandboxLogs).length > 0 || Object.keys(restored.sandboxFiles).length > 0)) {
+        setSandboxPanelOpen(true);
+      }
       setStreamStatus({ state: sessionIsRunning ? "connecting" : "idle", message: sessionIsRunning ? "Reconnecting to run updates" : "" });
       localStorage.setItem("proofbench.activeSessionId", id);
       setLoadingSession(false);
@@ -691,6 +734,8 @@ export default function Benchmark() {
         setActiveRunId(null);
         activeRunIdRef.current = null;
         setState(emptyState(selectionRef.current));
+        sandboxPanelDismissedRef.current = false;
+        setSandboxPanelOpen(false);
         setFollowUpOpen(false);
         setRunning(false);
         setStopping(false);
@@ -841,8 +886,12 @@ export default function Benchmark() {
       rememberFollowUp(activeId, false);
       setActiveRunId(null);
       activeRunIdRef.current = null;
+      sandboxPanelDismissedRef.current = false;
+      setSandboxPanelOpen(false);
       setState((s) => ({
         ...s,
+        sandboxLogs: {},
+        sandboxFiles: {},
         results: null,
         resultsProvenance: null,
         report: null,
@@ -906,6 +955,8 @@ export default function Benchmark() {
     setActiveRunId(null);
     activeRunIdRef.current = null;
     setState(emptyState(selectionRef.current));
+    sandboxPanelDismissedRef.current = false;
+    setSandboxPanelOpen(false);
     setFollowUpOpen(false);
     setRunning(false);
     setStopping(false);
@@ -1018,6 +1069,18 @@ export default function Benchmark() {
   // Display-only: a restored run reports its own provenance, everything this
   // client can newly write is real. There is no mode the user can change.
   const provenanceMode = state.provenance?.mode || RUN_MODE;
+  const sandboxCount = new Set([
+    ...Object.keys(state.sandboxLogs),
+    ...Object.keys(state.sandboxFiles),
+  ]).size;
+  const openSandboxPanel = () => {
+    sandboxPanelDismissedRef.current = false;
+    setSandboxPanelOpen(true);
+  };
+  const closeSandboxPanel = () => {
+    sandboxPanelDismissedRef.current = true;
+    setSandboxPanelOpen(false);
+  };
 
   // No background of its own: the shell's atmosphere sits behind every route,
   // and an opaque fill here would hide it from the glass above.
@@ -1078,10 +1141,11 @@ export default function Benchmark() {
                       ? "bg-[var(--danger-tint)] text-[var(--danger)]"
                       : "bg-[var(--accent-tint)] text-[var(--accent)]"
                 }`}
+                aria-label={phaseLabel(safeVisibleText(runPhase))}
                 aria-live="polite"
               >
                 <StatusIcon tone={phaseTone(runPhase)} size={12} />
-                {phaseLabel(safeVisibleText(runPhase))}
+                <span className="hidden sm:inline">{phaseLabel(safeVisibleText(runPhase))}</span>
               </span>
             )}
             {streamStatus.state === "failed" && streamStatus.retryable && activeId && (
@@ -1089,25 +1153,51 @@ export default function Benchmark() {
                 Reconnect
               </button>
             )}
+            {sandboxCount > 0 && (
+              <button
+                type="button"
+                aria-label={`${runComplete ? "View execution" : "Execution"} (${sandboxCount})`}
+                aria-expanded={sandboxPanelOpen}
+                aria-controls="sandbox-execution-panel"
+                onClick={openSandboxPanel}
+                className={`${BTN_SECONDARY} shrink-0`}
+              >
+                <svg className="sm:hidden" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m8 9 3 3-3 3" />
+                  <path d="M13 15h3" />
+                  <rect x="3" y="4" width="18" height="16" rx="2" />
+                </svg>
+                <span className="hidden sm:inline">
+                  {runComplete ? "View execution" : "Execution"} ({sandboxCount})
+                </span>
+              </button>
+            )}
             <button
               ref={sessionsButtonRef}
               type="button"
+              aria-label={`Sessions (${sessions.length})`}
               aria-expanded={sessionsOpen}
               aria-controls="benchmark-sessions-panel"
               onClick={() => setSessionsOpen(true)}
               className={`${BTN_SECONDARY} shrink-0 md:hidden`}
             >
-              Sessions ({sessions.length})
+              <svg className="sm:hidden" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 7h12" />
+                <path d="M8 12h12" />
+                <path d="M8 17h12" />
+                <circle cx="4" cy="7" r="1" fill="currentColor" stroke="none" />
+                <circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" />
+                <circle cx="4" cy="17" r="1" fill="currentColor" stroke="none" />
+              </svg>
+              <span className="hidden sm:inline">Sessions ({sessions.length})</span>
             </button>
             <HeaderActions>
-              {/* A settled run puts "Start a new benchmark" in its footer, at
-                  the end of what the reader just finished. Two buttons for one
-                  action would be the same offer twice on one screen. */}
-              {showComposer && (
-                <button type="button" onClick={onNew} disabled={uploadingDataset} className={`${BTN_PRIMARY} shrink-0`}>
-                  New benchmark
-                </button>
-              )}
+              {/* This is the stable primary action for the workspace. Secondary
+                  run controls, including the execution viewer, must never take
+                  its place when a run changes state. */}
+              <button type="button" onClick={onNew} disabled={uploadingDataset} className={`${BTN_PRIMARY} shrink-0`}>
+                New benchmark
+              </button>
             </HeaderActions>
           </div>
         </header>
@@ -1119,41 +1209,51 @@ export default function Benchmark() {
             <span className="mx-auto block w-full max-w-canvas">{datasetError}</span>
           </div>
         )}
-        <ChatThread
-          statusMessage={streamStatus.state !== "idle" ? streamStatus.message : ""}
-          statusFailed={streamStatus.state === "failed"}
-          messages={state.messages}
-          trace={state.trace}
-          sandboxLogs={state.sandboxLogs}
-          phaseState={state.phaseState}
-          typing={typing}
-          spec={state.spec}
-          results={state.results}
-          report={state.report}
-          runId={activeRunId}
-          onRun={onRun}
-          onStop={onStop}
-          running={running}
-          stopping={stopping}
-          mode={provenanceMode}
-          datasetId={dataset?.id}
-          provenance={state.provenance}
-          specProvenance={state.specProvenance}
-          resultsProvenance={state.resultsProvenance}
-          executionMode={state.executionMode}
-          interactionDisabled={uploadingDataset || Boolean(datasetError)}
-          onPickPrompt={setPromptDraft}
-          conversationLive={followUpOpen}
-        />
-        {showComposer && state.direction && (
-          <DirectionCard
-            direction={state.direction}
-            onSend={onSend}
-            onDismiss={() => {
-              setState((s) => ({ ...s, direction: null }));
-              document.getElementById("benchmark-composer")?.focus();
-            }}
+        <div
+          className={`pb-benchmark-body ${
+            sandboxPanelOpen ? "pb-benchmark-body--execution-open" : ""
+          } ${!showComposer ? "pb-benchmark-body--completed" : ""}`}
+        >
+          <div className="pb-benchmark-thread">
+            <ChatThread
+              statusMessage={streamStatus.state !== "idle" ? streamStatus.message : ""}
+              statusFailed={streamStatus.state === "failed"}
+              messages={state.messages}
+              trace={state.trace}
+              sandboxLogs={state.sandboxLogs}
+              phaseState={state.phaseState}
+              typing={typing}
+              spec={state.spec}
+              results={state.results}
+              report={state.report}
+              runId={activeRunId}
+              onRun={onRun}
+              onStop={onStop}
+              running={running}
+              stopping={stopping}
+              mode={provenanceMode}
+              datasetId={dataset?.id}
+              provenance={state.provenance}
+              specProvenance={state.specProvenance}
+              resultsProvenance={state.resultsProvenance}
+              executionMode={state.executionMode}
+              interactionDisabled={uploadingDataset || Boolean(datasetError)}
+              onPickPrompt={setPromptDraft}
+              conversationLive={followUpOpen}
+              completedFooter={!showComposer}
+            />
+          </div>
+          <SandboxExecutionPanel
+            open={sandboxPanelOpen}
+            onClose={closeSandboxPanel}
+            sandboxLogs={state.sandboxLogs}
+            sandboxFiles={state.sandboxFiles}
+            phaseState={state.phaseState}
+            running={running}
           />
+        </div>
+        {showComposer && state.direction && (
+          <DirectionCard direction={state.direction} onSend={onSend} />
         )}
         {showComposer ? (
           <Composer
@@ -1165,8 +1265,11 @@ export default function Benchmark() {
             injectText={promptDraft}
           />
         ) : (
-          <div className="shrink-0 px-4 pb-4 pt-3 sm:px-8">
-            <div className="mx-auto flex w-full max-w-[var(--thread-w)] flex-wrap items-center gap-2">
+          <div
+            className="pb-chat-footer pointer-events-none absolute inset-x-0 bottom-0 z-20 px-4 pb-4 pt-10 sm:px-8"
+            data-completed-run-bar
+          >
+            <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--thread-w)] flex-wrap items-center gap-2">
               <span className="mr-auto text-[12px] text-[var(--ink-2)]">
                 {runPhase === "DONE"
                   ? "This run is finished. The ranking above is the result."
@@ -1182,7 +1285,6 @@ export default function Benchmark() {
           </div>
         )}
       </div>
-
     </div>
   );
 }

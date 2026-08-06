@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from server.state import BusyError, QuotaError, SQLiteStore
+from server.state import SCHEMA_VERSION, BusyError, QuotaError, SQLiteStore
 
 
 def extraction_spec() -> dict:
@@ -338,7 +338,9 @@ def test_v1_migration_is_atomic_backed_up_and_rejects_future_schema(tmp_path, mo
         thread.join()
     assert errors == []
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        # Bound to the constant: this test is about the migration being atomic
+        # under concurrency, not about which version happens to be current.
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert "provenance" in {
             row[1] for row in connection.execute("PRAGMA table_info(benchmark_runs)")}
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

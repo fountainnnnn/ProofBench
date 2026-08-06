@@ -157,6 +157,34 @@ def test_blank_entries_are_dropped_not_carried_as_empty_bullets():
     assert parsed["search_angles"] == []
 
 
+def test_self_hosted_runner_is_a_feature_not_the_product_deployment():
+    parsed = _build_prompt_brief(
+        json.dumps(BRIEF),
+        "We need GitHub Actions alternatives with self-hosted runners and SSO.",
+    )
+
+    assert "deployment" not in parsed["constraints"]
+    assert "self-hosted runners" in parsed["constraints"]["must_have"]
+
+
+def test_product_near_self_hosted_runner_does_not_make_it_overall_deployment():
+    parsed = _build_prompt_brief(
+        json.dumps(BRIEF),
+        "Compare a product with self-hosted runners and SSO.",
+    )
+
+    assert "deployment" not in parsed["constraints"]
+
+
+def test_explicit_self_hosted_platform_requirement_is_preserved():
+    parsed = _build_prompt_brief(
+        json.dumps(BRIEF),
+        "The platform itself must be self-hosted and support self-hosted runners.",
+    )
+
+    assert parsed["constraints"]["deployment"] == "self-hosted"
+
+
 # ------------------------------------------------------------------ the prompt
 
 

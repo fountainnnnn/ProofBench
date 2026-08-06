@@ -100,6 +100,11 @@ def _make_agent(monkeypatch, recorder, tmp_path, dispatch=None, brief=False):
         "dispatch_tool",
         dispatch or (lambda name, args, ctx: json.dumps({"ok": True, "results": []})),
     )
+    # These tests exercise the loop, not supervision, and run in whatever provider
+    # environment the developer has configured. Pin "no distinct supervisor" so a
+    # researched turn's spec-recovery path resolves deterministically instead of
+    # reaching for whatever second provider happens to be in the ambient env.
+    monkeypatch.setattr("engine.llm_clients.supervisor_identity", lambda *a, **k: None)
 
     emitted = []
     a = agent_mod.Orchestrator(
@@ -256,6 +261,33 @@ def test_extraction_intake_keeps_the_same_platform_guidance():
     prompt = agent_mod.intake_system(dataset_available=True)
     assert "first-party" in prompt
     assert "managed services" in prompt
+
+
+def test_spec_does_not_turn_self_hosted_runners_into_product_deployment():
+    spec = {
+        "benchmark_type": "tool_assessment",
+        "category": "CI/CD",
+        "objective": "Compare CI/CD platforms",
+        "constraints": {
+            "must_have": ["SSO"],
+            "deployment": "self-hosted",
+        },
+        "candidates": [{
+            "name": "candidate",
+            "display_name": "Candidate",
+            "docs_url": "https://example.com/docs",
+            "kind": "saas",
+        }],
+    }
+
+    normalized = agent_mod._normalize_intake_spec(
+        spec,
+        dataset_available=False,
+        request_text="Compare CI/CD products with self-hosted runners and SSO.",
+    )
+
+    assert "deployment" not in normalized["constraints"]
+    assert normalized["constraints"]["must_have"] == ["SSO", "self-hosted runners"]
 
 
 def test_a_turn_records_what_it_found_for_the_next_one(monkeypatch, tmp_path):

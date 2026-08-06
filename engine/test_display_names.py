@@ -62,6 +62,20 @@ def test_the_markdown_report_uses_display_names(tmp_path):
     assert "azure_ai_search_openai" not in markdown
 
 
+def test_the_markdown_report_escapes_pipes_inside_display_names(tmp_path):
+    metrics = {
+        "mindgrasp": {
+            **METRICS["customgpt"],
+            "display_name": "Mindgrasp | The #1 AI Study Tool for Students",
+        }
+    }
+
+    markdown = write_assessment_report(metrics, [], str(tmp_path / "r.md"))
+
+    assert "| Mindgrasp \\| The #1 AI Study Tool for Students |" in markdown
+    assert "### Mindgrasp | The #1 AI Study Tool for Students" in markdown
+
+
 def test_the_pdf_uses_display_names(tmp_path):
     pypdf = pytest.importorskip("pypdf")
     out = tmp_path / "r.pdf"

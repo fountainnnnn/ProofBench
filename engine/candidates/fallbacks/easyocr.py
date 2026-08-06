@@ -11,6 +11,16 @@ import re
 import easyocr
 
 
+_READER = None
+
+
+def _reader():
+    global _READER
+    if _READER is None:
+        _READER = easyocr.Reader(["en"], gpu=False)
+    return _READER
+
+
 def _extract_fields(text: str) -> dict:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     invoice_number = ""
@@ -58,8 +68,7 @@ def _extract_fields(text: str) -> dict:
 
 
 def extract(image_path: str) -> dict:
-    reader = easyocr.Reader(["en"], gpu=False)
-    fragments = reader.readtext(image_path, detail=0, paragraph=False)
+    fragments = _reader().readtext(image_path, detail=0, paragraph=False)
     return _extract_fields("\n".join(str(fragment) for fragment in fragments))
 '''
 
@@ -71,7 +80,14 @@ def candidate() -> Candidate:
         display_name="EasyOCR (CPU)",
         docs_url="https://github.com/JaidedAI/EasyOCR",
         kind="local_tool",
-        build_commands=["pip install easyocr opencv-python-headless"],
+        # PyPI's default Torch resolution can pull multi-gigabyte CUDA wheels
+        # into a CPU-only sandbox. Install the official CPU wheels first so
+        # EasyOCR reuses them instead of exhausting the ephemeral environment.
+        build_commands=[
+            ("python -m pip install --index-url "
+             "https://download.pytorch.org/whl/cpu torch torchvision"),
+            "python -m pip install easyocr opencv-python-headless",
+        ],
         adapter_code=_ADAPTER_BODY.strip() + "\n\n" + RESULT_JSON_WRAPPER,
         setup_complexity=3,
     )

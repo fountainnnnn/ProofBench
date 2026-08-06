@@ -68,8 +68,6 @@ function makeStream() {
 const DIRECTION = {
   kind: "direction",
   improved_prompt: "Find a self-hosted retrieval platform for internal documents.",
-  assumptions: [{ assumption: "Internal staff are the users", basis: "\"our docs\"" }],
-  unknowns: ["document volume"],
 };
 
 function renderAt(path) {
@@ -108,7 +106,7 @@ describe("direction confirmation", () => {
   it("renders the card on the chat surface, never as a trace row", async () => {
     await openGatedSession();
 
-    expect(screen.getByText("Here's what I understood")).toBeTruthy();
+    expect(screen.getByText("Is this what you mean?")).toBeTruthy();
     expect(screen.getByTestId("trace").textContent).toBe("[]");
   });
 
@@ -119,22 +117,21 @@ describe("direction confirmation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("trace").textContent).toBe(JSON.stringify(["trace"])));
     // And the card is untouched by a trace arriving after it.
-    expect(screen.getByText("Here's what I understood")).toBeTruthy();
+    expect(screen.getByText("Is this what you mean?")).toBeTruthy();
   });
 
   it("sends the confirmed direction as an ordinary message", async () => {
     await openGatedSession();
 
-    fireEvent.click(screen.getByRole("button", { name: /Search with this/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
 
     // Call 0 is the opening message that triggered the gate; the confirmation
     // is the one after it.
     await waitFor(() => expect(api.postChat).toHaveBeenCalledTimes(2));
     const [text] = api.postChat.mock.calls[1];
     expect(text).toContain(DIRECTION.improved_prompt);
-    expect(text).toContain("Confirmed assumptions: Internal staff are the users");
     // Answered: the card comes down rather than waiting to be asked again.
-    await waitFor(() => expect(screen.queryByText("Here's what I understood")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Is this what you mean?")).toBeNull());
   });
 
   it("comes down when the user types their own message instead", async () => {
@@ -142,16 +139,24 @@ describe("direction confirmation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() => expect(screen.queryByText("Here's what I understood")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Is this what you mean?")).toBeNull());
   });
 
-  it("comes down when the user chooses to rephrase", async () => {
+  it("sends a correction as an ordinary message when the user answers no", async () => {
     await openGatedSession();
 
-    fireEvent.click(screen.getByRole("button", { name: /I'll rephrase/ }));
+    fireEvent.click(screen.getByRole("button", { name: "No" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Compare hosted OCR APIs instead." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send correction" }));
 
-    await waitFor(() => expect(screen.queryByText("Here's what I understood")).toBeNull());
-    expect(api.postChat).toHaveBeenCalledTimes(1); // only the opening message
+    await waitFor(() => expect(api.postChat).toHaveBeenCalledTimes(2));
+    const [text] = api.postChat.mock.calls[1];
+    expect(text).toContain("Compare hosted OCR APIs instead.");
+    expect(text).toContain(DIRECTION.improved_prompt);
+    // Answered: the card comes down rather than waiting to be asked again.
+    await waitFor(() => expect(screen.queryByText("Is this what you mean?")).toBeNull());
   });
 
   it("is not re-offered on a restored session that already answered it", async () => {
@@ -170,7 +175,7 @@ describe("direction confirmation", () => {
     renderAt("/app/benchmark?session=s9");
 
     await waitFor(() => expect(api.getSession).toHaveBeenCalledWith("s9"));
-    expect(screen.queryByText("Here's what I understood")).toBeNull();
+    expect(screen.queryByText("Is this what you mean?")).toBeNull();
   });
 
   it("is restored for a session that was left waiting on it", async () => {

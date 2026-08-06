@@ -99,6 +99,24 @@ def png_bytes() -> bytes:
     return output.getvalue()
 
 
+def test_sandbox_file_event_is_bounded_before_persistence():
+    bounded = runs._bounded_data("artifact", {
+        "kind": "sandbox_file",
+        "sandbox": "s" * 300,
+        "path": "p" * 300,
+        "language": "python" * 20,
+        "content": "x" * 30_000,
+        "revision": 1,
+    })
+
+    assert bounded["kind"] == "sandbox_file"
+    assert len(bounded["sandbox"]) == 160
+    assert len(bounded["path"]) == 160
+    assert len(bounded["language"]) == 40
+    assert len(bounded["content"]) == 12_200
+    assert len(json.dumps(bounded)) <= runs.MAX_EVENT_CHARS
+
+
 def ground_truth(doc_id: str = "inv_001") -> bytes:
     output = io.StringIO(newline="")
     writer = csv.writer(output)
@@ -165,6 +183,47 @@ def test_local_mode_still_refuses_runtime_provider_credential_writes(local_clien
     assert all(item["env"] != "CUSTOM_API_KEY" for item in settings["keys"])
 
 
+def test_reveal_is_refused_unless_runtime_credentials_are_enabled(local_client, monkeypatch):
+    # Reveal is the one endpoint that returns a secret, so it inherits the same
+    # explicit opt-in as writing one. Local mode alone must not unlock it.
+    monkeypatch.delenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", raising=False)
+    response = local_client.post("/api/settings/provider-keys/reveal",
+                                 json={"env": "OPENAI_API_KEY"})
+    assert response.status_code == 503
+
+
+def test_reveal_returns_a_stored_value_that_the_listing_only_masks(local_client, monkeypatch):
+    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
+    secret = "provider-secret-value-1234"
+    saved = local_client.post("/api/settings/provider-keys",
+                              json={"env": "CUSTOM_API_KEY", "value": secret})
+    assert saved.status_code == 200
+    # The write response still echoes nothing but the name and its source.
+    assert secret not in saved.text
+
+    listing = local_client.get("/api/settings/provider-keys").json()
+    row = next(item for item in listing["keys"] if item["env"] == "CUSTOM_API_KEY")
+    assert row["masked"].endswith(secret[-4:])
+    assert secret not in json.dumps(listing)
+
+    revealed = local_client.post("/api/settings/provider-keys/reveal",
+                                 json={"env": "CUSTOM_API_KEY"})
+    assert revealed.status_code == 200
+    assert revealed.json()["value"] == secret
+    assert revealed.json()["source"] == "settings"
+    # A revealed secret must never be cached by a proxy or the browser.
+    assert "no-store" in revealed.headers.get("cache-control", "")
+
+
+def test_reveal_rejects_names_that_are_not_provider_settings(local_client, monkeypatch):
+    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
+    assert local_client.post("/api/settings/provider-keys/reveal",
+                             json={"env": "PATH"}).status_code == 422
+    # A well-formed name with nothing stored is a miss, not a leak.
+    assert local_client.post("/api/settings/provider-keys/reveal",
+                             json={"env": "UNSET_API_KEY"}).status_code == 404
+
+
 def test_local_runtime_credentials_accept_only_the_exact_oxylabs_pair(local_client, monkeypatch):
     monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
 
@@ -198,6 +257,28 @@ def test_local_runtime_credentials_accept_only_the_exact_oxylabs_pair(local_clie
         )
         assert rejected.status_code == 422
         assert "not-stored-value" not in rejected.text
+
+
+def test_local_runtime_settings_accept_the_supervisor_provider_selector(
+    local_client, monkeypatch
+):
+    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
+
+    saved = local_client.post(
+        "/api/settings/provider-keys",
+        json={"env": "SUPERVISOR_PROVIDER", "value": "openrouter"},
+    )
+
+    assert saved.status_code == 200
+    assert "openrouter" not in saved.text
+    listed = local_client.get("/api/settings/provider-keys").json()
+    assert "SUPERVISOR_PROVIDER" in {item["env"] for item in listed["keys"]}
+
+    rejected = local_client.post(
+        "/api/settings/provider-keys",
+        json={"env": "SUPERVISOR_PROVIDER", "value": "unknown-provider"},
+    )
+    assert rejected.status_code == 422
 
 
 def test_authenticated_mode_rejects_the_missing_token_local_mode_would_accept(client):
@@ -469,6 +550,39 @@ def test_rejected_chat_does_not_mutate_mode_or_messages(client):
     assert response.status_code == 409
     assert after["mode"] == before["mode"]
     assert after["messages"] == before["messages"]
+
+
+def test_new_session_is_rolled_back_when_chat_quota_rejects_it(client, monkeypatch):
+    class DeferredThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(main_module.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(runs, "MAX_CONCURRENT_CHATS", 1)
+    occupied = create_session(client)
+    dataset_id = main_module.datasets.synthetic("tenant-a").id
+    runs.begin_chat(occupied, "tenant-a", dataset_id, "real", "hold the slot")
+    before = {
+        session["id"]
+        for session in client.get("/api/sessions", headers=headers("token-a")).json()
+    }
+
+    response = client.post(
+        "/api/chat",
+        headers=headers("token-a"),
+        json={"message": "this new session must not survive rejection"},
+    )
+
+    after = {
+        session["id"]
+        for session in client.get("/api/sessions", headers=headers("token-a")).json()
+    }
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "60"
+    assert after == before
 
 
 def test_each_run_orchestrator_uses_fresh_deployment_secret_snapshot(client, monkeypatch):

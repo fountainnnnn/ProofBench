@@ -146,34 +146,113 @@ def authenticate(request: Request) -> Identity:
 
 
 class TenantCredentialStore:
-    """Process-local credential vault partitioned by authenticated tenant."""
+    """Credential vault partitioned by authenticated tenant.
+
+    In-process memory is the hot path; a bound backing store makes the values
+    durable, because a credential that resets on restart reads as a bug rather
+    than as a security property. Hydration is lazy and per tenant, so a boot
+    never pulls plaintext for tenants that make no request.
+    """
 
     def __init__(self) -> None:
         self._values: dict[str, dict[str, str]] = {}
+        self._hydrated: set[str] = set()
+        self._loader = None
+        self._saver = None
+        self._remover = None
         self._lock = threading.RLock()
+
+    def bind(self, *, loader, saver, remover) -> None:
+        """Attach durable storage. Bind the accessor functions, not the store
+        behind them, so a test that swaps the database still writes through."""
+        with self._lock:
+            self._loader, self._saver, self._remover = loader, saver, remover
+            self._hydrated.clear()
+
+    def _ensure(self, tenant_id: str) -> dict[str, str]:
+        """Caller must hold the lock. Loading under the lock keeps a partially
+        hydrated tenant from ever being observed, which matters because
+        `redact_event_data` reads this vault to know what to scrub."""
+        if tenant_id not in self._hydrated:
+            if self._loader is not None:
+                try:
+                    stored = self._loader(tenant_id) or {}
+                except Exception:
+                    stored = {}
+                if stored:
+                    self._values.setdefault(tenant_id, {}).update(stored)
+            self._hydrated.add(tenant_id)
+        return self._values.get(tenant_id, {})
 
     def names(self, tenant_id: str) -> list[str]:
         with self._lock:
-            return sorted(self._values.get(tenant_id, {}))
+            return sorted(self._ensure(tenant_id))
 
     def snapshot(self, tenant_id: str) -> dict[str, str]:
         with self._lock:
-            return dict(self._values.get(tenant_id, {}))
+            return dict(self._ensure(tenant_id))
+
+    def get(self, tenant_id: str, name: str) -> str | None:
+        with self._lock:
+            return self._ensure(tenant_id).get(name)
 
     def set(self, tenant_id: str, name: str, value: str) -> None:
         with self._lock:
+            self._ensure(tenant_id)
             self._values.setdefault(tenant_id, {})[name] = value
+            if self._saver is not None:
+                self._saver(tenant_id, name, value)
 
     def delete(self, tenant_id: str, name: str) -> None:
         with self._lock:
+            self._ensure(tenant_id)
             values = self._values.get(tenant_id)
             if values:
                 values.pop(name, None)
                 if not values:
                     self._values.pop(tenant_id, None)
+            if self._remover is not None:
+                self._remover(tenant_id, name)
+
+    def forget(self, tenant_id: str | None = None) -> None:
+        """Drop the cache so the next read rehydrates. For tests."""
+        with self._lock:
+            if tenant_id is None:
+                self._values.clear()
+                self._hydrated.clear()
+            else:
+                self._values.pop(tenant_id, None)
+                self._hydrated.discard(tenant_id)
 
 
 provider_credentials = TenantCredentialStore()
+
+# A model id, a base URL, and a provider selector are configuration, not
+# secrets; masking them would hide the one thing an operator needs to read.
+_NON_SECRET_ENV = ("_MODEL", "_BASE_URL")
+_NON_SECRET_EXACT = frozenset({"SUPERVISOR_PROVIDER", "BRIGHTDATA_SERP_ZONE",
+                               "BRIGHTDATA_UNLOCKER_ZONE"})
+
+
+def is_secret_env(name: str) -> bool:
+    upper = str(name or "").upper()
+    if upper in _NON_SECRET_EXACT:
+        return False
+    return not upper.endswith(_NON_SECRET_ENV)
+
+
+def mask_secret(value: str) -> str:
+    """Enough to tell two keys apart, and nothing more.
+
+    Only the tail is kept: a leading `sk-` reveals the key family and helps an
+    attacker more than it helps the operator reading the row.
+    """
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "•" * 6
+    return "•" * 4 + text[-4:]
 
 _SENSITIVE_NAME = re.compile(
     r"^(?:authorization|cookie|password|secret|token|api[_-]?key)$|"

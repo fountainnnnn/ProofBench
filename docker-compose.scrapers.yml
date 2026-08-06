@@ -1,0 +1,44 @@
+# The free, zero-key scraping fallback: SearXNG finds candidate pages and
+# Crawl4AI reads them. Neither is part of ProofBench — they are third-party
+# services ProofBench talks to over localhost, so starting the API does not
+# start them. Bring them up with:
+#
+#     docker compose -f docker-compose.scrapers.yml up -d
+#
+# ProofBench detects them automatically once the ports answer; nothing else to
+# configure. Stop them with `down`. Both bind to 127.0.0.1 only, because the
+# engine reaches them over loopback and neither should be exposed to a network.
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: proofbench-searxng
+    ports:
+      # Host port is overridable because 8080 is a popular default and is often
+      # already taken. Change it with SEARXNG_PORT and point the engine at the
+      # same value with SEARXNG_BASE_URL in .env.
+      - "127.0.0.1:${SEARXNG_PORT:-8080}:8080"
+    environment:
+      # ProofBench queries the JSON API, which SearXNG does not enable by
+      # default; without this the search returns HTML and the provider errors.
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+      SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8080}/
+    volumes:
+      - ./docker/searxng:/etc/searxng:rw
+    restart: unless-stopped
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    container_name: proofbench-crawl4ai
+    ports:
+      - "127.0.0.1:11235:11235"
+    environment:
+      # Inside a container, binding 127.0.0.1 means "reachable only from within
+      # this container", so the published port connects to nothing. Crawl4AI
+      # defaults to loopback and refuses to open a wider bind without a token —
+      # setting one is what lets it listen where the port mapping can reach it.
+      # The port is still published to the host's loopback only, above.
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-proofbench-local-token}
+    # Headless Chromium needs more shared memory than Docker's 64MB default, or
+    # pages crash mid-render and come back empty.
+    shm_size: 1gb
+    restart: unless-stopped

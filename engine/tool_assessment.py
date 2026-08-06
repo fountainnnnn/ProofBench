@@ -673,6 +673,11 @@ def _display(name: str, values: dict) -> str:
     return str((values or {}).get("display_name") or name)
 
 
+def _markdown_table_cell(value: str) -> str:
+    """Keep a display name inside one Markdown table cell."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
 def build_path_is_the_answer(metrics: dict) -> list[tuple[str, dict]]:
     """The viable components, when every marketed product failed the requirement.
 
@@ -771,7 +776,7 @@ def write_assessment_report(
         implementable = values.get("implementable")
         basis = _BASIS_LABELS.get(values.get("assessment_basis"), "Documentation")
         lines.append(
-            f"| {rank} | {_display(name, values)} | "
+            f"| {rank} | {_markdown_table_cell(_display(name, values))} | "
             f"{'n/a' if rating is None else f'{rating}/100'} | {basis} | "
             f"{'n/a' if implementable is None else ('Yes' if implementable else 'No')} | "
             f"{values.get('verification_status', 'unknown')} | "

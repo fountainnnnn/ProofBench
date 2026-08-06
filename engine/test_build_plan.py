@@ -44,6 +44,13 @@ PLAN_JSON = json.dumps({
 })
 
 
+def test_plan_prompt_does_not_turn_unassessed_infrastructure_into_evidence():
+    prompt = build_plan.BUILD_PLAN_SYSTEM
+
+    assert "Do not claim that an unassessed service" in prompt
+    assert "Only the supplied component evidence is measured" in prompt
+
+
 def _complete(reply):
     def call(env=None, **kwargs):
         call.kwargs = kwargs

@@ -8,8 +8,15 @@ const api = vi.hoisted(() => ({
   getProviderReadiness: vi.fn(),
   getScraperOrder: vi.fn(),
   saveScraperOrder: vi.fn(),
+  getSettingsDefaults: vi.fn(),
+  saveSettingsDefaults: vi.fn(),
   listProviderKeys: vi.fn(),
   saveProviderKey: vi.fn(),
+  revealProviderKey: vi.fn(),
+  fetchBrandLogos: vi.fn(),
+  getIntegrationAgentStatus: vi.fn(),
+  sendIntegrationAgentMessage: vi.fn(),
+  streamIntegrationAgentMessage: vi.fn(),
 }));
 
 vi.mock("../api.js", () => api);
@@ -45,13 +52,13 @@ const READINESS = {
       optional_configured: [],
     },
     {
-      provider: "nosana_vlm",
-      label: "Nosana VLM",
-      capability: "Optional built-in nosana_vlm candidate.",
+      provider: "openrouter",
+      label: "OpenRouter",
+      capability: "Optional hosted model routing for candidate tools.",
       essential: false,
       status: "partial",
-      required: ["NOSANA_BASE_URL", "NOSANA_API_KEY", "NOSANA_MODEL"],
-      missing: ["NOSANA_API_KEY"],
+      required: ["OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "OPENROUTER_MODEL"],
+      missing: ["OPENROUTER_API_KEY"],
       optional_configured: [],
     },
   ],
@@ -63,10 +70,22 @@ describe("Settings about disclosure", () => {
     api.getHealth.mockResolvedValue({});
     api.getProviderReadiness.mockResolvedValue(READINESS);
     api.getScraperOrder.mockResolvedValue({ order: [], default: [], providers: [] });
+    // No runtime brand lookup resolves by default, so a provider without a
+    // bundled mark keeps its monogram instead of waiting on the network.
+    api.fetchBrandLogos.mockResolvedValue({});
+    api.getSettingsDefaults.mockResolvedValue({
+      llm: [], scrapers: { order: [], default: [], providers: [] },
+    });
     api.listProviderKeys.mockResolvedValue({
       keys: [],
       runtime_writes_enabled: false,
       managed_by: "deployment",
+    });
+    api.getIntegrationAgentStatus.mockResolvedValue({
+      ready: false,
+      llm: { configured: false, provider: null },
+      scraper: { configured: false, provider: null },
+      missing: ["llm", "scraper"],
     });
   });
 
@@ -124,15 +143,17 @@ describe("Settings about disclosure", () => {
     );
   });
 
-  it("reports readiness as a configuration check that contacts no provider", async () => {
+  it("reports readiness as a configuration check that calls no provider", async () => {
     render(<Settings />);
 
     // The readiness list and the credential list were merged into one "Services"
-    // card; its reassurance copy moved with it.
+    // card; its reassurance copy moved with it. The claim is scoped to
+    // readiness: resolving an unbundled provider's logo does reach the server,
+    // so the copy no longer promises the page contacts nothing at all.
     const heading = await screen.findByText("Services");
     const section = heading.closest("section");
-    expect(section.textContent).toMatch(/Configuration check only/i);
-    expect(section.textContent).toMatch(/does not contact any provider/i);
+    expect(section.textContent).toMatch(/configuration check/i);
+    expect(section.textContent).toMatch(/never calls a provider/i);
     expect(api.getProviderReadiness).toHaveBeenCalledTimes(1);
   });
 
@@ -163,13 +184,52 @@ describe("Settings about disclosure", () => {
     expect(within(missing).getByText("missing")).toBeTruthy();
     expect(within(missing).queryByLabelText("Value for OPENAI_API_KEY")).toBeNull();
 
-    const partial = screen.getByText("Nosana VLM").closest("li");
+    const partial = screen.getByText("OpenRouter").closest("li");
     expect(within(partial).getByText("partly configured")).toBeTruthy();
     fireEvent.click(within(partial).getByRole("button"));
-    const nosanaKey = within(partial).getByText("NOSANA_API_KEY").closest("li");
-    expect(within(nosanaKey).getByText("missing")).toBeTruthy();
+    const partialKey = within(partial).getByText("OPENROUTER_API_KEY").closest("li");
+    expect(within(partialKey).getByText("missing")).toBeTruthy();
     // Not essential, so it must not be marked required nor block the run.
     expect(partial.textContent).not.toMatch(/required/);
+  });
+
+  it("adds a credential for a provider the built-in list does not cover", async () => {
+    api.listProviderKeys.mockResolvedValue({
+      keys: [],
+      runtime_writes_enabled: true,
+      managed_by: "runtime",
+    });
+    api.saveProviderKey.mockResolvedValue({ env: "MISTRAL_API_KEY", source: "settings" });
+
+    render(<Settings />);
+    const services = (await screen.findByText("Services")).closest("section");
+
+    // Collapsed by default so the card stays scannable; the form opens on ask.
+    fireEvent.click(within(services).getByRole("button", { name: "Add a service" }));
+    fireEvent.change(within(services).getByLabelText("Environment variable name"), {
+      target: { value: "mistral_api_key" },
+    });
+    fireEvent.change(within(services).getByLabelText("Credential value"), {
+      target: { value: "mistral-secret-value" },
+    });
+    fireEvent.click(within(services).getByRole("button", { name: "Add" }));
+
+    // The name is uppercased for the backend; the value is posted, not echoed.
+    await waitFor(() =>
+      expect(api.saveProviderKey).toHaveBeenCalledWith("MISTRAL_API_KEY", "mistral-secret-value"),
+    );
+    expect(services.textContent).not.toContain("mistral-secret-value");
+  });
+
+  it("hides the add-a-service control when runtime writes are disabled", async () => {
+    api.listProviderKeys.mockResolvedValue({
+      keys: [],
+      runtime_writes_enabled: false,
+      managed_by: "deployment",
+    });
+    render(<Settings />);
+    await screen.findByText("Services");
+    expect(screen.queryByRole("button", { name: "Add a service" })).toBeNull();
   });
 
   it("saves a missing value inline and refreshes readiness without echoing it", async () => {
@@ -190,7 +250,10 @@ describe("Settings about disclosure", () => {
         managed_by: "runtime",
       })
       .mockResolvedValueOnce({
-        keys: [{ env: "OPENAI_API_KEY", source: "settings" }],
+        keys: [{
+          env: "OPENAI_API_KEY", source: "settings", secret: true,
+          masked: "••••alue", revealable: true,
+        }],
         runtime_writes_enabled: true,
         managed_by: "runtime",
       });
@@ -201,7 +264,10 @@ describe("Settings about disclosure", () => {
 
     const { container } = render(<Settings />);
     const row = (await screen.findByText("OpenAI")).closest("li");
-    fireEvent.click(within(row).getByRole("button"));
+    fireEvent.click(within(row).getByRole("button", { name: /OpenAI/ }));
+    // Editing is now a deliberate act: the field opens from the row's own
+    // Add control rather than being present the moment the row is expanded.
+    fireEvent.click(within(row).getByRole("button", { name: "Add" }));
     const input = within(row).getByLabelText("Value for OPENAI_API_KEY");
     fireEvent.change(input, { target: { value: "local-provider-value" } });
     fireEvent.click(within(row).getByRole("button", { name: "Save" }));
@@ -214,9 +280,42 @@ describe("Settings about disclosure", () => {
       expect(api.getProviderReadiness).toHaveBeenCalledTimes(2);
       expect(api.listProviderKeys).toHaveBeenCalledTimes(2);
     });
-    expect(within(row).getByText("set")).toBeTruthy();
+    // The row now reports the server's mask rather than the word "set", and the
+    // editor closes. Either way the typed value is never rendered back.
+    expect(within(row).getByText("••••alue")).toBeTruthy();
     expect(within(row).queryByLabelText("Value for OPENAI_API_KEY")).toBeNull();
     expect(container.textContent).not.toContain("local-provider-value");
+  });
+
+  it("reveals a stored key only when asked, and hides it again", async () => {
+    api.listProviderKeys.mockResolvedValue({
+      keys: [{
+        env: "DAYTONA_API_KEY", source: "system", secret: true,
+        masked: "••••9f21", revealable: true,
+      }],
+      runtime_writes_enabled: true,
+      managed_by: "runtime",
+    });
+    api.revealProviderKey.mockResolvedValue({
+      env: "DAYTONA_API_KEY", source: "system", value: "daytona-real-secret-9f21",
+    });
+
+    render(<Settings />);
+    const row = (await screen.findByText("Daytona sandboxes")).closest("li");
+    fireEvent.click(within(row).getByRole("button", { name: /Daytona sandboxes/ }));
+
+    // Masked until asked: nothing is fetched just by opening the row.
+    expect(within(row).getByText("••••9f21")).toBeTruthy();
+    expect(api.revealProviderKey).not.toHaveBeenCalled();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Reveal DAYTONA_API_KEY" }));
+    expect(await within(row).findByText("daytona-real-secret-9f21")).toBeTruthy();
+    expect(api.revealProviderKey).toHaveBeenCalledWith("DAYTONA_API_KEY");
+
+    // Hiding drops the value rather than leaving it parked in the DOM.
+    fireEvent.click(within(row).getByRole("button", { name: "Hide DAYTONA_API_KEY" }));
+    expect(within(row).queryByText("daytona-real-secret-9f21")).toBeNull();
+    expect(within(row).getByText("••••9f21")).toBeTruthy();
   });
 
   it("keeps an inline value available for retry when saving fails", async () => {
@@ -229,7 +328,8 @@ describe("Settings about disclosure", () => {
 
     render(<Settings />);
     const row = (await screen.findByText("OpenAI")).closest("li");
-    fireEvent.click(within(row).getByRole("button"));
+    fireEvent.click(within(row).getByRole("button", { name: /OpenAI/ }));
+    fireEvent.click(within(row).getByRole("button", { name: "Add" }));
     const input = within(row).getByLabelText("Value for OPENAI_API_KEY");
     fireEvent.change(input, { target: { value: "retry-provider-value" } });
     fireEvent.click(within(row).getByRole("button", { name: "Save" }));
@@ -245,7 +345,7 @@ describe("Settings about disclosure", () => {
     const { container } = render(<Settings />);
     await screen.findByText("Daytona sandboxes");
 
-    for (const provider of ["daytona", "openai", "nosana_vlm"]) {
+    for (const provider of ["daytona", "openai", "openrouter"]) {
       const logo = container.querySelector(`[data-provider-logo="${provider}"]`);
       expect(logo).toBeTruthy();
       expect(logo.getAttribute("src")).toMatch(/^(?:data:image\/svg\+xml|.*\.svg$)/);
@@ -295,6 +395,32 @@ describe("Settings about disclosure", () => {
 
     expect(await screen.findByText(/Provider readiness is unavailable right now/)).toBeTruthy();
     expect(screen.queryByText("OpenAI")).toBeNull();
+  });
+
+  it("places the integration agent beside the settings without dropping any of them", async () => {
+    const { container } = render(<Settings />);
+
+    expect(await screen.findByText("Integration agent")).toBeTruthy();
+    for (const heading of [
+      "Services",
+      "Documentation sources",
+      "Appearance",
+      "About this deployment",
+    ]) {
+      expect(screen.getByText(heading)).toBeTruthy();
+    }
+    // Credentials are edited on the service they belong to now, so the separate
+    // "Runtime credentials" card is gone rather than duplicating that list.
+    expect(screen.queryByText("Runtime credentials")).toBeNull();
+    const settingsScroll = container.querySelector("[data-settings-scroll-region]");
+    expect(settingsScroll).toBeTruthy();
+    expect(settingsScroll.className).toContain("xl:overflow-y-auto");
+
+    const agent = screen.getByText("Integration agent").closest("section");
+    expect(agent.parentElement.className).toContain("xl:h-full");
+    expect(agent.className).not.toContain("xl:sticky");
+    expect(agent.parentElement.className).not.toContain("xl:sticky");
+    expect(api.getIntegrationAgentStatus).toHaveBeenCalledTimes(1);
   });
 
   it("does not fabricate a company, domain, or support contact", async () => {

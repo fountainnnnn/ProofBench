@@ -1,12 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
   <!-- Colours are literal on purpose: browser chrome renders this file outside
-       the app, so it cannot resolve the theme accent variable. Keep it in step
-       with the palette whenever the ink changes. The mark is ink on white
-       because the palette carries no accent hue for a tile to be.
+       the app, so it cannot resolve the theme variables. Keep them in step
+       with the light-theme ink and surface whenever the palette changes.
        Note: XML comments may not contain a double hyphen, so never write CSS
        custom property names in full here. -->
-  <rect width="32" height="32" rx="7" fill="#191D23"/>
-  <rect x="7" y="18" width="4" height="7" rx="1.2" fill="#979DAB"/>
-  <rect x="13.5" y="14" width="4" height="11" rx="1.2" fill="#C5BAC4"/>
-  <path d="M20 20.5 22.75 23.25 27 14.5" stroke="#DEDCDC" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="2" y="2" width="28" height="28" rx="8" fill="#292B31"/>
+  <path
+    d="M9.5 24V8.5h7c3.8 0 6 1.65 6 4.25S20.3 17 16.5 17h-7"
+    fill="none"
+    stroke="#F8F7FA"
+    stroke-width="3.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M14 17v7h4c3.45 0 5.5-1.35 5.5-3.5S21.45 17 18 17h-4Z"
+    fill="none"
+    stroke="#F8F7FA"
+    stroke-width="3.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
 </svg>

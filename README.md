@@ -248,11 +248,32 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting and
 privacy prerequisites that a future third-party-facing deployment would have to
 satisfy.
 
+## Free scraping without any provider key
+
+The paid scraping chain has a zero-key fallback: **SearXNG** finds candidate
+pages and **Crawl4AI** reads them. They are separate third-party services, not
+part of this app, so starting the API does not start them — bring them up
+yourself:
+
+```
+docker compose -f docker-compose.scrapers.yml up -d
+```
+
+ProofBench probes `localhost:8080` and `localhost:11235` and picks the pair up
+automatically once they answer; Settings shows a live running indicator for
+each. Stop them with `docker compose -f docker-compose.scrapers.yml down`.
+
+Reaching a local service over plain HTTP is exactly what the outbound URL policy
+forbids, so this path is enabled only when `PROOFBENCH_INSECURE_DEV=1` and only
+for loopback or private addresses. It is a local-development convenience, not a
+deployment feature.
+
 ## Hackathon integrations
 
 ProofBench integrates several third-party services used in the hackathon build:
 Daytona for disposable sandboxes; Scrape.do, Oxylabs, and Bright Data for the
-ordered search and documentation-scraping chain; Doubleword for adapter
+ordered search and documentation-scraping chain, with self-hosted SearXNG and
+Crawl4AI as a free fallback; Doubleword for adapter
 generation and batch inference; OpenRouter as an OpenAI-compatible provider for
 orchestration, assessment, and reports; and Kimi and Nosana as configured model
 endpoints. Each is reached through its own credentials, which you supply.

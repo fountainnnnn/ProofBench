@@ -1,0 +1,23 @@
+# Minimal SearXNG settings for ProofBench's search fallback.
+#
+# The one line that matters is `json` in `search.formats`: SearXNG ships with
+# HTML only, and engine/searxng.py asks for `format=json`. Without it the
+# instance answers with a page instead of results and the provider reports a
+# configuration error rather than silently returning nothing.
+use_default_settings: true
+
+server:
+  # Any non-empty value; this instance is bound to loopback and is not public.
+  secret_key: "proofbench-local-development-only"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+
+general:
+  # Nothing here should phone home from a developer's machine.
+  donation_url: false
+  contact_url: false

@@ -69,3 +69,65 @@ def test_a_new_chat_session_starts_with_the_opening_line_as_its_label(client):
 
     session = runs.get_session(chat.json()["session_id"], "tenant-a")
     assert session["title"] == "compare OCR tools for scanned invoices"
+
+
+def test_first_generated_title_is_saved_before_the_terminal_refresh(client, monkeypatch):
+    """The first done event must already expose the generated title."""
+    queued = []
+
+    class DeferredThread:
+        def __init__(self, *, target, daemon, name=None):
+            self.target = target
+            self.is_chat_worker = name is None
+            if self.is_chat_worker:
+                queued.append(target)
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    session_id = None
+
+    class FakeOrchestrator:
+        runtime_env = {}
+        findings = []
+
+        def chat(self, _message):
+            runs.add_message(session_id, "assistant", "Tesseract and EasyOCR are the options.")
+
+    monkeypatch.setattr(main_module.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(
+        main_module,
+        "_get_or_create_orchestrator",
+        lambda *_args, **_kwargs: FakeOrchestrator(),
+    )
+    monkeypatch.setattr(
+        main_module.session_title,
+        "summarize_title",
+        lambda *_args, **_kwargs: "Invoice OCR Comparison",
+    )
+    original_finish = runs.finish_run
+    title_when_finishing = []
+
+    def recording_finish(sid, *args, **kwargs):
+        title_when_finishing.append(runs.get_session(sid, "tenant-a")["title"])
+        return original_finish(sid, *args, **kwargs)
+
+    monkeypatch.setattr(runs, "finish_run", recording_finish)
+    response = client.post(
+        "/api/chat",
+        headers=headers("token-a"),
+        json={"message": "compare OCR tools for scanned invoices"},
+    )
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    assert len(queued) == 1
+
+    queued[0]()
+
+    assert title_when_finishing == ["Invoice OCR Comparison"]
+    session = runs.get_session(session_id, "tenant-a")
+    assert session["title"] == "Invoice OCR Comparison"
+    assert [event for _, event, _ in session["events"]][-1] == "done"

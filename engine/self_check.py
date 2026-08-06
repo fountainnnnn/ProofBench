@@ -208,6 +208,47 @@ def _repair_note(details: list[str]) -> str:
     )
 
 
+def _supervised_reassessment(
+    candidates: list[dict],
+    objective: str,
+    identity,
+    env: dict[str, str],
+    constraints: dict | None,
+) -> dict[str, dict]:
+    """One bounded re-assessment pass on a DISTINCT supervisor model.
+
+    Reuses the assessment request and validation shape exactly, so a
+    re-assessment is corrected the same way an original is, and runs a single
+    pass against the resolved supervisor identity — a second opinion is one
+    opinion, never a retry loop. Entitlements are pinned to exactly what the
+    verification sandbox receives, as the first assessment's were.
+    """
+    import asyncio
+
+    from engine import tool_assessment
+    from engine.llm_clients import provider_chat_completions
+
+    available_credentials = sorted(
+        str(name) for name in tool_assessment.ASSESSMENT_VERIFICATION_ENTITLEMENTS
+    )
+    constraints_text = tool_assessment.format_constraints(constraints)
+    requests = [
+        tool_assessment._assessment_request(
+            item["name"], item["docs_text"], objective,
+            available_credentials, constraints_text,
+            item.get("pricing_text", ""), item.get("role", "product"),
+            item.get("note", ""),
+        )
+        for item in candidates
+    ]
+    responses = asyncio.run(
+        provider_chat_completions(
+            identity.provider, requests, model=identity.model, env=env
+        )
+    )
+    return tool_assessment._collect(candidates, responses)
+
+
 def repair(
     metrics: dict,
     objective: str,
@@ -218,13 +259,18 @@ def repair(
 ) -> dict:
     """Re-assess the self-contradicting candidates once, on their own documents.
 
-    Returns ``{"metrics": <rows>, "repaired": [names]}``. The model, not this
-    function, produces the new verdict: the contradiction is quoted into the
-    same request the first assessment used and the reply goes through the same
-    validation. A reply that does not validate changes nothing at all, because a
-    row we could not re-derive is still a row a run genuinely measured.
+    Returns ``{"metrics": <rows>, "repaired": [names], "supervisor": <label>}``.
+    The re-assessment is served by a DISTINCT ``(provider, model)`` identity, not
+    by the model that produced the contradicting assessment: a model re-reading
+    its own answer waves through the mistake it already made once. When no
+    distinct supervisor is configured, the contradiction is published as a caveat
+    rather than re-asked of the same identity — deterministic scoring never
+    depended on this pass, so a single-provider deployment stays fully functional
+    and simply keeps the honest flag. A reply that does not validate changes
+    nothing: a row we could not re-derive is still a row a run genuinely measured.
     """
     from engine import tool_assessment
+    from engine.llm_clients import capability_providers, supervisor_identity
 
     updated = dict(metrics or {})
     notes: dict[str, list[str]] = {}
@@ -232,7 +278,22 @@ def repair(
         if flag.get("code") in REPAIRABLE_CODES and flag.get("name") in scraped_by_name:
             notes.setdefault(flag["name"], []).append(str(flag.get("detail") or ""))
     if not notes:
-        return {"metrics": updated, "repaired": []}
+        return {"metrics": updated, "repaired": [], "supervisor": None}
+
+    runtime_env = dict(env or {})
+    # Assessment fails over across its whole configured chain, and a batch does
+    # not record which provider produced any given row (recording that would
+    # widen the persisted public metrics for no reader). So the conservative,
+    # honest exclusion is EVERY provider that may have produced the batch: no
+    # reviewer is drawn from the assessment chain at all, and a same-provider
+    # re-review can never masquerade as independent. A deployment whose only
+    # distinct model is inside that chain therefore keeps the flag as a caveat
+    # rather than getting a false-independent second opinion.
+    identity = supervisor_identity(
+        "assessment", runtime_env,
+        exclude_providers=capability_providers("assessment", runtime_env))
+    if identity is None:
+        return {"metrics": updated, "repaired": [], "supervisor": None}
 
     candidates = []
     for name, details in notes.items():
@@ -249,17 +310,13 @@ def repair(
         candidates.append(candidate)
 
     try:
-        results = tool_assessment.assess_documentation_batch(
-            candidates,
-            objective,
-            env=dict(env or {}),
-            entitled_credentials=tool_assessment.ASSESSMENT_VERIFICATION_ENTITLEMENTS,
-            constraints=constraints,
+        results = _supervised_reassessment(
+            candidates, objective, identity, runtime_env, constraints
         )
     except Exception:
         # The re-assessment is a second opinion, never a gate. A provider outage
         # during it must leave the run exactly as it was.
-        return {"metrics": updated, "repaired": []}
+        return {"metrics": updated, "repaired": [], "supervisor": identity.label()}
 
     repaired: list[str] = []
     for name in notes:
@@ -285,7 +342,7 @@ def repair(
         # plan, so they are carried across rather than lost to the replacement.
         updated[name] = {**original, **row}
         repaired.append(name)
-    return {"metrics": updated, "repaired": repaired}
+    return {"metrics": updated, "repaired": repaired, "supervisor": identity.label()}
 
 
 def run_self_check(
@@ -310,4 +367,5 @@ def run_self_check(
     )
     if outcome["repaired"]:
         metrics.update(outcome["metrics"])
-    return {"flags": find_contradictions(metrics), "repaired": outcome["repaired"]}
+    return {"flags": find_contradictions(metrics), "repaired": outcome["repaired"],
+            "supervisor": outcome.get("supervisor")}

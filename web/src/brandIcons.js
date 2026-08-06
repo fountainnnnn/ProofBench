@@ -33,7 +33,10 @@ export function brandAssetFor(name) {
    cache avoids downloading the same data URI again after every full reload.
    Only validated image data and normalized names are stored. */
 const STORAGE_KEY = "proofbench.brandAssets.v1";
-const STORAGE_VERSION = 1;
+/* v1 could cache names omitted by the endpoint's 24-name cap as misses. Bump
+   once so those false negatives are discarded and every name is retried via
+   the now-batched client. */
+const STORAGE_VERSION = 2;
 const MAX_STORED_ASSETS = 96;
 const MAX_STORED_CHARS = 3_500_000;
 const MAX_ASSET_CHARS = 420_000;

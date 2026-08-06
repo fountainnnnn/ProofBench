@@ -20,24 +20,39 @@ def _response(content):
     )
 
 
+# Two providers so a DISTINCT supervisor resolves: orchestration primary is
+# Moonshot (first configured in the orchestration order), and the elimination
+# pass is served by DeepSeek — the first configured provider whose identity
+# differs. The model that drafted the shortlist never sits in judgement of it.
+_DISTINCT_ENV = {"MOONSHOT_API_KEY": "sk-primary", "DEEPSEEK_API_KEY": "sk-reviewer"}
+
+
 class _Verdict:
-    """Stands in for the review completion, recording every call it receives."""
+    """A stand-in chat client that records every review completion it serves."""
 
     def __init__(self, content):
         self.content = content
         self.calls = []
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create))
 
-    def __call__(self, env=None, **kwargs):
+    def _create(self, **kwargs):
         self.calls.append(kwargs)
         return _response(self.content)
 
 
-def _make_agent(monkeypatch, verdict, tmp_path):
-    """Wire an Orchestrator to a fake review model, as test_intake_loop does."""
-    monkeypatch.setattr(agent_mod, "_orchestrator_complete", verdict)
+def _make_agent(monkeypatch, verdict, tmp_path, env=None):
+    """Wire an Orchestrator to a fake DISTINCT review model.
+
+    The elimination pass runs on the resolved supervisor, reached through
+    ``chat_client``; the review never falls back to the orchestrator. ``env``
+    defaults to a two-provider deployment where a distinct reviewer exists.
+    """
     monkeypatch.setattr(
         agent_mod, "dispatch_tool", lambda name, args, ctx: json.dumps({"ok": True})
     )
+    monkeypatch.setattr(
+        "engine.llm_clients.chat_client", lambda provider, env=None: verdict)
 
     emitted = []
     a = agent_mod.Orchestrator(
@@ -45,6 +60,7 @@ def _make_agent(monkeypatch, verdict, tmp_path):
         run_dir=str(tmp_path / "run"),
         emit=lambda kind, payload: emitted.append((kind, payload)),
     )
+    a.runtime_env = dict(_DISTINCT_ENV if env is None else env)
     a.emitted = emitted
     a.deltas = []
     a.states = []
@@ -148,6 +164,31 @@ def test_a_single_candidate_shortlist_is_never_reviewed(monkeypatch, tmp_path):
 
     assert reviewed == spec
     assert verdict.calls == []
+
+
+def test_no_distinct_supervisor_skips_the_review_without_self_reviewing(monkeypatch, tmp_path):
+    """No distinct reviewer means the shortlist is kept UNREVIEWED — never handed
+    back to the model that drafted it. That fallback was correlated self-review;
+    the honest outcome is a skip, traced as a healthy optional-review event."""
+    def explode(*_a, **_k):
+        raise AssertionError("the drafting model must never review its own shortlist")
+
+    monkeypatch.setattr(agent_mod, "_orchestrator_complete", explode)
+    verdict = _Verdict(json.dumps({"drop": [{"name": "alpha", "violates": "anything"}]}))
+    # One provider: no identity distinct from the primary can be resolved.
+    a = _make_agent(monkeypatch, verdict, tmp_path, env={"DEEPSEEK_API_KEY": "sk-only"})
+    spec = _spec("alpha", "beta")
+
+    reviewed = a._review_shortlist(spec)
+
+    assert reviewed == spec
+    assert "excluded" not in reviewed
+    assert verdict.calls == []        # no review model was ever consulted
+    assert a.deltas == []
+    trace = next(payload for _kind, payload in a.emitted
+                 if payload.get("tool") == "shortlist_review")
+    assert trace["status"] == "ok"    # a skip is not a pipeline failure
+    assert "no distinct supervisor" in trace["detail"]
 
 
 def test_a_verdict_naming_an_unknown_candidate_is_ignored(monkeypatch, tmp_path):

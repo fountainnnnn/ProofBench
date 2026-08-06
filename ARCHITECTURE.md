@@ -42,7 +42,9 @@ ledger live on named volumes.
 | `engine/agent.py` | Orchestrator loop and capability-bound tool dispatch. |
 | `engine/tools.py` | Run-scoped capabilities; the only path to credentials. |
 | `engine/docs_intel.py`, `engine/scrapers.py` | Candidate discovery through an ordered Scrape.do, Oxylabs, and Bright Data chain, then the bounded direct-fetch fallback. |
-| `engine/llm_clients.py` | Capability-based provider resolution and hardened OpenAI-compatible clients. |
+| `engine/llm_clients.py` | Capability-based provider resolution, distinct-supervisor identity, and hardened OpenAI-compatible clients. |
+| `engine/supervisor.py` | Bounded, one-shot correction of a deterministic violation by a DISTINCT reviewer model. |
+| `engine/integration_agent.py` | Settings research assistant gated on one code-generation LLM and one complete search/scrape provider; returns bounded, non-activating connector proposals. |
 | `engine/adapter_gen.py` | Generates one adapter per candidate from scraped docs. |
 | `engine/sandbox_pool.py` | Disposable sandbox lifecycle and ownership ledger. |
 | `engine/evaluate.py` | Deterministic, network-free, LLM-free evaluator. |
@@ -80,6 +82,14 @@ ledger live on named volumes.
 8. Events stream over SSE: append-only, monotonically sequenced, bounded, and
    redacted before the write.
 
+The Settings integration agent is a separate request/response path. It does not
+join a benchmark run or receive run capabilities. The server checks its two
+mandatory prerequisites, performs bounded documentation research through the
+configured scraper chain, and requests one structured proposal from the
+selected code-generation LLM. It can explain or generate connector code in its
+response, but it cannot change credentials, the source tree, dependencies, or
+runtime activation state.
+
 ## Stable seams
 
 These are the extension points ADR-0001 commits to keeping stable. They exist
@@ -108,6 +118,21 @@ exists today.
   fixed preference order, so OpenRouter can serve all of them alone. Selection
   never widens an entitlement; every orchestration prefix, `OPENROUTER_`
   included, stays permanently outside sandboxes.
+- **Supervision.** A *supervision* capability resolves a DISTINCT `(provider,
+  model)` reviewer for the checkpoints that correct a model's own output — intake
+  spec recovery, shortlist elimination, and the assessment self-check —
+  because a model reviewing its own answer inherits its own bias and laziness.
+  `engine/supervisor.py` runs exactly one toolless, temperature-0 correction
+  against that identity, hands it the concrete deterministic violation and the
+  output contract, and accepts the reply only through the same parser/normalizer/
+  validator the primary path uses — no tools, no retries, no supervisor of a
+  supervisor. `SUPERVISOR_PROVIDER`/`SUPERVISOR_MODEL` configure it; the same
+  provider may supervise only when `SUPERVISOR_MODEL` names a genuinely different
+  model. When no distinct identity exists the correction is skipped honestly
+  rather than re-asked of the same model, and deterministic scoring never depends
+  on it, so single-provider deployments stay fully functional. No model, primary
+  or supervisor, is ever placed in deterministic evaluation, result collation,
+  credentials, sandbox entitlements, auth, quota, or provenance.
 - **Sandbox.** One disposable sandbox per candidate attempt, destroyed on
   success, failure, timeout, or cancellation, with reconciliation that never
   touches unowned resources.

@@ -89,13 +89,28 @@ CAPABILITY_PROVIDERS: dict[str, tuple[str, ...]] = {
     "assessment": ("doubleword", "openrouter", "openai", "deepseek"),
     "report": ("moonshot", "openai", "openrouter", "deepseek"),
     "codegen": ("deepseek", "openrouter"),
+    # Supervision is the pool a DISTINCT reviewer is drawn from. Order is a
+    # preference, not a guarantee: supervisor_identity walks it and takes the
+    # first configured provider whose (provider, model) differs from the primary
+    # producer, so on a two-provider deployment the reviewer is naturally the one
+    # the primary is not. It is never resolved with resolve_provider, because a
+    # supervisor that collapses onto the primary is worse than none.
+    "supervision": ("moonshot", "openai", "deepseek", "openrouter", "doubleword"),
 }
 
-# Capabilities whose provider is pinned by ORCHESTRATOR_PROVIDER. The historical
-# variable named one of kimi/moonshot/openai; openrouter is accepted too.
-_ORCHESTRATOR_PINNED = ("orchestration", "report")
-_PIN_ALIASES = {"kimi": "moonshot", "moonshot": "moonshot",
-                "openai": "openai", "openrouter": "openrouter"}
+# Every provider is selectable as a default, plus the historical "kimi" spelling
+# of moonshot. This used to list four names by hand, which quietly made DeepSeek
+# and Doubleword impossible to choose as an operator's default at all.
+_PIN_ALIASES = {"kimi": "moonshot", **{name: name for name in PROVIDERS}}
+
+# Which env var names the default for each capability, most specific first.
+# ORCHESTRATOR_PROVIDER stays honoured so existing deployments keep working.
+_PIN_ENV: dict[str, tuple[str, ...]] = {
+    "orchestration": ("PROOFBENCH_DEFAULT_ORCHESTRATION_PROVIDER", "ORCHESTRATOR_PROVIDER"),
+    "report": ("PROOFBENCH_DEFAULT_ORCHESTRATION_PROVIDER", "ORCHESTRATOR_PROVIDER"),
+    "assessment": ("PROOFBENCH_DEFAULT_ASSESSMENT_PROVIDER",),
+    "codegen": ("PROOFBENCH_DEFAULT_CODEGEN_PROVIDER",),
+}
 
 
 def _env(env: dict | None):
@@ -113,9 +128,11 @@ def provider_configured(provider: str, env: dict | None = None) -> bool:
 
 
 def _pinned_provider(capability: str, env) -> str | None:
-    if capability not in _ORCHESTRATOR_PINNED:
-        return None
-    return _PIN_ALIASES.get(_value(env, "ORCHESTRATOR_PROVIDER").casefold())
+    for name in _PIN_ENV.get(capability, ()):
+        raw = _value(env, name).casefold()
+        if raw:
+            return _PIN_ALIASES.get(raw)
+    return None
 
 
 def capability_providers(capability: str, env: dict | None = None) -> tuple[str, ...]:
@@ -147,6 +164,118 @@ def resolve_provider(capability: str, env: dict | None = None) -> str:
 def provider_model(provider: str, env: dict | None = None) -> str:
     spec = PROVIDERS[provider]
     return _value(_env(env), spec.model_env) or spec.default_model
+
+
+@dataclass(frozen=True)
+class ModelIdentity:
+    """A concrete (provider, model) pair. Two identities are the same producer
+    when the provider matches and the model matches case-insensitively; that is
+    the equality a distinct supervisor has to defeat."""
+
+    provider: str
+    model: str
+
+    def same_as(self, other: "ModelIdentity") -> bool:
+        return (self.provider == other.provider
+                and self.model.casefold() == other.model.casefold())
+
+    def label(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+
+def primary_identity(capability: str, env: dict | None = None) -> ModelIdentity | None:
+    """The (provider, model) that will actually produce this capability's artifact.
+
+    None when the deployment has no provider for the capability at all; callers
+    treat that as "nothing to supervise" rather than an error.
+    """
+    env = _env(env)
+    configured = capability_providers(capability, env)
+    if not configured:
+        return None
+    provider = configured[0]
+    return ModelIdentity(provider, provider_model(provider, env))
+
+
+def _supervisor_pin(env) -> str | None:
+    raw = _value(env, "SUPERVISOR_PROVIDER").casefold()
+    if not raw:
+        return None
+    return _PIN_ALIASES.get(raw, raw)
+
+
+def supervisor_identity(
+    primary_capability: str,
+    env: dict | None = None,
+    *,
+    exclude=None,
+    exclude_providers=None,
+) -> ModelIdentity | None:
+    """Resolve a DISTINCT reviewer identity for a primary capability's output.
+
+    Returns a ``ModelIdentity`` guaranteed to differ from the primary producer,
+    or ``None`` when no distinct supervisor can be configured. The rules, in
+    order:
+
+    - ``SUPERVISOR_PROVIDER`` pins the reviewer's provider exactly. It is
+      honoured or it yields nothing; it never silently walks to another provider.
+    - ``SUPERVISOR_MODEL`` with a pin overrides the reviewer's model on the
+      pinned provider — the only way the SAME provider supervises, and only when
+      the model genuinely differs. ``SUPERVISOR_MODEL`` WITHOUT a pin is
+      ambiguous: a model id belongs to one API, so it is applied ONLY to the
+      primary producer's own provider, and only when that yields a genuinely
+      distinct identity; otherwise a provider pin is required and None is
+      returned rather than binding the model to an arbitrary provider.
+    - With no pin and no override, the ``supervision`` capability pool is walked
+      and the first configured provider whose identity differs from the primary
+      wins.
+
+    ``exclude`` is extra ``ModelIdentity`` values — the providers/models that
+    ACTUALLY produced the artifact after failover, which need not be the
+    configured primary — and the reviewer is guaranteed to match none of them.
+    ``exclude_providers`` names whole providers that MAY have produced the
+    artifact (e.g. every provider in an assessment fallback chain); no reviewer
+    is ever drawn from one of them. Both make independence a property of who
+    actually produced the artifact, not merely of who was configured to.
+
+    Same identity is never returned. A same-identity "review" is correlated
+    self-review — the exact bias and laziness a supervisor exists to break — so
+    the honest answer is None and the caller must surface that rather than fake
+    independence.
+    """
+    env = _env(env)
+    primary = primary_identity(primary_capability, env)
+    if primary is None:
+        return None
+    override_model = _value(env, "SUPERVISOR_MODEL")
+    pin = _supervisor_pin(env)
+    excluded_identities = [primary, *(exclude or ())]
+    excluded_provider_set = {str(name) for name in (exclude_providers or ())}
+
+    def distinct(identity: ModelIdentity) -> bool:
+        if identity.provider in excluded_provider_set:
+            return False
+        return not any(identity.same_as(other) for other in excluded_identities)
+
+    def build(provider: str) -> ModelIdentity | None:
+        if not provider_configured(provider, env):
+            return None
+        model = override_model or provider_model(provider, env)
+        identity = ModelIdentity(provider, model)
+        return identity if distinct(identity) else None
+
+    if pin is not None:
+        return build(pin)
+    # An explicit model with no provider pin: apply it to the primary producer's
+    # own provider only. Walking the pool would risk handing, say, an OpenAI
+    # model id to Moonshot. Distinct there or nothing.
+    if override_model:
+        return build(primary.provider)
+    for provider in CAPABILITY_PROVIDERS.get("supervision", ()):  # preference order
+        identity = build(provider)
+        if identity is not None:
+            return identity
+    return None
 
 
 def provider_base_url(provider: str, env: dict | None = None) -> str:

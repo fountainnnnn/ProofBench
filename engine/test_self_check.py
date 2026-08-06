@@ -162,15 +162,23 @@ def _plan(**overrides) -> dict:
     return value
 
 
+# Two providers so a DISTINCT supervisor resolves: assessment primary is DeepSeek
+# (first configured in the assessment order), and the supervisor is Moonshot (the
+# first configured provider in the supervision order whose identity differs). The
+# re-assessment therefore never runs on the model that produced the assessment.
+SUP_ENV = {"MOONSHOT_API_KEY": "sk-supervisor", "DEEPSEEK_API_KEY": "sk-assessment"}
+
+
 def _serve(monkeypatch, results):
     seen = {}
 
-    def fake(candidates, objective, **kwargs):
+    def fake(candidates, objective, identity, env, constraints):
         seen["candidates"] = candidates
         seen["objective"] = objective
+        seen["identity"] = identity
         return results
 
-    monkeypatch.setattr(tool_assessment, "assess_documentation_batch", fake)
+    monkeypatch.setattr(self_check, "_supervised_reassessment", fake)
     return seen
 
 
@@ -178,19 +186,84 @@ SCRAPED = {"alpha": {"name": "alpha", "docs_text": "alpha docs", "role": "produc
 
 
 def test_a_validating_reassessment_replaces_the_row(monkeypatch):
-    """The model resolves the contradiction; code only carries the answer across."""
-    _serve(monkeypatch, {"alpha": {"plan": validate_plan(_plan())}})
+    """A DISTINCT model resolves the contradiction; code only carries it across."""
+    seen = _serve(monkeypatch, {"alpha": {"plan": validate_plan(_plan())}})
     metrics = {"alpha": row(rating=91, reason=(
         "The documentation does not show diagram rendering, which is a hard "
         "requirement."))}
 
-    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED)
+    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED,
+                    env=SUP_ENV)
 
     assert result["repaired"] == ["alpha"]
     assert result["metrics"]["alpha"]["implementable"] is False
     assert result["metrics"]["alpha"]["rating"] <= 49
     # The row is a run's row, not a plan's: what the run stamped survives.
     assert result["metrics"]["alpha"]["display_name"] == "Alpha"
+    # The re-assessment ran on a model distinct from the assessment's own.
+    assert seen["identity"].provider == "moonshot"
+    assert result["supervisor"] == seen["identity"].label()
+
+
+def test_no_distinct_supervisor_publishes_the_flag_rather_than_self_review(monkeypatch):
+    """With one provider, re-asking the SAME model is the correlated review we reject."""
+    def unexpected(*_a, **_k):
+        raise AssertionError("a lone provider must not re-review its own assessment")
+
+    monkeypatch.setattr(self_check, "_supervised_reassessment", unexpected)
+    original = row(rating=91, reason=(
+        "The documentation does not show rendering, which is a hard requirement."))
+    metrics = {"alpha": dict(original)}
+
+    # Only the assessment provider is configured — no distinct reviewer exists.
+    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED,
+                    env={"DEEPSEEK_API_KEY": "sk-assessment"})
+
+    assert result["repaired"] == []
+    assert result["supervisor"] is None
+    assert result["metrics"]["alpha"] == original
+
+
+def test_the_reassessment_supervisor_is_never_drawn_from_the_fallback_chain(monkeypatch):
+    """A batch does not record which provider produced each row, and assessment
+    falls back across its whole configured chain — so any provider in that chain
+    may have produced a given row. A reviewer drawn from the chain could be
+    re-reviewing its own output, so with only chain providers configured the
+    conservative, honest answer is no supervisor and the flag is kept."""
+    def unexpected(*_a, **_k):
+        raise AssertionError("a chain provider must not re-review its own assessment")
+
+    monkeypatch.setattr(self_check, "_supervised_reassessment", unexpected)
+    original = row(rating=91, reason=(
+        "The documentation does not show rendering, which is a hard requirement."))
+    metrics = {"alpha": dict(original)}
+
+    # Both configured providers are in the assessment chain (doubleword, openrouter);
+    # openrouter is the only distinct supervision provider but is itself a possible
+    # producer, so no independent reviewer exists.
+    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED,
+                    env={"DOUBLEWORD_API_KEY": "1", "OPENROUTER_API_KEY": "1"})
+
+    assert result["repaired"] == []
+    assert result["supervisor"] is None
+    assert result["metrics"]["alpha"] == original
+
+
+def test_a_provider_outside_the_fallback_chain_may_reassess(monkeypatch):
+    """Independence is still possible: a provider the assessment chain never uses
+    can serve as the distinct reviewer."""
+    seen = _serve(monkeypatch, {"alpha": {"plan": validate_plan(_plan())}})
+    metrics = {"alpha": row(rating=91, reason=(
+        "The documentation does not show rendering, which is a hard requirement."))}
+
+    # Moonshot is outside the assessment chain (doubleword, openrouter), so it is
+    # the honest distinct reviewer.
+    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED,
+                    env={"DOUBLEWORD_API_KEY": "1", "OPENROUTER_API_KEY": "1",
+                         "MOONSHOT_API_KEY": "1"})
+
+    assert result["repaired"] == ["alpha"]
+    assert seen["identity"].provider == "moonshot"
 
 
 def test_a_failed_reassessment_keeps_the_original_row(monkeypatch):
@@ -199,7 +272,8 @@ def test_a_failed_reassessment_keeps_the_original_row(monkeypatch):
     original = row(rating=91, reason="The documentation does not show rendering.")
     metrics = {"alpha": dict(original)}
 
-    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED)
+    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED,
+                    env=SUP_ENV)
 
     assert result["repaired"] == []
     assert result["metrics"]["alpha"] == original
@@ -207,13 +281,14 @@ def test_a_failed_reassessment_keeps_the_original_row(monkeypatch):
 
 def test_a_provider_outage_during_repair_changes_nothing(monkeypatch):
     def dead(*_a, **_k):
-        raise RuntimeError("every configured assessment provider failed")
+        raise RuntimeError("every configured supervisor provider failed")
 
-    monkeypatch.setattr(tool_assessment, "assess_documentation_batch", dead)
+    monkeypatch.setattr(self_check, "_supervised_reassessment", dead)
     original = row(rating=91, reason="The documentation does not show rendering.")
     metrics = {"alpha": dict(original)}
 
-    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED)
+    result = repair(metrics, "objective", find_contradictions(metrics), SCRAPED,
+                    env=SUP_ENV)
 
     assert result["repaired"] == []
     assert result["metrics"]["alpha"] == original
@@ -233,7 +308,7 @@ def test_only_self_contradictions_are_reassessed(monkeypatch):
     scraped = {name: {"name": name, "docs_text": f"{name} docs", "role": "product"}
                for name in metrics}
 
-    repair(metrics, "objective", find_contradictions(metrics), scraped)
+    repair(metrics, "objective", find_contradictions(metrics), scraped, env=SUP_ENV)
 
     assert [item["name"] for item in seen["candidates"]] == ["alpha"]
 
@@ -244,7 +319,7 @@ def test_the_repair_request_quotes_the_contradiction_back(monkeypatch):
     metrics = {"alpha": row(rating=91, reason=(
         "The documentation does not show rendering, which is a hard requirement."))}
 
-    repair(metrics, "objective", find_contradictions(metrics), SCRAPED)
+    repair(metrics, "objective", find_contradictions(metrics), SCRAPED, env=SUP_ENV)
 
     note = seen["candidates"][0]["note"]
     assert "contradicted itself" in note
@@ -268,7 +343,7 @@ def test_a_surviving_contradiction_is_reported_not_hidden(monkeypatch):
     metrics = {"alpha": row(rating=91, reason=(
         "The documentation does not show rendering, which is a hard requirement."))}
 
-    outcome = run_self_check(metrics, "objective", SCRAPED)
+    outcome = run_self_check(metrics, "objective", SCRAPED, env=SUP_ENV)
 
     assert outcome["repaired"] == ["alpha"]
     assert [flag["code"] for flag in outcome["flags"]] == ["impl_true_reason_negative"]
@@ -278,9 +353,9 @@ def test_a_clean_set_of_rows_never_calls_the_provider(monkeypatch):
     def unexpected(*_a, **_k):
         raise AssertionError("a clean run must not spend a second assessment")
 
-    monkeypatch.setattr(tool_assessment, "assess_documentation_batch", unexpected)
+    monkeypatch.setattr(self_check, "_supervised_reassessment", unexpected)
 
-    assert run_self_check({"alpha": row()}, "objective", SCRAPED) == {
+    assert run_self_check({"alpha": row()}, "objective", SCRAPED, env=SUP_ENV) == {
         "flags": [], "repaired": []}
 
 

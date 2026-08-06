@@ -32,6 +32,9 @@ assessed from their own documentation. Design ONE coherent architecture using th
 components. You may state that a component fills a role even if it is one of several
 options, but do not introduce major new dependencies that were not assessed — if a piece
 is genuinely missing from the set, say so in a step rather than inventing a product.
+Do not claim that an unassessed service, existing platform, or configuration satisfies a
+security, compliance, residency, budget, or reliability requirement. Name it as an
+assumption or verification step instead. Only the supplied component evidence is measured.
 
 Be concrete and specific to this objective. "Use a templating library" is useless; "render
 the diagram to SVG with Matplotlib and inline it in the question payload" is the job.

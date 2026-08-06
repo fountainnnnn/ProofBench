@@ -63,6 +63,16 @@ def test_paddleocr_builtin_installs_runtime_and_uses_supported_pipeline_api():
     assert candidate.batch_safe is False
 
 
+def test_easyocr_installs_cpu_torch_before_its_runtime_dependencies():
+    candidate = load_builtin_candidate("easyocr")
+
+    assert "download.pytorch.org/whl/cpu" in candidate.build_commands[0]
+    assert "torch torchvision" in candidate.build_commands[0]
+    assert "easyocr" in candidate.build_commands[1]
+    assert "gpu=False" in candidate.adapter_code
+    assert "_READER" in candidate.adapter_code
+
+
 def test_missing_required_credential_is_explicit_not_a_silent_fallback():
     with pytest.raises(BuiltinAdapterUnavailable) as raised:
         entitled_credentials("doubleword", {"DOUBLEWORD_MODEL": "test-model"})

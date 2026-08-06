@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def utc_now() -> str:
@@ -215,6 +215,18 @@ class SQLiteStore:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (owner, key)
+                );
+
+                -- Provider credentials, deliberately NOT in tenant_settings:
+                -- that table truncates at 2048 characters, which would silently
+                -- corrupt a long API key. Kept separate so a backup or export
+                -- can exclude secrets without also dropping preferences.
+                CREATE TABLE IF NOT EXISTS tenant_credentials (
+                    owner TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (owner, name)
                 );
 
                 CREATE TABLE IF NOT EXISTS request_usage (
@@ -713,6 +725,31 @@ class SQLiteStore:
                 "ON CONFLICT(owner,key) DO UPDATE SET value=excluded.value,"
                 "updated_at=excluded.updated_at",
                 (owner, key, str(value)[:2048], utc_now()),
+            )
+
+    # Credentials are stored verbatim: set_setting's 2048-character clamp is
+    # right for a preference and wrong for a key, where a silent truncation
+    # produces a credential that looks saved and never authenticates.
+    def credentials(self, owner: str) -> dict[str, str]:
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT name, value FROM tenant_credentials WHERE owner=?", (owner,)
+            ).fetchall()
+        return {row["name"]: row["value"] for row in rows}
+
+    def set_credential(self, owner: str, name: str, value: str) -> None:
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO tenant_credentials(owner,name,value,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(owner,name) DO UPDATE SET value=excluded.value,"
+                "updated_at=excluded.updated_at",
+                (owner, name, str(value), utc_now()),
+            )
+
+    def delete_credential(self, owner: str, name: str) -> None:
+        with self.transaction(immediate=True) as connection:
+            connection.execute(
+                "DELETE FROM tenant_credentials WHERE owner=? AND name=?", (owner, name)
             )
 
     def list_findings(self, session_id: str) -> list[dict]:

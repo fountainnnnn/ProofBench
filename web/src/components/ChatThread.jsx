@@ -5,7 +5,7 @@ import SpecCard from "./SpecCard.jsx";
 import AgentActivity from "./AgentActivity.jsx";
 import TracePanel from "./TracePanel.jsx";
 import ResultsCard from "./ResultsCard.jsx";
-import { MARKDOWN_HEADINGS_IN_THREAD, PANEL } from "./ui.jsx";
+import { MARKDOWN_HEADINGS_IN_THREAD } from "./ui.jsx";
 import { safeVisibleText } from "../displaySafety.js";
 import { phaseLabel } from "../phaseLabel.js";
 import StatusIcon from "./StatusIcon.jsx";
@@ -18,10 +18,137 @@ import {
 } from "../provenance.js";
 
 const TERMINAL_PHASES = ["DONE", "FAILED", "STOPPED"];
+/* Before a specification is confirmed the session is still deciding WHAT to
+   run, so a results placeholder there promises the wrong thing: the next card
+   to appear is the spec, not a score. */
+const PRE_RUN_PHASES = ["INTAKE", "SPEC_CONFIRM"];
 
 function SafeMarkdownLink({ href, children }) {
   const safeHref = safeHttpUrl(href);
   return safeHref ? <a href={safeHref} target="_blank" rel="noreferrer">{children}</a> : <span>{children}</span>;
+}
+
+/* The orchestrator proposes a specification as a fenced JSON block. Printed raw
+   it is a wall of braces the reader has to parse by eye, so the shape it always
+   has — type, category, fields, candidates — is rendered as a summary instead.
+   Anything that does not match that shape falls through to a normal code block,
+   because guessing at unknown JSON would hide content rather than clarify it. */
+function parseSpecBlock(text) {
+  try {
+    const value = JSON.parse(String(text));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!Array.isArray(value.candidates)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+const CANDIDATE_KIND = {
+  hosted_api: "Hosted API",
+  saas: "SaaS",
+  local_tool: "Local tool",
+  library: "Library",
+};
+
+function SpecPreview({ spec }) {
+  const facts = [
+    ["Type", spec.benchmark_type],
+    ["Category", spec.category],
+  ].filter(([, value]) => value);
+  const fields = Array.isArray(spec.fields) ? spec.fields : [];
+  const candidates = spec.candidates.filter((item) => item && typeof item === "object");
+
+  return (
+    <div className="my-2 overflow-hidden rounded-[14px] border border-[var(--line)]">
+      <div className="border-b border-[var(--line)] bg-[var(--surface-2)] px-3.5 py-2">
+        <p className="text-[12px] font-semibold text-[var(--ink)]">Proposed benchmark</p>
+      </div>
+      <div className="px-3.5 py-3">
+        {facts.length > 0 && (
+          <dl className="flex flex-wrap gap-x-6 gap-y-1">
+            {facts.map(([label, value]) => (
+              <div key={label} className="flex items-baseline gap-1.5">
+                <dt className="text-[11px] uppercase tracking-wide text-[var(--ink-3)]">{label}</dt>
+                <dd className="text-[13px] text-[var(--ink)]">{safeVisibleText(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {fields.length > 0 && (
+          <div className="mt-2.5">
+            <p className="text-[11px] uppercase tracking-wide text-[var(--ink-3)]">
+              Fields extracted
+            </p>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {fields.map((field) => (
+                <span
+                  key={String(field)}
+                  className="pb-mono rounded-full bg-[var(--surface-2)] px-2 py-0.5 text-[11px] text-[var(--ink-2)]"
+                >
+                  {safeVisibleText(field)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {candidates.length > 0 && (
+          <div className="mt-3">
+            <p className="text-[11px] uppercase tracking-wide text-[var(--ink-3)]">
+              {candidates.length} candidate{candidates.length === 1 ? "" : "s"}
+            </p>
+            <ul className="mt-1 divide-y divide-[var(--line)]">
+              {candidates.map((item, index) => {
+                const docs = safeHttpUrl(item.docs_url);
+                return (
+                  <li
+                    key={`${item.name || index}`}
+                    className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5"
+                  >
+                    <span className="text-[13px] font-medium text-[var(--ink)]">
+                      {safeVisibleText(item.name) || "unnamed"}
+                    </span>
+                    {item.kind && (
+                      <span className="text-[11px] text-[var(--ink-3)]">
+                        {CANDIDATE_KIND[item.kind] || safeVisibleText(item.kind)}
+                      </span>
+                    )}
+                    {/* Named, because "build_component" means this entry is a
+                        part of the harness rather than a tool being judged. */}
+                    {item.role === "build_component" && (
+                      <span className="rounded-full bg-[var(--surface-2)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-2)]">
+                        build component
+                      </span>
+                    )}
+                    {docs && (
+                      <a
+                        href={docs}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="ml-auto text-[11px] text-[var(--accent)] underline underline-offset-2"
+                      >
+                        docs
+                      </a>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MarkdownCode({ className, children, ...rest }) {
+  const text = Array.isArray(children) ? children.join("") : String(children ?? "");
+  // Only a fenced block carries a language class; inline code must stay inline.
+  if (/language-json/.test(String(className || ""))) {
+    const spec = parseSpecBlock(text);
+    if (spec) return <SpecPreview spec={spec} />;
+  }
+  return <code className={className} {...rest}>{children}</code>;
 }
 
 function Bubble({ role, streaming, children }) {
@@ -51,7 +178,7 @@ function Bubble({ role, streaming, children }) {
           <div className="md overflow-x-auto">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              components={{ a: SafeMarkdownLink, ...MARKDOWN_HEADINGS_IN_THREAD }}
+              components={{ a: SafeMarkdownLink, code: MarkdownCode, ...MARKDOWN_HEADINGS_IN_THREAD }}
             >
               {safeVisibleText(children)}
             </ReactMarkdown>
@@ -81,7 +208,11 @@ function Disclosure({ title, summary, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   const id = useId();
   return (
-    <section className="pb-glass rounded-[24px] p-4 shadow-[var(--shadow-card)]" aria-labelledby={`${id}-title`}>
+    <section
+      className="border-y border-[var(--line)]"
+      aria-labelledby={`${id}-title`}
+      data-post-run-conversation
+    >
       <button
         type="button"
         aria-expanded={open}
@@ -90,15 +221,36 @@ function Disclosure({ title, summary, defaultOpen = false, children }) {
         // document at all until it is asked for.
         aria-controls={open ? `${id}-body` : undefined}
         onClick={() => setOpen((value) => !value)}
-        className="flex min-h-10 w-full flex-wrap items-center justify-between gap-2 rounded-[8px] text-left"
+        className="group flex min-h-14 w-full items-center justify-between gap-3 rounded-[8px] px-1 text-left transition-colors duration-150 hover:text-[var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface)]"
       >
-        <span className="flex items-center gap-2">
-          <span className="select-none text-[var(--ink-3)]" aria-hidden="true">{open ? "▾" : "▸"}</span>
-          <span id={`${id}-title`} className="text-[14px] font-semibold text-[var(--ink)]">{title}</span>
+        <span id={`${id}-title`} className="text-[14px] font-medium text-[var(--ink)] group-hover:text-[var(--accent)]">
+          {title}
         </span>
-        {summary && <span className="text-[12px] text-[var(--ink-2)]">{summary}</span>}
+        <span className="flex shrink-0 items-center gap-2.5">
+          {summary && <span className="text-[12px] text-[var(--ink-3)]">{summary}</span>}
+          <svg
+            aria-hidden="true"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`text-[var(--ink-3)] transition-transform duration-200 ease-out ${
+              open ? "rotate-180" : ""
+            }`}
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </span>
       </button>
-      {open && <div id={`${id}-body`} className="mt-3">{children}</div>}
+      {open && (
+        <div id={`${id}-body`} className="border-t border-[var(--line)] pb-2 pt-5">
+          {children}
+        </div>
+      )}
     </section>
   );
 }
@@ -109,7 +261,7 @@ const EXAMPLE_PROMPTS = [
   "Rank open source OCR tools by exact match accuracy and latency",
 ];
 
-export default function ChatThread({ statusMessage = "", statusFailed = false, messages, trace, sandboxLogs, phaseState, typing, spec, results, report, runId, onRun, onStop, running, stopping, mode, datasetId, provenance, specProvenance, resultsProvenance, executionMode, interactionDisabled = false, onPickPrompt, conversationLive = false }) {
+export default function ChatThread({ statusMessage = "", statusFailed = false, messages, trace, sandboxLogs, phaseState, typing, spec, results, report, runId, onRun, onStop, running, stopping, mode, datasetId, provenance, specProvenance, resultsProvenance, executionMode, interactionDisabled = false, onPickPrompt, conversationLive = false, completedFooter = false }) {
 
   /* Holds the slice of trace the reader asked to see, so opening the log from a
      turn shows THAT turn's calls rather than every call of the session. */
@@ -176,7 +328,10 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
     </>
   );
 
-  const resultsCard = (results || report || running || terminal) ? (
+  // Real output always renders. A loading placeholder only once the run is past
+  // the point where the spec is what arrives next.
+  const awaitingSpec = PRE_RUN_PHASES.includes(phase);
+  const resultsCard = (results || report || ((running || terminal) && !awaitingSpec)) ? (
     <ResultsCard
       metrics={provenanceMismatch || evidenceWithheld ? null : results}
       report={provenanceMismatch || reportProvenanceMismatch || evidenceWithheld ? null : report}
@@ -257,7 +412,12 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
     <div ref={scrollRef} className="flex-1 overflow-y-auto">
       {/* pt clears the fixed top strip (3.25rem) plus a little air, so the first
           message starts below it rather than under it. */}
-      <div className="mx-auto w-full max-w-canvas px-4 pb-6 pt-[4.25rem] sm:px-8 sm:pb-8">
+      <div
+        className={`mx-auto w-full max-w-canvas px-4 pt-[4.25rem] sm:px-8 ${
+          completedFooter ? "pb-36 sm:pb-24" : "pb-6 sm:pb-8"
+        }`}
+        data-completed-footer-clearance={completedFooter || undefined}
+      >
 
         {/* Connection state sits with the conversation, not in the top strip:
             it is transient prose about THIS thread, and the strip is reserved
@@ -347,7 +507,6 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
           <div className="mx-auto flex w-full max-w-[var(--thread-w)] min-w-0 flex-col gap-4">
             {alerts}
             {resultsCard}
-            {specCard}
             {messages.length > 0 && (
               <Disclosure
                 title="Conversation"

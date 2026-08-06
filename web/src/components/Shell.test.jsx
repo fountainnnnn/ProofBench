@@ -17,6 +17,7 @@ function renderShell() {
   return render(
     <MemoryRouter initialEntries={["/app"]}>
       <Routes>
+        <Route path="/" element={<p>Landing destination</p>} />
         <Route path="/app" element={<Shell />}>
           <Route index element={<button type="button">Write action</button>} />
         </Route>
@@ -121,6 +122,18 @@ describe("Shell local tokenless mode", () => {
 
     expect(await screen.findByRole("button", { name: "Write action" })).toBeTruthy();
     expect(screen.queryByLabelText("API token")).toBeNull();
+  });
+
+  it("links the shell wordmark back to the landing page", async () => {
+    renderShell();
+    await screen.findByRole("button", { name: "Write action" });
+
+    const homeLinks = screen.getAllByRole("link", { name: "ProofBench home" });
+    expect(homeLinks.length).toBeGreaterThanOrEqual(1);
+    for (const link of homeLinks) expect(link.getAttribute("href")).toBe("/");
+
+    fireEvent.click(homeLinks[0]);
+    expect(await screen.findByText("Landing destination")).toBeTruthy();
   });
 });
 

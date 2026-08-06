@@ -196,6 +196,21 @@ class SandboxPool:
         # OCR runtimes (notably PaddlePaddle), turning a valid adapter into an
         # environment-dependent failure.
         self.image = os.environ.get("DAYTONA_SANDBOX_IMAGE", "python:3.12-slim").strip()
+        try:
+            configured_memory = int(
+                os.environ.get("PROOFBENCH_SANDBOX_MEMORY_GIB", "4")
+            )
+        except ValueError:
+            configured_memory = 4
+        try:
+            configured_cpu = int(os.environ.get("PROOFBENCH_SANDBOX_CPU", "2"))
+        except ValueError:
+            configured_cpu = 2
+        # EasyOCR's CPU runtime is killed by Daytona's smallest memory shape
+        # while loading its detector. Four GiB is the supported baseline; the
+        # bounded override lets an operator choose a larger account shape.
+        self.memory_gib = min(64, max(4, configured_memory))
+        self.cpu = min(16, max(2, configured_cpu))
         default_ledger = (
             Path(__file__).resolve().parent.parent / "runs" / "sandbox_ledger.sqlite3"
         )
@@ -216,9 +231,12 @@ class SandboxPool:
     def _create_one(self):
         try:
             from daytona import CreateSandboxFromImageParams
+            from daytona.common.sandbox import Resources
 
             create_params = CreateSandboxFromImageParams(
-                image=self.image, language="python"
+                image=self.image,
+                language="python",
+                resources=Resources(cpu=self.cpu, memory=self.memory_gib),
             )
         except ModuleNotFoundError as exc:
             # Unit tests and compatible injected clients do not need the
@@ -229,7 +247,11 @@ class SandboxPool:
                 raise RuntimeError(
                     "Daytona SDK is required to create remote sandboxes"
                 ) from exc
-            create_params = {"image": self.image, "language": "python"}
+            create_params = {
+                "image": self.image,
+                "language": "python",
+                "resources": {"cpu": self.cpu, "memory": self.memory_gib},
+            }
 
         sandbox = self._client().create(
             create_params,

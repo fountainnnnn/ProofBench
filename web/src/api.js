@@ -180,15 +180,114 @@ export async function saveScraperOrder(order) {
   }));
 }
 
+/* One turn searches official documentation, proposes a connector, and validates
+   it before answering. The answer itself arrives whole, but the research in
+   front of it takes long enough to need narrating, so the stream carries the
+   steps and then the finished turn. The status call is a configuration check,
+   so opening Settings never starts an agent turn. */
+export async function getIntegrationAgentStatus() {
+  const res = await apiFetch(`${BASE}/api/settings/integration-agent`);
+  return jsonOrThrow(res, "Could not load the integration agent status.");
+}
+
+export async function sendIntegrationAgentMessage(message, history = []) {
+  const res = await apiFetch(`${BASE}/api/settings/integration-agent/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, history }),
+  });
+  return jsonOrThrow(res, "The integration agent could not answer that.");
+}
+
+/* EventSource cannot POST, so the stream is read off the fetch body directly.
+   `onProgress` is called for each research step; the promise resolves with the
+   finished turn. Falls back to the plain endpoint wherever streaming is not
+   available (no ReadableStream, or a proxy that buffered the response). */
+export async function streamIntegrationAgentMessage(message, history = [], onProgress) {
+  let res;
+  try {
+    res = await apiFetch(`${BASE}/api/settings/integration-agent/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, history }),
+    });
+  } catch {
+    return sendIntegrationAgentMessage(message, history);
+  }
+  if (!res.ok || !res.body?.getReader) {
+    if (res.status === 404 || !res.body?.getReader) {
+      return sendIntegrationAgentMessage(message, history);
+    }
+    return jsonOrThrow(res, "The integration agent could not answer that.");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  let failure = "";
+
+  /* SSE frames are separated by a blank line; a frame may straddle two chunks,
+     so only whole frames are consumed and the remainder stays buffered. */
+  const consume = (frame) => {
+    let event = "message";
+    const data = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trim());
+    }
+    if (data.length === 0) return;
+    let payload;
+    try {
+      payload = JSON.parse(data.join("\n"));
+    } catch {
+      return;
+    }
+    if (event === "progress") onProgress?.(payload);
+    else if (event === "result") result = payload;
+    else if (event === "error") failure = String(payload || "");
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split;
+    while ((split = buffer.indexOf("\n\n")) !== -1) {
+      consume(buffer.slice(0, split));
+      buffer = buffer.slice(split + 2);
+    }
+  }
+  if (buffer.trim()) consume(buffer);
+
+  if (failure) throw new Error(failure);
+  if (!result) throw new Error("The integration agent could not answer that.");
+  return result;
+}
+
 /* Vendor marks for candidates this deployment has benchmarked, as data URIs.
    The bundled manifest can only cover tools that existed when the frontend was
    built, so anything benchmarked since is resolved by the backend instead. */
 export async function fetchBrandLogos(names) {
   const wanted = [...new Set((names || []).filter(Boolean))];
   if (wanted.length === 0) return {};
-  const res = await apiFetch(`${BASE}/api/brand?names=${encodeURIComponent(wanted.join(","))}`);
-  const data = await jsonOrThrow(res);
-  return data?.logos && typeof data.logos === "object" ? data.logos : {};
+  /* The endpoint deliberately caps one request at 24 names. Sending the whole
+     leaderboard at once used to leave everything after name 24 unprocessed,
+     then the caller mistook those omissions for genuine misses and cached
+     monograms for a day. Every requested name must reach the resolver. */
+  const batches = [];
+  for (let index = 0; index < wanted.length; index += 24) {
+    batches.push(wanted.slice(index, index + 24));
+  }
+  const responses = await Promise.all(
+    batches.map(async (batch) => {
+      const res = await apiFetch(`${BASE}/api/brand?names=${encodeURIComponent(batch.join(","))}`);
+      const data = await jsonOrThrow(res);
+      return data?.logos && typeof data.logos === "object" ? data.logos : {};
+    }),
+  );
+  return Object.assign({}, ...responses);
 }
 
 export async function createSession() {
@@ -252,4 +351,30 @@ export async function deleteProviderKey(env) {
     method: "DELETE",
   });
   return jsonOrThrow(res, "Could not remove this provider credential.");
+}
+
+/* Deliberately a POST for a read: the server accepts the session cookie only on
+   GET/HEAD, so POSTing forces a real credential on the one endpoint that hands
+   back a secret. Never cache or log the result. */
+export async function revealProviderKey(env) {
+  const res = await apiFetch(`${BASE}/api/settings/provider-keys/reveal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ env }),
+  });
+  return jsonOrThrow(res, "Could not read this provider credential.");
+}
+
+export async function getSettingsDefaults() {
+  const res = await apiFetch(`${BASE}/api/settings/defaults`);
+  return jsonOrThrow(res, "Could not load the default providers.");
+}
+
+export async function saveSettingsDefaults(changes) {
+  const res = await apiFetch(`${BASE}/api/settings/defaults`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  return jsonOrThrow(res, "Could not save the default providers.");
 }

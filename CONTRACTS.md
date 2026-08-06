@@ -84,6 +84,9 @@ POST   /api/settings/provider-keys       insecure-dev dual opt-in only
 DELETE /api/settings/provider-keys/{env} insecure-dev dual opt-in only
 GET    /api/settings/scrapers            ordered provider chain + readiness
 PUT    /api/settings/scrapers            persist tenant-scoped provider order
+GET    /api/settings/integration-agent   mandatory LLM + scraper readiness
+POST   /api/settings/integration-agent/messages
+                                         bounded provider research proposal
 GET    /api/brand                        cached marks for owned candidate names
 ```
 
@@ -99,7 +102,7 @@ specific operation/run and cannot terminate or overwrite a newer one.
 
 ```text
 event: delta      data: {"text":"..."}
-event: artifact   data: {"kind":"spec|trace|sandbox_log|results|report", ...}
+event: artifact   data: {"kind":"spec|trace|sandbox_log|sandbox_file|results|report", ...}
 event: state      data: {"phase":"...","candidates":{...}}
 event: error      data: {"message":"..."}
 event: done       data: {}
@@ -107,6 +110,10 @@ event: done       data: {}
 
 Persisted and emitted data is redacted before the write. Events never contain
 bearer tokens, provider credentials, private host paths, or unbounded strings.
+`sandbox_log` records bounded command/output lines. `sandbox_file` records a
+bounded, redacted source snapshot (`sandbox`, `path`, `language`, `revision`,
+`phase`, and `content`) so the execution record remains inspectable after the
+disposable sandbox has been destroyed.
 
 ## 5. Benchmark specifications and provenance
 
@@ -170,7 +177,37 @@ OpenRouter, then OpenAI, then DeepSeek; adapter generation uses DeepSeek, then
 OpenRouter. `OPENROUTER_API_KEY` alone therefore satisfies every capability.
 `GET /api/providers` reports the resolved provider per capability from
 configuration only and issues no provider request. A run is blocked only when an
-essential capability has no configured provider.
+essential capability has no configured provider. It also reports the resolved
+`supervision` identity per supervised capability (`orchestration`, `assessment`):
+the primary producer's `(provider, model)`, the distinct reviewer's, and whether
+review is genuinely independent — never a credential value.
+
+Supervision is a distinct capability, not a vendor. Checkpoints that correct a
+model's own output — intake spec recovery, shortlist elimination, and the
+assessment self-check — are served by a `(provider, model)` identity that
+DIFFERS from the identity that ACTUALLY produced the artifact, because a model
+reviewing its own answer carries correlated bias and laziness. Independence is
+measured against the real producer, not merely the configured primary: after a
+provider fails over, the producer that actually answered is excluded, and the
+assessment self-check — whose batch does not record a per-row producer — excludes
+every provider in the assessment fallback chain, preferring no supervisor over a
+falsely-independent one. `SUPERVISOR_PROVIDER` pins the reviewer's provider and
+`SUPERVISOR_MODEL` its model; the same provider may supervise only when
+`SUPERVISOR_MODEL` names a genuinely different model. `SUPERVISOR_MODEL` without a
+provider pin is applied only to the primary producer's own provider (a model id
+belongs to one API), and only when that yields a distinct identity; otherwise a
+provider pin is required. An identity equal to the primary's is never resolved. A supervisor makes exactly one toolless,
+temperature-0 correction call, receives only the flawed or absent artifact, the
+exact deterministic violations, the output contract, and read-only context, and
+its reply is accepted only through the same parser/normalizer/validator the
+primary path uses — no tools, no retries, no supervisor of a supervisor. Trace
+artifacts are bounded and redacted, and a supervisor failure erases no evidence.
+When no distinct supervisor is configured, a correction is skipped honestly and
+the affected checkpoint publishes an actionable failure or a caveat rather than
+present same-identity review as independent; deterministic scoring never depends
+on supervisor availability. No model, primary or supervisor, is ever placed in
+deterministic evaluation, result collation, credentials, sandbox entitlements,
+authentication, quota, or provenance.
 
 Documentation retrieval uses the tenant's ordered Scrape.do, Oxylabs, and
 Bright Data chain, skipping providers without the required capability
@@ -182,6 +219,17 @@ with a freshly pinned client, no process proxies, no private, loopback,
 link-local, or metadata addresses, and hard limits on redirect count, elapsed
 time, response bytes, permitted content types, and returned text length.
 Provider error text is never echoed to the caller.
+
+The Settings integration agent is available only when one adapter-generation
+LLM and one documentation provider capable of both search and scraping are
+configured. The bounded direct-fetch fallback does not satisfy this gate. Each
+turn may carry at most twelve bounded browser-held conversation entries, search
+and scrape public HTTPS documentation, and ask the selected code-generation
+provider for a connector proposal. It does not edit provider
+credentials, install dependencies, write application source, activate a
+connector, or execute generated code. Sources returned to the browser are the
+server-collected HTTPS sources, never model-invented citations. Provider and
+scraper secrets are excluded from prompts and responses.
 
 ## 6. Deterministic evaluator
 
@@ -201,6 +249,10 @@ exactly `invoice_number`, `date`, `vendor`, and `total`, in that order.
 
 - Every candidate attempt uses a disposable sandbox which is destroyed on
   success, failure, timeout, or cancellation.
+- Candidate sandboxes request at least 2 CPUs and 4 GiB of memory so supported
+  CPU OCR adapters can load and finish within an operationally useful window.
+  `PROOFBENCH_SANDBOX_CPU` and `PROOFBENCH_SANDBOX_MEMORY_GIB` may raise these
+  allocations up to 16 CPUs and 64 GiB but cannot lower the supported baseline.
 - Tools operate through run-scoped capabilities: registered candidate IDs,
   document IDs, result path, ground-truth path, and trusted adapter identity.
 - Credential entitlements are exact and server owned. User-controlled names,

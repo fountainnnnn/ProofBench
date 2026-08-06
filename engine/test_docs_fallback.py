@@ -76,6 +76,17 @@ def fetch(url):
     return docs_intel.fetch_documentation(url, resolver=public_resolver)
 
 
+@pytest.fixture(autouse=True)
+def _no_local_fallback(monkeypatch):
+    """These tests exercise the paid-provider chain and its direct-fetch tail, so
+    the always-on local fallback is off by default. It has dedicated coverage in
+    test_scraper_chain.py where it is turned on deliberately."""
+    from engine import selfhosted
+
+    monkeypatch.delenv("PROOFBENCH_INSECURE_DEV", raising=False)
+    selfhosted.reset_cache()
+
+
 @pytest.fixture
 def offline_dns(monkeypatch):
     """Apply the real URL policy against the controlled resolver, not live DNS."""

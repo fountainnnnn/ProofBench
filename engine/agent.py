@@ -227,11 +227,16 @@ Your job in this conversation:
    requirement strike is claimed against them, so their violates line is supplied for
    you and you may omit it. kind "violation" is for a candidate a stated constraint
    rules out, and then violates must name that constraint.
-   constraints records only what the user actually stated, in their own terms:
-   platforms they already run in "stack", hard requirements in "must_have", spend or
-   scale in "budget", hosting or residency requirements in "deployment". Omit
-   anything they did not state. Never invent a constraint: this object is the
-   audit record of what the shortlist was selected against.
+    constraints records only what the user actually stated, in their own terms:
+    platforms they already run in "stack", hard requirements in "must_have", spend or
+    scale in "budget", hosting or residency requirements in "deployment". Omit
+    anything they did not state. Never invent a constraint: this object is the
+    audit record of what the shortlist was selected against.
+   A self-hosted runner, agent, worker, gateway, or connector is a feature of a
+   candidate, so record that phrase in "must_have". It does NOT mean the product,
+   platform, service, or solution itself must be self-hosted. Set "deployment" to
+   self-hosted or on-premises only when the user explicitly applies that requirement
+   to the overall product, platform, service, solution, system, tool, or deployment.
 5. Every candidate must have a real docs_url. A URL returned by web_search is enough on
    its own — scrape_docs only enriches it, and is never required to propose the spec.
    Do not use the built-in OCR candidates unless the user explicitly asks for OCR.
@@ -385,6 +390,11 @@ implied. Never invent a requirement, a vendor, a product, a budget, or a prefere
 user did not give: a detail you add becomes something the next agent researches instead of
 their actual question. If the user was vague, the brief stays vague.
 
+A self-hosted runner, agent, worker, gateway, or connector is a feature requirement and
+belongs in "must_have"; it does not make the overall product deployment self-hosted. Use
+"deployment" for self-hosted or on-premises only when the user explicitly applies it to
+the product, platform, service, solution, system, tool, or deployment as a whole.
+
 Between what they stated and what they left open sits what they clearly meant. In
 "inferred_context", infer the context their wording actually supports: who will use this,
 what environment it runs in, what scale it operates at, what deliverable they are working
@@ -449,6 +459,41 @@ what you already gathered: either propose the benchmark spec as a fenced ```json
 in the documented shape, or, if something required is genuinely still unknown, summarise
 your findings so far and ask the single most important question. Do not say you are
 going in circles and do not ask the user to rephrase."""
+
+# The exact spec contract handed to the distinct supervisor when the primary
+# researched a turn but returned prose instead of a fenced spec. It restates the
+# two documented shapes verbatim so the supervisor produces exactly what
+# _extract_spec/_normalize_intake_spec will accept — nothing wider.
+SPEC_RECOVERY_CONTRACT_TOOL_ASSESSMENT = """Return ONLY a single fenced ```json block, no prose before or after, with EXACTLY this shape:
+{"benchmark_type": "tool_assessment",
+ "category": str,
+ "objective": str,
+ "constraints": {"stack": [str], "must_have": [str], "budget": str, "deployment": str},
+ "candidates": [{"name": slug, "display_name": str, "docs_url": str,
+                 "pricing_url": str, "kind": "local_tool"|"hosted_api"|"saas",
+                 "role": "product"|"build_component"}],
+ "excluded": [{"name": slug, "display_name": str,
+               "kind": "violation"|"not_assessed", "violates": str}]}
+Every candidate needs a real docs_url. Include at least one role "build_component". constraints records only what the user actually stated; omit what they did not. excluded is optional. Draw candidates and URLs only from the conversation and gathered findings — invent nothing."""
+
+SPEC_RECOVERY_CONTRACT_EXTRACTION = """Return ONLY a single fenced ```json block, no prose before or after, with EXACTLY this shape:
+{"benchmark_type": "extraction",
+ "category": str,
+ "fields": ["invoice_number", "date", "vendor", "total"],
+ "candidates": [{"name": slug, "docs_url": str, "pricing_url": str,
+                 "kind": "local_tool"|"hosted_api", "use_fallback": bool}]}
+Draw candidates and URLs only from the conversation and gathered findings — invent nothing."""
+
+# Shown when a researched turn owed the user a spec, the primary returned prose,
+# and no distinct supervisor could recover one. It is honest and actionable — it
+# never presents the shortlist prose as if the benchmark were finished.
+SPEC_RECOVERY_UNAVAILABLE = (
+    "I researched candidates for this but did not produce a runnable benchmark spec, "
+    "and no independent supervisor model is configured to correct that (set "
+    "SUPERVISOR_PROVIDER or SUPERVISOR_MODEL to a model distinct from the orchestrator). "
+    "Nothing was benchmarked. Tell me which of the candidates above to compare — or "
+    "confirm the direction — and I will propose the spec."
+)
 
 # Extraction wording in the user's own words; never used to fill the spec.
 _EXTRACTION_INTENT = re.compile(
@@ -874,9 +919,29 @@ def _spec_role(spec: object, name: str) -> str:
 # model-authored reaches the server unclamped.
 _CONSTRAINT_LIST_KEYS = ("stack", "must_have")
 _CONSTRAINT_TEXT_KEYS = ("budget", "deployment")
+_SELF_HOSTED_COMPONENT_RE = re.compile(
+    r"\bself[- ]hosted\s+(?:(?:ci|cd|ci/cd)\s+)?"
+    r"(?:runner|agent|worker|gateway|connector)s?\b",
+    re.IGNORECASE,
+)
+_OVERALL_SELF_HOSTED_RE = re.compile(
+    r"(?:"
+    r"\bself[- ]hosted\s+(?:product|platform|service|solution|system|tool|deployment)\b"
+    r"|"
+    r"\b(?:product|platform|service|solution|system|tool|deployment)\b"
+    r"(?:\s+itself)?\s+(?:must|needs?\s+to|has\s+to|should)\s+"
+    r"(?:be\s+|run\s+|deploy(?:ed)?\s+)?"
+    r"(?:self[- ]hosted|on[- ]prem(?:ises)?)\b"
+    r"|"
+    r"\b(?:must|needs?\s+to|has\s+to|should)\s+"
+    r"(?:be\s+|run\s+|deploy(?:ed)?\s+)"
+    r"(?:self[- ]hosted|on[- ]prem(?:ises)?)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
-def _normalize_intake_constraints(raw: object) -> dict:
+def _normalize_intake_constraints(raw: object, request_text: str = "") -> dict:
     """Bound the user's stated constraints; absent stays absent, never invented."""
     if not isinstance(raw, dict):
         return {}
@@ -895,6 +960,16 @@ def _normalize_intake_constraints(raw: object) -> dict:
         value = str(raw.get(key) or "").strip()[:300]
         if value:
             normalized[key] = value
+    component = _SELF_HOSTED_COMPONENT_RE.search(request_text or "")
+    deployment = str(normalized.get("deployment") or "")
+    if (component and re.search(r"\b(?:self[- ]hosted|on[- ]prem(?:ises)?)\b",
+                                deployment, re.IGNORECASE)
+            and not _OVERALL_SELF_HOSTED_RE.search(request_text or "")):
+        normalized.pop("deployment", None)
+        must_have = normalized.setdefault("must_have", [])
+        feature = component.group(0).strip()
+        if feature and feature.casefold() not in {item.casefold() for item in must_have}:
+            must_have.append(feature[:120])
     return normalized
 
 
@@ -902,7 +977,7 @@ _BRIEF_KEYS = ("category", "objective", "constraints", "inferred_context",
                "unknowns", "search_angles", "improved_prompt", "complete")
 
 
-def _build_prompt_brief(content: str) -> dict | None:
+def _build_prompt_brief(content: str, request_text: str = "") -> dict | None:
     """Validate and bound one model-authored research brief, or return None.
 
     The brief is prepended to the intake system prompt, so anything it says
@@ -947,7 +1022,7 @@ def _build_prompt_brief(content: str) -> dict | None:
     return {
         "category": category,
         "objective": objective,
-        "constraints": _normalize_intake_constraints(value.get("constraints")),
+        "constraints": _normalize_intake_constraints(value.get("constraints"), request_text),
         "inferred_context": inferred,
         "unknowns": unknowns,
         "search_angles": angles,
@@ -1000,7 +1075,9 @@ def _normalize_intake_excluded(raw: object, shortlisted: set[str]) -> list[dict]
     return normalized
 
 
-def _normalize_intake_spec(spec: object, dataset_available: bool) -> dict | None:
+def _normalize_intake_spec(
+    spec: object, dataset_available: bool, request_text: str = ""
+) -> dict | None:
     """Return only a spec the strict run schema can accept, or no spec at all."""
     if not isinstance(spec, dict) or not isinstance(spec.get("candidates"), list):
         return None
@@ -1059,7 +1136,7 @@ def _normalize_intake_spec(spec: object, dataset_available: bool) -> dict | None
             return None
         normalized_spec = {
             "benchmark_type": declared, "category": category, "objective": objective,
-            "constraints": _normalize_intake_constraints(spec.get("constraints")),
+            "constraints": _normalize_intake_constraints(spec.get("constraints"), request_text),
             "candidates": normalized_candidates}
         excluded = _normalize_intake_excluded(spec.get("excluded"), seen)
         if excluded:
@@ -1140,27 +1217,46 @@ def _orchestrator_model(env: dict | None = None) -> str:
     return provider_model(_orchestrator_provider(env), env)
 
 
-def _orchestrator_complete(env: dict | None = None, **kwargs):
+def _orchestrator_complete(env: dict | None = None, *, _producer_sink=None, **kwargs):
     """One orchestration completion, failing over across configured providers.
 
     Binding the whole conversation to the single most-preferred provider meant a
     provider being rate limited ended the turn outright, even when the
     deployment had another working provider configured.
+
+    ``_producer_sink`` — when a list is passed — receives the ``ModelIdentity``
+    that ACTUALLY produced the returned response. After failover that is not the
+    configured primary, and independence has to be measured against who really
+    produced the artifact, so the caller threads this to supervisor resolution.
     """
-    from engine.llm_clients import capability_providers, chat_client, provider_model
+    from engine.llm_clients import (
+        ModelIdentity,
+        capability_providers,
+        chat_client,
+        provider_model,
+    )
 
     env = os.environ if env is None else env
+
+    def _note(provider: str):
+        if _producer_sink is not None:
+            _producer_sink.append(ModelIdentity(provider, provider_model(provider, env)))
+
     # The first attempt goes through the module-level helpers, so a pinned
     # provider and the historical missing-key KeyError both behave as before.
     try:
-        return _orchestrator_client(env).chat.completions.create(
+        response = _orchestrator_client(env).chat.completions.create(
             model=_orchestrator_model(env), **kwargs)
+        _note(_orchestrator_provider(env))
+        return response
     except Exception as first_error:
         failure = first_error
     for provider in capability_providers("orchestration", env)[1:]:
         try:
-            return chat_client(provider, env).chat.completions.create(
+            response = chat_client(provider, env).chat.completions.create(
                 model=provider_model(provider, env), **kwargs)
+            _note(provider)
+            return response
         except Exception as exc:
             print(f"[agent] orchestration provider {provider} failed: {type(exc).__name__}",
                   file=sys.stderr)
@@ -1197,6 +1293,15 @@ class Orchestrator:
         # Every web_search query this turn dispatched, so the discovery gate can
         # tell which query shapes the model already covered on its own.
         self._turn_search_queries: list[str] = []
+        # The (provider, model) identities that ACTUALLY produced this turn's
+        # orchestration completions — after failover these are not the configured
+        # primary. A supervised review of a model's own output must differ from
+        # every one of these, not merely from the configured primary, or a
+        # fallback producer could end up reviewing itself. ``_last`` is the
+        # producer of the most recent completion (the artifact spec recovery
+        # corrects); the set is every producer that fed the drafted shortlist.
+        self._orchestration_producers: set = set()
+        self._last_orchestration_producer = None
         os.makedirs(run_dir, exist_ok=True)
         self.results_path = os.path.join(run_dir, "results.jsonl")
         self.provider_env = dict(provider_env or {})
@@ -1535,6 +1640,29 @@ class Orchestrator:
         named = {name for name in BUILTIN_ADAPTER_NAMES if _compact(name) in compact}
         return len(named) >= 2
 
+    def _orchestration_complete(self, **kwargs):
+        """One orchestration completion, recording who ACTUALLY produced it.
+
+        Wraps the module-level failover helper and threads the real producer
+        identity into ``_orchestration_producers`` (every producer this turn) and
+        ``_last_orchestration_producer`` (this completion's), so a later
+        supervised review is guaranteed distinct from the model that produced the
+        artifact even when failover moved off the configured primary. When the
+        helper reports nothing — e.g. a test double that ignores the sink — the
+        configured primary is assumed, which is exactly the non-failover case.
+        """
+        from engine.llm_clients import primary_identity
+
+        sink: list = []
+        response = _orchestrator_complete(
+            self.runtime_env, _producer_sink=sink, **kwargs)
+        producer = sink[-1] if sink else primary_identity(
+            "orchestration", self.runtime_env)
+        if producer is not None:
+            self._last_orchestration_producer = producer
+            self._orchestration_producers.add(producer)
+        return response
+
     def chat(self, user_message: str) -> None:
         """INTAKE/DISCOVERY conversation; emits deltas and eventually a spec artifact."""
         system_prompt = intake_system(self.dataset_available)
@@ -1595,6 +1723,10 @@ class Orchestrator:
         # Per turn for the same reason: the gate asks what this turn's sweep
         # covered, not what some earlier turn happened to search for.
         self._turn_search_queries = []
+        # Per turn as well: independence is measured against the models that
+        # produced THIS turn's shortlist and prose, not an earlier turn's.
+        self._orchestration_producers = set()
+        self._last_orchestration_producer = None
 
         # Bounded intake loop. Research rounds spend the same budget as reply
         # rounds, so a thorough agent used to exhaust it mid-search and dead-end
@@ -1610,7 +1742,7 @@ class Orchestrator:
                 kwargs["tools"] = schemas
             if final_round:
                 self._messages.append({"role": "user", "content": INTAKE_WRAP_UP_NUDGE})
-            resp = _orchestrator_complete(self.runtime_env, **kwargs)
+            resp = self._orchestration_complete(**kwargs)
             msg = resp.choices[0].message
 
             if msg.tool_calls:
@@ -1662,6 +1794,19 @@ class Orchestrator:
                 self._messages.append({"role": "user", "content": SPEC_RETRY_NUDGE})
                 continue
             self._messages.append({"role": "assistant", "content": text})
+            # The critical recovery: a turn that researched candidates but returned
+            # prose owes the user a spec, not a shortlist dressed up as a finished
+            # benchmark. The same model just declined to emit one, so asking it
+            # again is the correlated-laziness trap; a DISTINCT supervisor is asked
+            # once instead, and only its parser-validated spec is accepted.
+            if spec is None and self._should_recover_spec(text):
+                recovered = self._recover_spec_via_supervisor(text)
+                if recovered is None:
+                    # No distinct supervisor, or it produced nothing valid. Say so
+                    # honestly and actionably rather than present the prose as done.
+                    self._delta(SPEC_RECOVERY_UNAVAILABLE)
+                    return
+                spec = recovered
             self._delta(text)
             if spec:
                 # Both gates run before the elimination pass, so anything they
@@ -1702,7 +1847,7 @@ class Orchestrator:
                           {"role": "user", "content": user_message}],
                 temperature=0,
             )
-            brief = _build_prompt_brief(resp.choices[0].message.content)
+            brief = _build_prompt_brief(resp.choices[0].message.content, user_message)
             if brief is None:
                 raise ValueError("brief could not be parsed")
         except _RunCancelled:
@@ -1779,7 +1924,110 @@ class Orchestrator:
             spec = json.loads(_strip_json_comments_and_trailing_commas(m.group(1)))
         except json.JSONDecodeError:
             return None
-        return _normalize_intake_spec(spec, self.dataset_available)
+        request_text = "\n".join(
+            str(message.get("content") or "")
+            for message in self._messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        )
+        return _normalize_intake_spec(spec, self.dataset_available, request_text)
+
+    def _should_recover_spec(self, text: str) -> bool:
+        """A researched turn that owed a spec but returned prose, not a question.
+
+        The recovery exists for exactly one failure: after web research the
+        primary describes a shortlist in prose instead of emitting the fenced
+        spec, and the turn would otherwise end presenting that shortlist as if it
+        were a finished benchmark. A turn that ran no web search is an ordinary
+        conversational reply, and a reply that ends in a question is a genuine
+        clarification — both are left untouched so the user still gets them
+        verbatim rather than an unnecessary supervisor round.
+        """
+        if not self._turn_search_queries:
+            return False
+        stripped = (text or "").strip()
+        return bool(stripped) and not stripped.endswith("?")
+
+    def _recover_spec_via_supervisor(self, assistant_text: str) -> dict | None:
+        """One distinct-model attempt to turn a researched turn into a valid spec.
+
+        Deterministic code has already established the concrete violation — the
+        reply carried no spec the parser accepts — so the supervisor receives
+        that violation, the exact spec contract, the prose to correct, and the
+        conversation and findings it may draw from. Its reply is accepted ONLY
+        through the same _extract_spec/_normalize_intake_spec the primary path
+        uses, with no new searches and exactly one attempt. Returns the
+        normalized spec, or None when no distinct supervisor is configured or its
+        reply does not validate.
+        """
+        from engine import supervisor
+
+        contract = (SPEC_RECOVERY_CONTRACT_EXTRACTION if self.dataset_available
+                    else SPEC_RECOVERY_CONTRACT_TOOL_ASSESSMENT)
+        conversation = "\n".join(
+            f"{message.get('role')}: {message.get('content')}"
+            for message in self._messages
+            if isinstance(message, dict)
+            and message.get("role") in ("user", "assistant")
+            and isinstance(message.get("content"), str)
+            and message.get("content")
+        )
+        digest = _findings_digest(self.findings)
+        context = f"{conversation}\n\n{digest}" if digest else conversation
+        request = supervisor.SupervisionRequest(
+            task="spec_recovery",
+            contract=contract,
+            violations=[
+                "the reply completed a researched turn without a fenced json "
+                "benchmark spec, so no benchmark could be run",
+            ],
+            artifact=assistant_text,
+            context=context,
+        )
+        outcome = supervisor.supervise(
+            request,
+            primary_capability="orchestration",
+            validate=self._extract_spec,
+            env=self.runtime_env,
+            redact=self._redact,
+            # The prose being corrected was produced by the last orchestration
+            # completion — after failover that is not the configured primary, so
+            # the supervisor must be told who actually wrote it.
+            exclude=[self._last_orchestration_producer],
+        )
+        self.emit("artifact", supervisor.trace_artifact(request, outcome))
+        if outcome.corrected and outcome.identity is not None:
+            # The recovered spec is authored by the supervisor. Any later
+            # shortlist review must exclude that identity as well as the
+            # orchestration models whose research fed the draft.
+            self._last_orchestration_producer = outcome.identity
+            self._orchestration_producers.add(outcome.identity)
+        return outcome.parsed if outcome.corrected else None
+
+    def _review_completion(self, system: str, user: str):
+        """One toolless, temperature-0 review on a DISTINCT model, or a skip.
+
+        Returns ``(content, identity)`` where ``identity`` is the supervisor
+        ``ModelIdentity`` that served the call. When no distinct supervisor is
+        configured — including when every candidate reviewer is a model that
+        actually produced this turn's shortlist — it returns ``(None, None)`` and
+        makes NO call. It never falls back to the primary orchestrator: a review
+        by the model that produced the artifact is the correlated self-review the
+        whole mechanism exists to prevent, so the honest answer is to skip and let
+        the caller keep the artifact unreviewed rather than fake independence.
+        """
+        from engine.llm_clients import chat_client, supervisor_identity
+
+        identity = supervisor_identity(
+            "orchestration", self.runtime_env,
+            exclude=self._orchestration_producers)
+        if identity is None:
+            return None, None
+        resp = chat_client(identity.provider, self.runtime_env).chat.completions.create(
+            model=identity.model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+            temperature=0)
+        return (resp.choices[0].message.content or ""), identity
 
     def _build_plan(self, metrics: dict, spec: dict) -> dict | None:
         """An architecture over the assessed components, when building is the answer.
@@ -1847,8 +2095,7 @@ class Orchestrator:
             ],
         }, indent=2)
         try:
-            resp = _orchestrator_complete(
-                self.runtime_env,
+            resp = self._orchestration_complete(
                 messages=[{"role": "system", "content": DISCOVERY_REACH_SYSTEM},
                           {"role": "user", "content": request}],
                 temperature=0,
@@ -1931,8 +2178,7 @@ class Orchestrator:
             "results": harvest_rows,
         }, indent=2)
         try:
-            resp = _orchestrator_complete(
-                self.runtime_env,
+            resp = self._orchestration_complete(
                 messages=[{"role": "system", "content": DISCOVERY_HARVEST_SYSTEM},
                           {"role": "user", "content": harvest_request}],
                 temperature=0,
@@ -1996,8 +2242,7 @@ class Orchestrator:
             "existing_candidates": [c.get("display_name") or c["name"] for c in candidates],
         }, indent=2)
         try:
-            resp = _orchestrator_complete(
-                self.runtime_env,
+            resp = self._orchestration_complete(
                 messages=[{"role": "system", "content": BUILD_PATH_SYSTEM},
                           {"role": "user", "content": request}],
                 temperature=0,
@@ -2061,15 +2306,26 @@ class Orchestrator:
             "candidates": shortlist,
         }, indent=2)
         try:
-            resp = _orchestrator_complete(
-                self.runtime_env,
-                messages=[{"role": "system", "content": SHORTLIST_REVIEW_SYSTEM},
-                          {"role": "user", "content": review_request}],
-                temperature=0,
-            )
+            # An elimination pass corrects a model-authored shortlist, so the
+            # model that drafted it is the wrong one to sit in judgement of it.
+            # When no DISTINCT supervisor is configured the correction is skipped
+            # honestly — never handed back to the orchestrator that drafted the
+            # shortlist, which would be exactly the correlated self-review this
+            # exists to prevent. The skip is a healthy optional-review outcome,
+            # not a pipeline failure, so it is traced ok and the field is kept.
+            content, reviewer = self._review_completion(
+                SHORTLIST_REVIEW_SYSTEM, review_request)
+            if reviewer is None:
+                self.emit("artifact", {
+                    "kind": "trace", "tool": "shortlist_review",
+                    "args_summary": f"{len(candidates)} candidates",
+                    "status": "ok",
+                    "detail": ("no distinct supervisor configured; the shortlist is "
+                               "kept as drafted without an independent review"),
+                })
+                return spec
             drops = _parse_shortlist_verdict(
-                resp.choices[0].message.content,
-                {c["name"] for c in candidates},
+                content, {c["name"] for c in candidates},
             )
         except _RunCancelled:
             raise
@@ -2130,11 +2386,14 @@ class Orchestrator:
         prior = [item for item in (spec.get("excluded") or [])
                  if isinstance(item, dict) and item.get("name") not in dropped_names]
         reviewed["excluded"] = prior + excluded
+        # Say who reviewed only when it was genuinely independent; a same-identity
+        # fallback review is never dressed up as one.
+        reviewer_note = f" (independent supervisor {reviewer.label()})" if reviewer else ""
         self.emit("artifact", {
             "kind": "trace", "tool": "shortlist_review",
             "args_summary": f"{len(candidates)} candidates",
             "status": "ok",
-            "detail": f"{len(excluded)} dropped against stated constraints",
+            "detail": f"{len(excluded)} dropped against stated constraints{reviewer_note}",
         })
         notes = "\n".join(
             f"- {item['display_name']}: {item['violates']}" for item in excluded
@@ -2446,6 +2705,10 @@ class Orchestrator:
             surviving_flags = outcome["flags"]
             detail = (f"repaired {len(outcome['repaired'])}; "
                       f"{len(surviving_flags)} flags remain")
+            # Name the independent reviewer when one actually ran, never implying
+            # independence the deployment did not configure.
+            if outcome.get("supervisor"):
+                detail = f"{detail} (independent supervisor {outcome['supervisor']})"
             self.emit("artifact", {
                 "kind": "trace",
                 "tool": "self_check",
@@ -2581,6 +2844,8 @@ class Orchestrator:
             handle = self.pool.acquire(name)
             self._handle_to_candidate[handle.id] = name
             try:
+                self._log(handle.label, "sandbox created", "provisioning")
+                self._sandbox_file(handle.label, candidate.adapter_code, revision=1)
                 self._upload_dataset(handle)
                 self._state("BUILDING", {name: "building"})
                 self._build(handle, candidate)
@@ -2595,6 +2860,12 @@ class Orchestrator:
                         self._fail_candidate(name, self._validation_reason(candidate.name))
                         return
                     candidate = fb
+                    self._sandbox_file(
+                        handle.label,
+                        candidate.adapter_code,
+                        revision=1,
+                        path="fallback_adapter.py",
+                    )
                     self._build(handle, candidate)
                     if not self._validate(handle, candidate):
                         self._fail_candidate(name, self._validation_reason(candidate.name))
@@ -2603,7 +2874,9 @@ class Orchestrator:
                 self._run_dataset(handle, candidate)
                 self._state("RUNNING", {name: "done"})
             finally:
+                self._log(handle.label, "deleting disposable sandbox", "cleanup")
                 self.pool.release(handle)
+                self._log(handle.label, "sandbox deleted; execution record retained", "cleanup")
         except _RunCancelled:
             raise
         except Exception as e:
@@ -2698,7 +2971,9 @@ class Orchestrator:
 
     def _probe_adapter(self, handle, candidate: Candidate, label: str) -> tuple[bool, str]:
         """Run one validation probe and log its outcome. Returns (ok, raw output)."""
-        code = self._adapter_code(candidate, "images/" + self._first_image())
+        image_path = "images/" + self._first_image()
+        self._log(handle.label, f"$ python adapter.py {image_path}  # {label}", "validating")
+        code = self._adapter_code(candidate, image_path)
         out = self.pool.run_python(handle, code, timeout=180)
         ok = self._collate_probe(out)
         self._log(handle.label, f"{label}: " + ("ok" if ok else "FAILED"), "validating")
@@ -2729,6 +3004,7 @@ class Orchestrator:
             if repaired is None:
                 break
             candidate.adapter_code = repaired
+            self._sandbox_file(handle.label, repaired, revision=attempt + 1)
             candidate.setup_complexity = min(5, candidate.setup_complexity + 1)
             ok, out = self._probe_adapter(handle, candidate, f"repair attempt {attempt}")
             if ok:
@@ -2762,6 +3038,7 @@ class Orchestrator:
             for image in images:
                 self._check_cancelled()
                 relative = f"images/{image}"
+                self._log(handle.label, f"$ python adapter.py {relative}", "running")
                 out = self.pool.run_python(
                     handle, self._adapter_code(candidate, relative), timeout=180,
                 )
@@ -2769,6 +3046,11 @@ class Orchestrator:
                 self._log(handle.label, f"ran {relative}", "running")
             return
         self._check_cancelled()
+        self._log(
+            handle.label,
+            f"$ python adapter.py --batch {len(images)} images",
+            "running",
+        )
         out = self.pool.run_python(
             handle, self._adapter_batch_code(candidate, images),
             timeout=max(180, 180 * len(images)),
@@ -3028,3 +3310,25 @@ for _pb_doc_id, _pb_image in {documents!r}:
     def _log(self, sandbox: str, line: str, phase: str) -> None:
         self.emit("artifact", {"kind": "sandbox_log", "sandbox": sandbox,
                                "line": self._redact(line)[:300], "phase": phase})
+
+    def _sandbox_file(
+        self,
+        sandbox: str,
+        content: str,
+        revision: int,
+        path: str = "adapter.py",
+    ) -> None:
+        """Persist the adapter source as durable, redacted execution evidence."""
+        cleaned = self._redact(content)
+        limit = 12_000
+        if len(cleaned) > limit:
+            cleaned = cleaned[:limit] + f"\n# ... truncated {len(cleaned) - limit} characters"
+        self.emit("artifact", {
+            "kind": "sandbox_file",
+            "sandbox": sandbox,
+            "path": path,
+            "language": "python",
+            "revision": revision,
+            "phase": "building" if revision == 1 else "validating",
+            "content": cleaned,
+        })

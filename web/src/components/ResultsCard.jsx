@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Children, cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,6 +7,7 @@ import { BasisTag, BTN_PRIMARY, BTN_SECONDARY, MARKDOWN_HEADINGS_IN_REPORT, PANE
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
 import StatusIcon from "./StatusIcon.jsx";
 import { safeHttpUrl } from "../linkSafety.js";
+import { repairLegacyReportTables, splitReportFindings } from "../reportMarkdown.js";
 import {
   buildCanonicalRows,
   buildDecision,
@@ -183,6 +184,224 @@ function SafeMarkdownLink({ href, children }) {
   return safeHref ? (
     <a href={safeHref} target="_blank" rel="noreferrer">{children}</a>
   ) : <span>{children}</span>;
+}
+
+const REPORT_STATUS = {
+  passed: { key: "passed", label: "Verified", tone: "ok", icon: "check" },
+  failed: { key: "failed", label: "Verification failed", tone: "danger", icon: "x" },
+  not_implementable: {
+    key: "not_implementable",
+    label: "Not implementable",
+    tone: "warn",
+    icon: "slash",
+  },
+  not_applicable: {
+    key: "not_applicable",
+    label: "Not applicable",
+    tone: "muted",
+    icon: "minus",
+  },
+};
+
+const REPORT_STATUS_ORDER = ["passed", "failed", "not_implementable", "not_applicable"];
+
+function reportNodeText(node) {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reportNodeText).join("");
+  if (isValidElement(node)) return reportNodeText(node.props.children);
+  return "";
+}
+
+function reportCellStatus(header, value) {
+  const column = String(header || "").trim().toLowerCase();
+  const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (column === "verification") {
+    return REPORT_STATUS[normalized] || null;
+  }
+  if (column === "pricing" && ["n/a", "not_applicable", "not_applicable."].includes(normalized)) {
+    return REPORT_STATUS.not_applicable;
+  }
+  return null;
+}
+
+function ReportStatusIcon({ status, compact = false }) {
+  if (status.icon === "slash") {
+    return (
+      <span
+        role="img"
+        aria-label={status.label}
+        title={status.label}
+        className={`inline-flex shrink-0 align-middle items-center justify-center ${
+          compact ? "h-4 w-4" : "h-5 w-5"
+        }`}
+      >
+        <img
+          src="/status/not-implementable-v2.png"
+          alt=""
+          width={compact ? 16 : 20}
+          height={compact ? 16 : 20}
+          className="block h-full w-full"
+        />
+      </span>
+    );
+  }
+
+  const tone = {
+    ok: "bg-[var(--ok-tint)] text-[var(--ok)]",
+    danger: "bg-[var(--danger-tint)] text-[var(--danger)]",
+    warn: "bg-[var(--warn-tint)] text-[var(--warn)]",
+    muted: "bg-[var(--surface-2)] text-[var(--ink-3)]",
+  }[status.tone];
+  return (
+    <span
+      role="img"
+      aria-label={status.label}
+      title={status.label}
+      className={`inline-flex shrink-0 align-middle items-center justify-center rounded-full ${tone} ${
+        compact ? "h-4 w-4" : "h-5 w-5"
+      }`}
+    >
+      <svg
+        aria-hidden="true"
+        width={compact ? 10 : 12}
+        height={compact ? 10 : 12}
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="block"
+      >
+        {status.icon === "check" && <path d="m3.5 8.25 2.75 2.75 6.25-6.25" />}
+        {status.icon === "x" && <path d="m4.5 4.5 7 7m0-7-7 7" />}
+        {status.icon === "minus" && <path d="M4 8h8" />}
+      </svg>
+    </span>
+  );
+}
+
+/* The named scroll region follows the WAI keyboard-scroll technique. The lint
+   rule does not model that exception. */
+/* eslint-disable jsx-a11y/no-noninteractive-tabindex */
+function ReportTable({ node: _node, ...props }) {
+  const tableChildren = Children.toArray(props.children);
+  const head = tableChildren.find((child) => isValidElement(child) && child.type === "thead");
+  const headRow = head
+    ? Children.toArray(head.props.children).find((child) => isValidElement(child) && child.type === "tr")
+    : null;
+  const headers = headRow
+    ? Children.toArray(headRow.props.children).map((cell) => reportNodeText(cell).trim())
+    : [];
+  const usedStatuses = new Set();
+  const enhancedChildren = tableChildren.map((group) => {
+    if (!isValidElement(group) || group.type !== "tbody") return group;
+    const rows = Children.toArray(group.props.children).map((row) => {
+      if (!isValidElement(row) || row.type !== "tr") return row;
+      const cells = Children.toArray(row.props.children).map((cell, index) => {
+        if (!isValidElement(cell) || cell.type !== "td") return cell;
+        const status = reportCellStatus(headers[index], reportNodeText(cell));
+        if (!status) return cell;
+        usedStatuses.add(status.key);
+        return cloneElement(
+          cell,
+          { ...cell.props, "data-report-status": status.key },
+          <ReportStatusIcon status={status} />
+        );
+      });
+      return cloneElement(row, row.props, cells);
+    });
+    return cloneElement(group, group.props, rows);
+  });
+  const legend = REPORT_STATUS_ORDER
+    .filter((key) => usedStatuses.has(key))
+    .map((key) => REPORT_STATUS[key]);
+
+  return (
+    <>
+      {/* A report can compare enough dimensions to exceed the reading column.
+          The table owns that overflow instead of narrowing every column or
+          making the report's headings and paragraphs scroll with it. */}
+      <div
+        role="region"
+        aria-label="Report table"
+        tabIndex={0}
+        className="max-w-full overflow-x-auto overscroll-x-contain focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+      >
+        <table {...props}>{enhancedChildren}</table>
+      </div>
+      {legend.length > 0 && (
+        <div
+          aria-label="Table status legend"
+          className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-[var(--ink-3)]"
+        >
+          {legend.map((status) => (
+            <span key={status.key} className="inline-flex items-center gap-1.5">
+              <ReportStatusIcon status={status} compact />
+              {status.label}
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+/* eslint-enable jsx-a11y/no-noninteractive-tabindex */
+
+const REPORT_MARKDOWN_COMPONENTS = {
+  a: SafeMarkdownLink,
+  table: ReportTable,
+  ...MARKDOWN_HEADINGS_IN_REPORT,
+};
+
+function ReportMarkdown({ markdown }) {
+  const repaired = repairLegacyReportTables(markdown);
+  const grouped = splitReportFindings(repaired);
+  if (!grouped) {
+    return (
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
+        {repaired}
+      </ReactMarkdown>
+    );
+  }
+
+  return (
+    <>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
+        {grouped.before}
+      </ReactMarkdown>
+      {grouped.intro && (
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
+          {grouped.intro}
+        </ReactMarkdown>
+      )}
+      <div className="mt-3" data-report-findings>
+        {grouped.findings.map((finding, index) => (
+          <section
+            key={`${finding.match(/^###\s+(.+)/)?.[1] || "finding"}-${index}`}
+            className="pb-finding-section"
+            data-report-finding
+          >
+            <span className="pb-finding-number" aria-hidden="true">
+              {index + 1}.
+            </span>
+            <div className="pb-finding-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
+                {finding}
+              </ReactMarkdown>
+            </div>
+          </section>
+        ))}
+      </div>
+      {grouped.after && (
+        <div className="mt-5">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
+            {grouped.after}
+          </ReactMarkdown>
+        </div>
+      )}
+    </>
+  );
 }
 
 /* The verdict. First thing on the card, and the only place a winner is named. */
@@ -555,10 +774,23 @@ export default function ResultsCard({
 
         {(resultState === "loading" || (resultState === "ready" && rankedRows.length > 0)) && (
           <div className="min-w-0 overflow-x-auto">
-            <table className="pb-stack-table w-full min-w-[46rem] text-[13px]">
+            <table className={`pb-stack-table w-full min-w-[46rem] text-[13px] ${isAssessment ? "table-fixed" : ""}`}>
               <caption className="sr-only">
                 Candidate comparison, ranked by evidence then score
               </caption>
+              {isAssessment && (
+                <colgroup>
+                  <col className="w-[6%]" />
+                  <col className="w-[26%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[9%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[5%]" />
+                  <col className="w-[9%]" />
+                </colgroup>
+              )}
               <thead>
                 <tr>
                   <th
@@ -623,9 +855,9 @@ export default function ResultsCard({
                           <span className="pb-mono text-[13px] text-[var(--ink-3)]">{r.canonicalRank}</span>
                         )}
                       </td>
-                      <td data-primary className="px-3 py-3 font-medium text-[var(--ink)]">
-                        {safeVisibleText(candidateLabel(r))}
-                      </td>
+                       <td data-primary className="px-3 py-3 font-medium text-[var(--ink)]">
+                         {safeVisibleText(candidateLabel(r))}
+                       </td>
                       {/* Which kind of evidence this row's numbers came from.
                           Without it a documentation score and a measured
                           accuracy sit in one table looking equally proven. */}
@@ -640,13 +872,13 @@ export default function ResultsCard({
                         const missing = value === null || value === undefined || (typeof value === "number" && !numeric);
                         const barred = c.bar || c.key === "exact_accuracy" || c.key === "field_f1";
                         return (
-                          <td data-label={c.label} key={c.key} className="pb-mono px-3 py-3 text-right text-[13px]">
+                          <td data-label={c.label} data-column={c.key} key={c.key} className="pb-mono px-3 py-3 text-right text-[13px]">
                             {/* No bar without a number behind it: an empty track
                                 beside "Unavailable" draws a zero never scored. */}
                             {barred && numeric ? (
                               <div className="flex flex-col items-end gap-1.5">
                                 <span>{fmt(c, value)}</span>
-                                <div className="w-16">
+                                <div className={isAssessment && c.key === "rating" ? "w-16 min-[721px]:w-full" : "w-16"}>
                                   <Bar value={value} max={c.score ? 100 : 1} />
                                 </div>
                               </div>
@@ -692,13 +924,8 @@ export default function ResultsCard({
                 </button>
               </div>
             </div>
-            <div className="md md-report pb-contain mt-3 max-w-[75ch] overflow-x-auto text-[13px] text-[var(--ink-2)]">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{ a: SafeMarkdownLink, ...MARKDOWN_HEADINGS_IN_REPORT }}
-              >
-                {safeVisibleText(safeReport.markdown)}
-              </ReactMarkdown>
+            <div className="md md-report pb-contain mt-3 min-w-0 text-[13px] text-[var(--ink-2)]">
+              <ReportMarkdown markdown={safeVisibleText(safeReport.markdown)} />
             </div>
             {safeReport?.citations && safeReport.citations.length > 0 && (
               <div className="mt-5">

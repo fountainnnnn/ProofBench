@@ -11,10 +11,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 const api = vi.hoisted(() => ({
   getScraperOrder: vi.fn(),
   saveScraperOrder: vi.fn(),
+  getSettingsDefaults: vi.fn(),
+  saveSettingsDefaults: vi.fn(),
   listProviderKeys: vi.fn(),
   saveProviderKey: vi.fn(),
+  revealProviderKey: vi.fn(),
   deleteProviderKey: vi.fn(),
+  fetchBrandLogos: vi.fn(),
   getProviderReadiness: vi.fn(),
+  getIntegrationAgentStatus: vi.fn(),
+  sendIntegrationAgentMessage: vi.fn(),
+  streamIntegrationAgentMessage: vi.fn(),
 }));
 vi.mock("../api.js", () => api);
 
@@ -33,8 +40,18 @@ const ORDER = {
 beforeEach(() => {
   api.getScraperOrder.mockResolvedValue(ORDER);
   api.saveScraperOrder.mockImplementation(async (order) => ({ order }));
+  api.fetchBrandLogos.mockResolvedValue({});
+  api.getSettingsDefaults.mockResolvedValue({
+    llm: [], scrapers: { order: [], default: [], providers: [] },
+  });
   api.listProviderKeys.mockResolvedValue({ keys: [], runtime_writes_enabled: false });
   api.getProviderReadiness.mockResolvedValue({ services: [] });
+  api.getIntegrationAgentStatus.mockResolvedValue({
+    ready: false,
+    llm: { configured: false, provider: null },
+    scraper: { configured: true, provider: "oxylabs" },
+    missing: ["llm"],
+  });
 });
 afterEach(cleanup);
 

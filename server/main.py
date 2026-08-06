@@ -5,6 +5,7 @@ import json
 import hmac
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -29,11 +30,14 @@ from pydantic import ValidationError
 
 from engine import session_title
 from server import brand, runs
-from server.schemas import (AuthSessionRequest, ChatRequest, ProviderKeyRequest, RunRequest,
-                            ScraperOrderRequest, SyntheticDatasetRequest)
+from server.schemas import (AuthSessionRequest, ChatRequest, IntegrationAgentMessageRequest,
+                            DefaultsRequest, ProviderKeyRequest,
+                            ProviderKeyRevealRequest,
+                            RunRequest, ScraperOrderRequest,
+                            SyntheticDatasetRequest)
 from server.security import (Identity, auth_is_configured, auth_mode, authenticate,
-                             authenticate_token, check_auth_mode, local_mode,
-                             provider_credentials)
+                             authenticate_token, check_auth_mode, is_secret_env,
+                             local_mode, mask_secret, provider_credentials)
 from server.storage import (MAX_CSV_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TOTAL_BYTES,
                             UPLOADS_DIR, datasets,
                             validate_ground_truth, validate_image)
@@ -58,7 +62,23 @@ SYSTEM_SANDBOX_ENV = {
 SYSTEM_ORCHESTRATION_ENV = {
     "MOONSHOT_API_KEY", "KIMI_MODEL",
     "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL",
+    "SUPERVISOR_PROVIDER", "SUPERVISOR_MODEL",
 }
+SYSTEM_SCRAPER_ENV = {
+    "OXYLABS_USERNAME", "OXYLABS_PASSWORD",
+    "SCRAPEDO_API_TOKEN",
+    "BRIGHTDATA_API_TOKEN", "BRIGHTDATA_SERP_ZONE", "BRIGHTDATA_UNLOCKER_ZONE",
+}
+# Provisioning credentials the operator manages but no candidate ever receives:
+# the Daytona key creates the sandboxes, so injecting it INTO one would hand a
+# candidate the keys to the kingdom. Kept out of provider_environment for that
+# reason, but still shown and revealable in Settings, where an operator expects
+# to see the key a "ready" Daytona row is reading.
+SYSTEM_PROVISION_ENV = {"DAYTONA_API_KEY"}
+# Every provider credential the Settings page may list or reveal. This is a
+# superset of what reaches a sandbox: it adds the provisioning keys above.
+SETTINGS_PROVIDER_ENV = (SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
+                         | SYSTEM_SCRAPER_ENV | SYSTEM_PROVISION_ENV)
 BUILTIN_PROVIDER_HOSTS = {
     "api.deepseek.com", "api.doubleword.ai", "api.moonshot.ai", "openrouter.ai",
 }
@@ -68,6 +88,9 @@ ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}_(?:API_KEY|BASE_URL|MODEL)$")
 # individually on purpose: a broader `_USERNAME`/`_PASSWORD` suffix rule would
 # let a caller name any credential it liked.
 EXTRA_PROVIDER_ENV_NAMES = frozenset({
+    # A provider selector is configuration rather than a credential, but it
+    # belongs in the same tenant-scoped provider snapshot as SUPERVISOR_MODEL.
+    "SUPERVISOR_PROVIDER",
     "OXYLABS_USERNAME", "OXYLABS_PASSWORD",
     # The other two scrapers authenticate with a token plus a zone name, neither
     # of which the pattern above can express. Listed individually for the same
@@ -181,6 +204,13 @@ async def _lifespan(_app):
     check_auth_mode()
     if not auth_is_configured():
         raise RuntimeError("production authentication is not configured")
+    # Bound to the runs accessors rather than to the store behind them, so a
+    # test that swaps the database still writes through to the live one.
+    provider_credentials.bind(
+        loader=runs.provider_keys,
+        saver=runs.set_provider_key,
+        remover=runs.delete_provider_key,
+    )
     if local_mode():
         LOGGER.warning(json.dumps({
             "event": "local_tokenless_mode",
@@ -327,11 +357,21 @@ async def _json(request: Request) -> dict:
     return body
 
 
+# Mirrors engine.llm_clients._PIN_ENV: the env name each capability's default
+# is published under. Kept here so the settings layer never imports the engine's
+# private mapping.
+DEFAULT_PROVIDER_ENV = {
+    "orchestration": "PROOFBENCH_DEFAULT_ORCHESTRATION_PROVIDER",
+    "assessment": "PROOFBENCH_DEFAULT_ASSESSMENT_PROVIDER",
+    "codegen": "PROOFBENCH_DEFAULT_CODEGEN_PROVIDER",
+}
+
+
 def provider_environment(tenant_id: str) -> dict[str, str]:
     from engine import scrapers
 
     values = {name: os.environ[name]
-              for name in SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
+              for name in SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV | SYSTEM_SCRAPER_ENV
               if os.environ.get(name)}
     if _runtime_credentials_enabled():
         values.update(provider_credentials.snapshot(tenant_id))
@@ -339,6 +379,12 @@ def provider_environment(tenant_id: str) -> dict[str, str]:
     # scraper preference travels the same path as everything else and a run uses
     # the order that was set when it started.
     values[scrapers.ORDER_ENV] = " ".join(runs.scraper_order(tenant_id))
+    # Default-provider pins travel the same path, so /api/providers reports the
+    # provider a run would actually select without asking a second source.
+    for capability, chosen in runs.default_providers(tenant_id).items():
+        env_name = DEFAULT_PROVIDER_ENV.get(capability)
+        if env_name:
+            values[env_name] = chosen
     return values
 
 
@@ -352,6 +398,14 @@ def _is_provider_env_name(name: str) -> bool:
 
 
 def _validate_provider_setting(name: str, value: str) -> None:
+    if name == "SUPERVISOR_PROVIDER":
+        allowed = {"openai", "moonshot", "kimi", "openrouter", "deepseek", "doubleword"}
+        if value.strip().casefold() not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail="supervisor provider must name a supported provider",
+            )
+        return
     if not name.endswith("_BASE_URL"):
         return
     parsed = urlsplit(value)
@@ -879,17 +933,17 @@ PROVIDER_READINESS = (
     {"provider": "daytona", "label": "Daytona sandboxes",
      "capability": "Executes every benchmark candidate in an isolated sandbox.",
      "required": ("DAYTONA_API_KEY",), "optional": (), "essential": True},
+    # Essential by product decision, not by technical necessity: the capability
+    # layer below would accept any configured LLM, but OpenAI is the default a
+    # deployment is expected to hold, so a run is blocked without it.
     {"provider": "openai", "label": "OpenAI",
      "capability": "Orchestrator reasoning and the built-in openai_vision candidate.",
      "required": ("OPENAI_API_KEY",),
-     "optional": ("OPENAI_ORCHESTRATOR_MODEL", "OPENAI_VISION_MODEL"), "essential": False},
+     "optional": ("OPENAI_ORCHESTRATOR_MODEL", "OPENAI_VISION_MODEL"), "essential": True},
     {"provider": "openrouter", "label": "OpenRouter",
      "capability": "OpenAI-compatible orchestration, documentation assessment, and reports.",
      "required": ("OPENROUTER_API_KEY",),
      "optional": ("OPENROUTER_MODEL", "OPENROUTER_BASE_URL"), "essential": False},
-    {"provider": "moonshot", "label": "Moonshot / Kimi",
-     "capability": "Optional preferred orchestrator and report writer.",
-     "required": ("MOONSHOT_API_KEY",), "optional": ("KIMI_MODEL",), "essential": False},
     {"provider": "doubleword", "label": "Doubleword",
      "capability": "Batched documentation assessment and the built-in doubleword candidate.",
      "required": ("DOUBLEWORD_API_KEY", "DOUBLEWORD_MODEL"),
@@ -901,10 +955,6 @@ PROVIDER_READINESS = (
     {"provider": "oxylabs", "label": "Oxylabs",
      "capability": "Scrapes vendor documentation during intake and docs intelligence.",
      "required": ("OXYLABS_USERNAME", "OXYLABS_PASSWORD"), "optional": (), "essential": False},
-    {"provider": "nosana", "label": "Nosana",
-     "capability": "Optional built-in nosana_vlm candidate.",
-     "required": ("NOSANA_BASE_URL", "NOSANA_API_KEY", "NOSANA_MODEL"),
-     "optional": (), "essential": False},
 )
 
 # LLM work is capability based: any one of the listed providers satisfies the
@@ -924,13 +974,29 @@ CAPABILITY_READINESS = (
      "label": "Adapter generation",
      "detail": "Builds adapters for candidates without a built-in.",
      "essential": False},
+    # Scraping is one-of-N like the LLM capabilities, so it belongs here rather
+    # than in PROVIDER_READINESS, whose entries AND together every env a single
+    # vendor needs. Intake cannot find candidates without one of these.
+    {"capability": "scraping",
+     "label": "Documentation scraping",
+     "detail": "Finds and reads vendor documentation during intake.",
+     "essential": True},
 )
+
+# Scraping resolves through engine.scrapers, not the LLM capability registry.
+SCRAPING_CAPABILITY = "scraping"
 
 
 @app.get("/api/providers")
 def api_providers(identity: Identity = Depends(authenticate)):
     """Report configured/ready/missing per provider. Never returns secret values."""
-    from engine.llm_clients import CAPABILITY_PROVIDERS, capability_providers
+    from engine import scrapers
+    from engine.llm_clients import (
+        CAPABILITY_PROVIDERS,
+        capability_providers,
+        primary_identity,
+        supervisor_identity,
+    )
 
     env = provider_environment(identity.tenant_id)
 
@@ -964,14 +1030,53 @@ def api_providers(identity: Identity = Depends(authenticate)):
                       for name in {*env, *os.environ}}
     capabilities = []
     for entry in CAPABILITY_READINESS:
-        available = capability_providers(entry["capability"], resolution_env)
+        if entry["capability"] == SCRAPING_CAPABILITY:
+            # Scrapers live in their own registry, and a provider counts as
+            # available if it can serve either half of the job. The emitted
+            # shape is identical to an LLM capability so nothing downstream
+            # has to special-case it.
+            order = list(scrapers.DEFAULT_ORDER)
+            found = (set(scrapers.configured_providers(resolution_env, "search")) |
+                     set(scrapers.configured_providers(resolution_env, "scrape")))
+            available = tuple(name for name in scrapers.order_from_env(resolution_env)
+                              if name in found)
+            candidates = order
+        else:
+            available = capability_providers(entry["capability"], resolution_env)
+            candidates = list(CAPABILITY_PROVIDERS[entry["capability"]])
         capabilities.append({
             "capability": entry["capability"], "label": entry["label"],
             "detail": entry["detail"], "essential": entry["essential"],
             "status": "ready" if available else "missing",
             "selected": available[0] if available else None,
             "available": list(available),
-            "candidates": list(CAPABILITY_PROVIDERS[entry["capability"]]),
+            "candidates": candidates,
+        })
+
+    # Independent supervision is a capability of its own: a DISTINCT reviewer for
+    # the checkpoints that correct a model's own output. It never blocks a run —
+    # a single-provider deployment stays fully functional — but the console shows
+    # whether an independent second model is actually configured, and if not, the
+    # exact env that would supply one. It is derived from configuration only and
+    # reveals provider/model labels, never a credential.
+    supervision = []
+    for supervised in ("orchestration", "assessment"):
+        primary = primary_identity(supervised, resolution_env)
+        # Assessment falls back across its whole configured chain, so the
+        # self-check refuses any reviewer drawn from it — the console reports the
+        # SAME resolution a run would actually make, never a false independence.
+        exclude_providers = (
+            capability_providers("assessment", resolution_env)
+            if supervised == "assessment" else None
+        )
+        reviewer = supervisor_identity(
+            supervised, resolution_env, exclude_providers=exclude_providers)
+        supervision.append({
+            "supervises": supervised,
+            "primary": primary.label() if primary else None,
+            "reviewer": reviewer.label() if reviewer else None,
+            "independent": reviewer is not None,
+            "config": ["SUPERVISOR_PROVIDER", "SUPERVISOR_MODEL"],
         })
 
     blocked = [item["provider"] for item in providers
@@ -980,7 +1085,7 @@ def api_providers(identity: Identity = Depends(authenticate)):
                 if item["essential"] and item["status"] != "ready"]
     return {"mode": RUN_MODE, "run_ready": not blocked,
             "blocked_by": blocked, "providers": providers,
-            "capabilities": capabilities}
+            "capabilities": capabilities, "supervision": supervision}
 
 
 @app.get("/api/metrics")
@@ -1007,29 +1112,229 @@ def api_provider_keys(identity: Identity = Depends(authenticate)):
     runtime_writes_enabled = _runtime_credentials_enabled()
     tenant_names = (set(provider_credentials.names(identity.tenant_id))
                     if runtime_writes_enabled else set())
-    system = {name for name in SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
-              if os.environ.get(name)}
+    system = {name for name in SETTINGS_PROVIDER_ENV if os.environ.get(name)}
+    # A mask is the tail of a secret and nothing else. Non-secret settings
+    # (model ids, base URLs, the supervisor selector) carry no mask at all
+    # rather than their value: this listing must stay provably free of any
+    # readable configured value, and only the reveal endpoint hands one back.
+    def entry(name: str, source: str) -> dict:
+        value = (provider_credentials.get(identity.tenant_id, name)
+                 if source == "settings" else os.environ.get(name))
+        secret = is_secret_env(name)
+        return {"env": name, "source": source,
+                "masked": mask_secret(value) if secret else None,
+                "secret": secret,
+                "revealable": runtime_writes_enabled}
+
     return {"runtime_writes_enabled": runtime_writes_enabled,
             "managed_by": "runtime" if runtime_writes_enabled else "deployment",
             "keys": [
-        *({"env": name, "source": "system"} for name in sorted(system - tenant_names)),
-        *({"env": name, "source": "settings"} for name in sorted(tenant_names)),
+        *(entry(name, "system") for name in sorted(system - tenant_names)),
+        *(entry(name, "settings") for name in sorted(tenant_names)),
     ]}
+
+
+def _scraper_payload(tenant_id: str) -> dict:
+    """The provider chain, and which links actually hold credentials."""
+    from engine import scrapers
+
+    env = provider_environment(tenant_id)
+    merged = {**os.environ, **env}
+    order = runs.scraper_order(tenant_id)
+    ready = set(scrapers.configured_providers(merged, "search")) | set(
+        scrapers.configured_providers(merged, "scrape"))
+    return {"order": list(order), "default": list(scrapers.DEFAULT_ORDER),
+            "providers": [{"name": name, "configured": name in ready,
+                           **scrapers.provider_meta(name, merged)} for name in order]}
+
+
+def _defaults_payload(tenant_id: str) -> dict:
+    """Which provider serves each capability, and which the operator picked.
+
+    `pinned` is the stored choice and `selected` is what a run would actually
+    use. They differ when the pinned provider has no key yet, which is a state
+    worth showing rather than rejecting.
+    """
+    from engine.llm_clients import (CAPABILITY_PROVIDERS, PROVIDERS,
+                                    capability_providers, provider_configured)
+
+    env = provider_environment(tenant_id)
+    resolution_env = {name: str(env.get(name) or os.environ.get(name) or "")
+                      for name in {*env, *os.environ}}
+    pins = runs.default_providers(tenant_id)
+    labels = {item["provider"]: item["label"] for item in PROVIDER_READINESS}
+    detail = {item["capability"]: item for item in CAPABILITY_READINESS}
+
+    llm = []
+    for capability in runs.PINNABLE_CAPABILITIES:
+        available = capability_providers(capability, resolution_env)
+        llm.append({
+            "capability": capability,
+            "label": detail[capability]["label"],
+            "detail": detail[capability]["detail"],
+            "pinned": pins.get(capability),
+            "selected": available[0] if available else None,
+            # model_env travels with the option because a gateway provider
+            # serves many models: choosing OpenRouter is not a choice of model,
+            # so the picker has to be able to ask for one.
+            "options": [
+                {"name": name,
+                 "label": labels.get(name, name.replace("_", " ").title()),
+                 "configured": provider_configured(name, resolution_env),
+                 "model_env": PROVIDERS[name].model_env,
+                 "model": (resolution_env.get(PROVIDERS[name].model_env)
+                           or PROVIDERS[name].default_model),
+                 "model_is_default": not resolution_env.get(PROVIDERS[name].model_env)}
+                for name in CAPABILITY_PROVIDERS[capability]
+                if name in PROVIDERS
+            ],
+        })
+    return {"llm": llm, "scrapers": _scraper_payload(tenant_id)}
+
+
+@app.get("/api/settings/defaults")
+def api_defaults(identity: Identity = Depends(authenticate)):
+    return _defaults_payload(identity.tenant_id)
+
+
+@app.put("/api/settings/defaults")
+async def api_set_defaults(request: Request, identity: Identity = Depends(authenticate)):
+    payload = _payload(DefaultsRequest, await _json(request))
+    for capability in runs.PINNABLE_CAPABILITIES:
+        chosen = getattr(payload, capability)
+        # Absent means "leave alone"; an explicit empty string clears the pin.
+        if chosen is None:
+            continue
+        try:
+            runs.set_default_provider(identity.tenant_id, capability, chosen or None)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.scraper_order is not None:
+        runs.set_scraper_order(identity.tenant_id, payload.scraper_order)
+    return _defaults_payload(identity.tenant_id)
 
 
 @app.get("/api/settings/scrapers")
 def api_scraper_order(identity: Identity = Depends(authenticate)):
-    """The provider chain, and which links actually hold credentials."""
-    from engine import scrapers
+    return _scraper_payload(identity.tenant_id)
+
+
+@app.get("/api/settings/integration-agent")
+def api_integration_agent_status(identity: Identity = Depends(authenticate)):
+    """Report the mandatory agent prerequisites without contacting providers."""
+    from engine import integration_agent
+
+    return integration_agent.readiness(provider_environment(identity.tenant_id))
+
+
+@app.post("/api/settings/integration-agent/messages")
+def api_integration_agent_message(
+    payload: IntegrationAgentMessageRequest,
+    identity: Identity = Depends(authenticate),
+):
+    """Research one provider integration without applying or activating code."""
+    from engine import integration_agent
 
     env = provider_environment(identity.tenant_id)
-    merged = {**os.environ, **env}
-    order = runs.scraper_order(identity.tenant_id)
-    ready = set(scrapers.configured_providers(merged, "search")) | set(
-        scrapers.configured_providers(merged, "scrape"))
-    return {"order": list(order), "default": list(scrapers.DEFAULT_ORDER),
-            "providers": [{"name": name, "label": scrapers.LABELS.get(name, name),
-                           "configured": name in ready} for name in order]}
+    state = integration_agent.readiness(env)
+    if not state["ready"]:
+        raise HTTPException(status_code=409, detail={
+            "error": "integration_agent_unavailable",
+            "message": "Configure one default LLM and one web scraping API first.",
+            "missing": state["missing"],
+        })
+    try:
+        return integration_agent.respond(
+            payload.message,
+            env,
+            [item.model_dump() for item in payload.history],
+        )
+    except ValueError as exc:
+        LOGGER.warning(json.dumps({
+            "event": "integration_agent_invalid_response",
+            "error_type": type(exc).__name__,
+        }))
+        raise HTTPException(
+            status_code=502,
+            detail="The integration agent returned an invalid response.",
+        ) from exc
+    except Exception as exc:
+        LOGGER.warning(json.dumps({
+            "event": "integration_agent_failed",
+            "error_type": type(exc).__name__,
+        }))
+        raise HTTPException(
+            status_code=502,
+            detail="The integration agent could not complete this request.",
+        ) from exc
+
+
+@app.post("/api/settings/integration-agent/stream")
+def api_integration_agent_stream(
+    payload: IntegrationAgentMessageRequest,
+    identity: Identity = Depends(authenticate),
+):
+    """Same research as the messages endpoint, narrating each step as it runs.
+
+    The work is synchronous and blocking, so it runs on a worker thread and
+    publishes progress through a queue the response generator drains. The
+    client shows those steps while waiting and drops them once `result`
+    arrives, so the transcript keeps only the answer.
+    """
+    from engine import integration_agent
+
+    env = provider_environment(identity.tenant_id)
+    state = integration_agent.readiness(env)
+    if not state["ready"]:
+        raise HTTPException(status_code=409, detail={
+            "error": "integration_agent_unavailable",
+            "message": "Configure one default LLM and one web scraping API first.",
+            "missing": state["missing"],
+        })
+
+    history = [item.model_dump() for item in payload.history]
+    message = payload.message
+    updates: "queue.Queue[tuple[str, object]]" = queue.Queue()
+
+    def work():
+        try:
+            answer = integration_agent.respond(
+                message,
+                env,
+                history,
+                on_progress=lambda event: updates.put(("progress", event)),
+            )
+            updates.put(("result", answer))
+        except ValueError as exc:
+            LOGGER.warning(json.dumps({
+                "event": "integration_agent_invalid_response",
+                "error_type": type(exc).__name__,
+            }))
+            updates.put(("error", "The integration agent returned an invalid response."))
+        except Exception as exc:
+            LOGGER.warning(json.dumps({
+                "event": "integration_agent_failed",
+                "error_type": type(exc).__name__,
+            }))
+            updates.put(("error", "The integration agent could not complete this request."))
+        finally:
+            updates.put(("end", None))
+
+    def generate():
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        while True:
+            try:
+                event, data = updates.get(timeout=15)
+            except queue.Empty:
+                yield ": ping\n\n"
+                continue
+            if event == "end":
+                break
+            yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.put("/api/settings/scrapers")
@@ -1052,6 +1357,41 @@ async def api_save_provider_key(request: Request, identity: Identity = Depends(a
     _validate_provider_setting(env, payload.value)
     provider_credentials.set(identity.tenant_id, env, payload.value)
     return {"env": env, "source": "settings"}
+
+
+@app.post("/api/settings/provider-keys/reveal")
+async def api_reveal_provider_key(request: Request, identity: Identity = Depends(authenticate)):
+    """Return one credential in plaintext, for an operator who asked to see it.
+
+    POST rather than GET on purpose: `authenticate` accepts the session cookie
+    only for GET/HEAD, so requiring POST forces a real Authorization header on
+    the one endpoint that hands back a secret, and keeps the value out of URLs,
+    referrers, and any caching layer.
+    """
+    if not _runtime_credentials_enabled():
+        raise HTTPException(status_code=503,
+                            detail="runtime credentials are disabled; configure deployment secrets")
+    payload = _payload(ProviderKeyRevealRequest, await _json(request))
+    env = payload.env.upper()
+    if not _is_provider_env_name(env):
+        raise HTTPException(status_code=422, detail="invalid environment variable name")
+
+    value = provider_credentials.get(identity.tenant_id, env)
+    source = "settings"
+    if value is None:
+        # Falling back to the deployment environment is what makes this useful:
+        # a fresh deployment holds every key in .env, and a reveal that only
+        # ever saw runtime overrides would answer nothing on the first visit.
+        value = os.environ.get(env) if env in SETTINGS_PROVIDER_ENV else None
+        source = "system"
+    if not value:
+        raise HTTPException(status_code=404, detail="no value is stored for that setting")
+
+    # The name is worth an audit line; the value never is.
+    LOGGER.warning(json.dumps({"event": "provider_credential_revealed",
+                               "env": env, "source": source}))
+    return JSONResponse({"env": env, "source": source, "value": value},
+                        headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 @app.delete("/api/settings/provider-keys/{env}")
@@ -1187,6 +1527,7 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
     payload = _payload(ChatRequest, await _json(request))
     requested_dataset = (_dataset_or_404(payload.dataset_id, identity)
                          if payload.dataset_id else None)
+    created_session = not payload.session_id
     if payload.session_id:
         session = _session_or_404(payload.session_id, identity)
     else:
@@ -1205,10 +1546,16 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
         claimed = runs.begin_chat(sid, identity.tenant_id, selected_dataset.id,
                                   RUN_MODE, payload.message)
     except runs.BusyError as exc:
+        if created_session:
+            runs.delete_session(sid, identity.tenant_id)
         raise HTTPException(status_code=409, detail="session already working") from exc
     except runs.QuotaError as exc:
+        if created_session:
+            runs.delete_session(sid, identity.tenant_id)
         raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "60"}) from exc
     except KeyError as exc:
+        if created_session:
+            runs.delete_session(sid, identity.tenant_id)
         raise HTTPException(status_code=404, detail="session or dataset not found") from exc
     session = runs.get_session(sid, identity.tenant_id)
     # Snapshot taken before the turn runs: a session that has never been
@@ -1236,12 +1583,14 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
                     except Exception:
                         # Research is an optimisation; never fail a chat over it.
                         pass
+                # The terminal event tells the browser to refresh its session
+                # list. Persist the first generated title before that event, or
+                # the refresh races ahead and keeps the provisional opening
+                # message until a second turn happens to refresh it again.
+                if unnamed and not failed:
+                    _retitle(sid, identity, payload.message, orchestrator)
                 runs.finish_run(sid, cancelled=runs.is_cancelled(sid), failed=failed,
                                 emit_done=True, job_id=claimed["id"])
-        # Deliberately after the turn is marked finished: naming costs a second
-        # completion, and the user should not watch a spinner for their label.
-        if unnamed and not failed:
-            _retitle(sid, identity, payload.message, orchestrator)
 
     threading.Thread(target=worker, daemon=True).start()
     return {"session_id": sid}

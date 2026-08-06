@@ -83,7 +83,8 @@ def _fallback_report(metrics: dict, citations: list[dict]) -> str:
     lines.append(sep)
     for i, (name, m) in enumerate(ranked, 1):
         cells = " | ".join(_fmt(m.get(k)) for k, _ in _COLUMNS)
-        lines.append(f"| {i} | {name} | {cells} |")
+        safe_name = str(name).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {i} | {safe_name} | {cells} |")
     lines.append("")
     if unmeasured:
         lines.append("## Did not run")

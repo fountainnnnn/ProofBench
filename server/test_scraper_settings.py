@@ -51,8 +51,9 @@ def test_a_saved_order_is_normalized_before_it_is_stored(client):
     assert saved[0] == "brightdata"
     assert "not-a-provider" not in saved
     # Omitted providers are demoted, never dropped: an operator who still holds
-    # credentials for one keeps it as a fallback.
-    assert set(saved) == {"scrapedo", "oxylabs", "brightdata"}
+    # credentials for one keeps it as a fallback. The free self-hosted option
+    # (SearXNG + Crawl4AI, one entry) trails the paid ones in that set.
+    assert set(saved) == {"scrapedo", "oxylabs", "brightdata", "selfhosted"}
 
 
 # ----------------------------------------------------------------- the endpoint
@@ -63,7 +64,7 @@ def test_the_endpoint_reports_the_order_and_which_links_are_ready(client):
     assert response.status_code == 200
     body = response.json()
     assert body["order"][0] == "scrapedo"
-    assert body["default"] == ["scrapedo", "oxylabs", "brightdata"]
+    assert body["default"] == ["scrapedo", "oxylabs", "brightdata", "selfhosted"]
     # Each entry says whether it actually holds credentials, so the UI can show
     # a provider that is first in line but cannot answer.
     assert {row["name"] for row in body["providers"]} == set(body["order"])

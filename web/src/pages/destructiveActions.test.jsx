@@ -10,9 +10,16 @@ const api = vi.hoisted(() => ({
   getProviderReadiness: vi.fn(),
   getScraperOrder: vi.fn(),
   saveScraperOrder: vi.fn(),
+  getSettingsDefaults: vi.fn(),
+  saveSettingsDefaults: vi.fn(),
   listProviderKeys: vi.fn(),
   listSessions: vi.fn(),
   saveProviderKey: vi.fn(),
+  revealProviderKey: vi.fn(),
+  fetchBrandLogos: vi.fn(),
+  getIntegrationAgentStatus: vi.fn(),
+  sendIntegrationAgentMessage: vi.fn(),
+  streamIntegrationAgentMessage: vi.fn(),
 }));
 
 vi.mock("../api.js", () => api);
@@ -27,6 +34,12 @@ beforeEach(() => {
   api.getHealth.mockResolvedValue({});
   api.listSessions.mockResolvedValue([]);
   api.getScraperOrder.mockResolvedValue({ order: [], default: [], providers: [] });
+  api.getIntegrationAgentStatus.mockResolvedValue({
+    ready: false,
+    llm: { configured: false, provider: null },
+    scraper: { configured: false, provider: null },
+    missing: ["llm", "scraper"],
+  });
   // Readiness is a configuration check only; a ready deployment keeps these
   // tests focused on the destructive-action confirmations.
   api.getProviderReadiness.mockResolvedValue({
@@ -50,6 +63,10 @@ beforeEach(() => {
     managed_by: "runtime",
   });
   api.deleteProviderKey.mockResolvedValue({ deleted: true });
+  api.fetchBrandLogos.mockResolvedValue({});
+  api.getSettingsDefaults.mockResolvedValue({
+    llm: [], scrapers: { order: [], default: [], providers: [] },
+  });
 });
 
 describe("destructive action confirmation and session presentation", () => {
@@ -76,7 +93,10 @@ describe("destructive action confirmation and session presentation", () => {
 
   it("requires confirmation before removing a runtime provider credential", async () => {
     render(<Settings />);
-    const remove = await screen.findByRole("button", { name: "Remove" });
+    // VENDOR_API_KEY belongs to no service, so it appears under "Other
+    // credentials" rather than vanishing now that the flat key list is gone.
+    // Remove is a bin icon, so its accessible name carries the key it deletes.
+    const remove = await screen.findByRole("button", { name: "Remove VENDOR_API_KEY" });
 
     fireEvent.click(remove);
     expect(api.deleteProviderKey).not.toHaveBeenCalled();
@@ -92,9 +112,11 @@ describe("destructive action confirmation and session presentation", () => {
     });
     render(<Settings />);
 
-    expect(await screen.findByText(/Managed by deployment/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add key" }).disabled).toBe(true);
-    expect(screen.getByRole("button", { name: "Remove" }).disabled).toBe(true);
+    // With writes disabled the row offers no editor at all, and the one
+    // destructive control it still renders is inert.
+    expect(await screen.findByText("VENDOR_API_KEY")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove VENDOR_API_KEY" }).disabled).toBe(true);
   });
 
   it("sanitizes API session titles in the runs table", async () => {

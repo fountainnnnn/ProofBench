@@ -82,6 +82,27 @@ class LedgerClient:
         raise AssertionError("reconciliation must not list unowned sandboxes")
 
 
+def test_sandbox_requests_supported_ocr_memory_baseline(tmp_path, monkeypatch):
+    class CapturingClient(LedgerClient):
+        def create(self, params, **kwargs):
+            self.params = params
+            return super().create(params, **kwargs)
+
+    monkeypatch.setenv("PROOFBENCH_SANDBOX_MEMORY_GIB", "1")
+    monkeypatch.setenv("PROOFBENCH_SANDBOX_CPU", "1")
+    pool = SandboxPool(size=0, owner_key="memory-test",
+                       ledger_path=str(tmp_path / "ledger.sqlite3"))
+    client = CapturingClient()
+    pool._daytona = client
+
+    pool._create_one()
+
+    assert pool.memory_gib == 4
+    assert pool.cpu == 2
+    assert client.params.resources.memory == 4
+    assert client.params.resources.cpu == 2
+
+
 class LocalStyleSandbox(FakeSandbox):
     """Matches the lightweight filesystem shim used by integration_test.py."""
 
@@ -501,6 +522,36 @@ def test_auto_collation_enforces_scope_schema_size_and_deduplication(tmp_path):
     assert len((tmp_path / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_sandbox_source_snapshot_is_redacted_bounded_and_versioned(tmp_path):
+    events = []
+    secret = "candidate-secret-value"
+    orchestrator = Orchestrator(
+        "source-evidence",
+        str(tmp_path),
+        lambda event, data: events.append((event, data)),
+        provider_env={"CANDIDATE_API_KEY": secret},
+    )
+
+    orchestrator._sandbox_file(
+        "extractor",
+        f"API_KEY = {secret!r}\n" + ("print('work')\n" * 2_000),
+        revision=2,
+    )
+
+    assert len(events) == 1
+    event, artifact = events[0]
+    assert event == "artifact"
+    assert artifact["kind"] == "sandbox_file"
+    assert artifact["sandbox"] == "extractor"
+    assert artifact["path"] == "adapter.py"
+    assert artifact["revision"] == 2
+    assert artifact["phase"] == "validating"
+    assert secret not in artifact["content"]
+    assert "***" in artifact["content"]
+    assert len(artifact["content"]) < 12_100
+    assert "truncated" in artifact["content"]
+
+
 def test_evaluate_tool_is_bound_to_context_paths(tmp_path):
     ctx = make_context(tmp_path, FakeSandbox(), [])
     ground_truth = tmp_path / "ground_truth.csv"
@@ -790,6 +841,49 @@ def test_external_url_policy_rejects_hostname_resolving_private_address():
 
     with pytest.raises(ValueError, match="external URL is not permitted"):
         validate_external_url("https://service.example/path", resolver=private_resolver)
+
+
+def test_local_service_client_is_closed_without_insecure_dev(monkeypatch):
+    """The local-HTTP relaxation for SearXNG/Crawl4AI must stay shut unless the
+    same flag that unlocks runtime credential writes is set."""
+    from engine import network_security
+
+    monkeypatch.delenv("PROOFBENCH_INSECURE_DEV", raising=False)
+    assert network_security.local_http_enabled() is False
+    with pytest.raises(RuntimeError, match="PROOFBENCH_INSECURE_DEV"):
+        network_security.local_service_client("http://localhost:8080")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com",            # public host may not use this path
+        "https://93.184.216.34/",        # a public literal IP is still public
+        "http://user:pass@localhost/",   # credentials in the URL
+        "ftp://localhost/",              # non-HTTP scheme
+    ],
+)
+def test_local_service_client_refuses_non_local_targets(monkeypatch, url):
+    """Even with the flag on, the relaxation is only for loopback/private hosts,
+    so it can never become a second, weaker route to a public target."""
+    from engine import network_security
+
+    monkeypatch.setenv("PROOFBENCH_INSECURE_DEV", "1")
+    with pytest.raises(RuntimeError):
+        network_security.local_service_client(url)
+
+
+@pytest.mark.parametrize("url", ["http://localhost:8080", "http://127.0.0.1:11235",
+                                 "http://10.0.0.5:8080"])
+def test_local_service_client_allows_a_local_service_in_dev(monkeypatch, url):
+    from engine import network_security
+
+    monkeypatch.setenv("PROOFBENCH_INSECURE_DEV", "1")
+    base, client = network_security.local_service_client(url)
+    try:
+        assert base == url  # trailing slash trimmed, host preserved
+    finally:
+        client.close()
 
 
 def test_outbound_policy_revalidates_dns_before_each_transport_request():

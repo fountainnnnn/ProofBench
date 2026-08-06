@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchBrandLogos, getResults, listSessions } from "../api.js";
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
@@ -38,6 +38,11 @@ const METRIC_GROUP = {
   rating: "Rated from documentation",
 };
 
+const METRIC_GROUP_ORDER = {
+  exact_accuracy: 0,
+  rating: 1,
+};
+
 function formatMetric(key, value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return null;
   if (key === "rating") return `${Math.round(Number(value))}/100`;
@@ -52,14 +57,14 @@ function ArrowIcon() {
   );
 }
 
-function SectionCard({ title, count, children, grow = false }) {
+function SectionCard({ title, count, children, grow = false, action = null }) {
   return (
     <section
       className={`${PANEL} flex flex-col overflow-hidden ${grow ? "min-h-0 flex-1" : ""}`}
       aria-label={title}
     >
       <div
-        className="flex items-baseline justify-between gap-3 pb-1"
+        className="flex items-center justify-between gap-3 pb-1"
         style={{
           paddingLeft: "var(--space-card-x)",
           paddingRight: "var(--space-card-x)",
@@ -67,9 +72,12 @@ function SectionCard({ title, count, children, grow = false }) {
         }}
       >
         <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">{title}</h2>
-        {count !== null && count !== undefined && (
-          <span className="pb-mono text-[12px] text-[var(--ink-3)]">{count}</span>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {count !== null && count !== undefined && (
+            <span className="pb-mono text-[12px] text-[var(--ink-3)]">{count}</span>
+          )}
+          {action}
+        </div>
       </div>
       {children}
     </section>
@@ -263,58 +271,30 @@ function BrandIcon({ name, size = 22 }) {
   );
 }
 
-/* The row's legibility floor: one line plus its padding. Shared between the CSS
-   class and the fit maths, which must agree or the cap lands off a row edge. */
+/* The row's legibility floor: one line plus its padding. A minimum, not a fixed
+   height — the group scrolls when its rows exceed the card, so a row is never
+   compressed below this to force a fit. */
 const TOOL_ROW_MIN = 26;
 
 /* One evidence group as a ranked leaderboard: sorted best-first, each tool's
    score drawn as a bar so the standing is read at a glance rather than by
    comparing numbers. The leader's bar carries the group's full hue, the rest a
    muted step of it, and a win is marked with the same check used everywhere
-   else. Rows stretch to fill the card (flexGrow by tool count), so the column
-   stays balanced with no blank at the foot.
+   else.
 
-   overflow-hidden on the group, not just the card: rows hold a min-height, so a
-   group allotted less than its rows need would otherwise spill past its own box
-   and overlap the next group's header. */
+   The group does not clip its own rows: every group lives inside one shared
+   scroll region (see the Tools card and the sheet), so a group taller than the
+   space it was handed is reached by scrolling, not truncated. Its header is
+   sticky, so the scale it names stays visible while its rows scroll under it. */
 function ToolLeaderboard({ metricKey, tools }) {
   const sorted = [...tools].sort((a, b) => (Number(b.best) || -1) - (Number(a.best) || -1));
   const max = metricKey === "rating" ? 100 : Math.max(1, ...sorted.map((t) => Number(t.best) || 0));
   const hue = METRIC_HUE[metricKey] || "var(--accent)";
 
-  /* Rows are uniform, so when they cannot all fit the list is capped to a WHOLE
-     number of them. Without this the group clipped through whatever row landed
-     on its edge, leaving a half-height row of sliced text at the fold.
-     Measured from the group box (not the list) so applying the cap cannot feed
-     back into the measurement. */
-  const [group, setGroup] = useState(null);
-  const headRef = useRef(null);
-  const [maxH, setMaxH] = useState(undefined);
-
-  useLayoutEffect(() => {
-    if (!group) return undefined;
-    const measure = () => {
-      const head = headRef.current ? headRef.current.offsetHeight : 0;
-      const available = group.clientHeight - head;
-      const needed = tools.length * TOOL_ROW_MIN;
-      const next = needed > available + 0.5
-        ? Math.max(0, Math.floor(available / TOOL_ROW_MIN)) * TOOL_ROW_MIN
-        : undefined;
-      setMaxH((prev) => (prev === next ? prev : next));
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(group);
-    return () => observer.disconnect();
-  }, [group, tools.length]);
-
   return (
-    <div ref={setGroup} className="flex min-h-0 flex-col overflow-hidden" style={{ flexGrow: tools.length }}>
-      <div ref={headRef}>
-        <ToolGroupHeader metricKey={metricKey} />
-      </div>
-      <ul className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ maxHeight: maxH }}>
+    <div className="flex flex-col">
+      <ToolGroupHeader metricKey={metricKey} />
+      <ul className="flex flex-col">
         {sorted.map((tool, index) => {
           const value = Number(tool.best);
           const finite = Number.isFinite(value);
@@ -322,16 +302,11 @@ function ToolLeaderboard({ metricKey, tools }) {
           const isLeader = index === 0 && finite && value > 0;
           const score = formatMetric(metricKey, tool.best);
           return (
-            /* Rows share the card's height evenly (flex-1) but never below a
-               legibility floor: with min-h-0 alone a short viewport squeezed
-               rows under their own line-height and the names overlapped into an
-               unreadable stack. The floor is one line plus its padding; when
-               even that will not fit, the list reports the overflow rather than
-               compressing (see the count below). */
+            /* Rows hold a legibility floor of one line plus its padding and are
+               never compressed below it: the shared region scrolls instead. */
             <li
               key={tool.name}
-              data-tool-row
-              className="flex flex-1 items-center gap-2.5 overflow-hidden border-t border-[var(--line)]"
+              className="flex items-center gap-2.5 overflow-hidden border-t border-[var(--line)]"
               style={{
                 minHeight: TOOL_ROW_MIN,
                 paddingLeft: "var(--space-card-x)",
@@ -378,7 +353,7 @@ function ToolLeaderboard({ metricKey, tools }) {
 function ToolGroupHeader({ metricKey }) {
   return (
     <div
-      className="flex items-center gap-2 bg-[var(--surface-2)] py-1.5"
+      className="sticky top-0 z-10 flex items-center gap-2 bg-[var(--surface-2)] py-1.5"
       style={{ paddingLeft: "var(--space-card-x)", paddingRight: "var(--space-card-x)" }}
     >
       <span
@@ -392,6 +367,127 @@ function ToolGroupHeader({ metricKey }) {
       <span className="pb-mono ml-auto text-[11px] text-[var(--ink-3)]">
         {METRIC_LABEL[metricKey]}
       </span>
+    </div>
+  );
+}
+
+/* Every evidence group, stacked. Shared verbatim between the dashboard card and
+   the expanded sheet so the two can never rank a tool differently or split a
+   group by evidence type in one place but not the other. */
+function ToolGroups({ groups }) {
+  return groups.map(([metricKey, group]) => (
+    <ToolLeaderboard key={metricKey} metricKey={metricKey} tools={group} />
+  ));
+}
+
+function ExpandIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M9 4H5a1 1 0 0 0-1 1v4M15 4h4a1 1 0 0 1 1 1v4M9 20H5a1 1 0 0 1-1-1v-4M15 20h4a1 1 0 0 0 1-1v-4" />
+    </svg>
+  );
+}
+
+/* The full leaderboard, in a side sheet. The dashboard card shows as much of the
+   ranking as the viewport allows and scrolls the rest; this opens the same list
+   at full height beside the page, so every tool is reachable without the card
+   having to own the whole viewport. Modeled on the trace panel: it dims the page
+   rather than replacing it, closes on the backdrop or Escape, traps focus while
+   open, and restores focus to the control that opened it. Near full width under
+   its own breakpoint so it stays usable at 390px. */
+function ToolsSheet({ open, onClose, groups, count }) {
+  const panelRef = useRef(null);
+  const closeRef = useRef(null);
+  const restoreRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    restoreRef.current = document.activeElement;
+    closeRef.current?.focus();
+
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = panelRef.current?.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable || focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      const restore = restoreRef.current;
+      if (restore && typeof restore.focus === "function") restore.focus();
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="presentation">
+      <div
+        className="absolute inset-0 bg-[color-mix(in_oklab,var(--ink)_18%,transparent)]"
+        onMouseDown={onClose}
+        role="presentation"
+      />
+      <section
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Tools evaluated"
+        tabIndex={-1}
+        className="pb-glass-float relative flex h-full w-[min(34rem,calc(100vw-3rem))] flex-col shadow-[var(--shadow-lift)]"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-3">
+          <h2 className="text-[14px] font-medium text-[var(--ink)]">
+            Tools evaluated
+            {count > 0 && (
+              <span className="ml-2 text-[12px] font-normal text-[var(--ink-3)]">{count}</span>
+            )}
+          </h2>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Close tools evaluated"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--ink-2)] transition-colors duration-150 hover:bg-[var(--surface-2)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+
+        {/* One scroll region for the whole list, with sticky evidence headers
+            and no per-group clipping. */}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <ToolGroups groups={groups} />
+        </div>
+      </section>
     </div>
   );
 }
@@ -496,7 +592,12 @@ export default function Overview() {
       if (!groups.has(tool.metricKey)) groups.set(tool.metricKey, []);
       groups.get(tool.metricKey).push(tool);
     }
-    return { all, groups: [...groups.entries()] };
+    const orderedGroups = [...groups.entries()].sort(
+      ([left], [right]) =>
+        (METRIC_GROUP_ORDER[left] ?? Number.MAX_SAFE_INTEGER)
+        - (METRIC_GROUP_ORDER[right] ?? Number.MAX_SAFE_INTEGER),
+    );
+    return { all, groups: orderedGroups };
   }, [verdicts]);
 
   /* Marks for anything the bundle does not already carry. The build-time
@@ -546,43 +647,14 @@ export default function Overview() {
   const nothingYet = !loading && sessions.length === 0;
 
   // Verdicts fit to the height they are handed; the overflow is a link to Runs,
-  // where those completed runs actually live. Tools never truncate — they read
-  // in two columns instead, since Overview is their only home.
+  // where those completed runs actually live. Tools never truncate — they scroll
+  // inside the card and open in full in a side sheet, since Overview is their
+  // only home.
   const verdictFit = useFitList(verdicts.length);
 
-  /* How many tool rows fall past the card's edge once each row holds its
-     legibility floor. Reported rather than clipped in silence. */
-  const [toolBox, setToolBox] = useState(null);
-  const [hiddenTools, setHiddenTools] = useState(0);
-  useEffect(() => {
-    if (!toolBox) return undefined;
-    const measure = () => {
-      /* Counted against each row's OWN group box, since a group clips its own
-         overflow — a row can be cut by its group while still sitting inside the
-         card's outer bounds. Derived as total-minus-visible rather than counted
-         directly, so the number shown and the number reported always sum to the
-         total (counting both independently drifted by one at the boundary). */
-      const rows = toolBox.querySelectorAll("[data-tool-row]");
-      let visible = 0;
-      for (const row of rows) {
-        const box = row.closest("ul");
-        if (!box) continue;
-        if (row.getBoundingClientRect().bottom <= box.getBoundingClientRect().bottom + 1) visible += 1;
-      }
-      const hidden = rows.length - visible;
-      setHiddenTools((prev) => (prev === hidden ? prev : hidden));
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    /* Each group list is observed too, not just the card: a group caps itself to
-       a whole number of rows, and that cap changes which rows are visible
-       WITHOUT resizing the card — so watching only the outer box left the count
-       one row stale. */
-    const observer = new ResizeObserver(measure);
-    observer.observe(toolBox);
-    for (const list of toolBox.querySelectorAll("ul")) observer.observe(list);
-    return () => observer.disconnect();
-  }, [toolBox, tools.all.length]);
+  // The Tools card shows as much of the leaderboard as fits and scrolls the
+  // rest; this opens the whole list at full height in a side sheet.
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   /* The page is a dashboard, so it fits the viewport rather than scrolling: a
      roll-up you have to scroll is a list. Height flows header -> content, the
@@ -732,30 +804,59 @@ export default function Overview() {
 
             {tools.all.length > 0 && (
               <div className="flex min-h-0 flex-col lg:col-span-5">
-                <SectionCard title="Tools evaluated" count={tools.all.length} grow>
+                <SectionCard
+                  title="Tools evaluated"
+                  count={tools.all.length}
+                  grow
+                  action={
+                    <button
+                      type="button"
+                      onClick={() => setToolsOpen(true)}
+                      aria-haspopup="dialog"
+                      aria-expanded={toolsOpen}
+                      aria-label="Open the full leaderboard"
+                      title="Open the full leaderboard"
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--ink-2)] transition-colors duration-150 hover:bg-[var(--surface-2)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+                    >
+                      <ExpandIcon />
+                    </button>
+                  }
+                >
                   {/* A leaderboard, not a lookup table. Every tool is shown —
                       this roll-up exists nowhere else, so it must not truncate
-                      to a link that leads to a page without it — but each group
-                      is ranked best-first with its score drawn as a bar, so the
+                      to a link that leads to a page without it — each group
+                      ranked best-first with its score drawn as a bar, so the
                       standing reads at a glance instead of by comparing digits.
-                      Rows stretch to fill the card, keeping the column balanced. */}
-                  <div ref={setToolBox} className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-[var(--line)]">
-                    {tools.groups.map(([metricKey, group]) => (
-                      <ToolLeaderboard key={metricKey} metricKey={metricKey} tools={group} />
-                    ))}
+
+                      One scroll region holds every group with its header sticky.
+                      Measured evidence leads, and the documentation group remains
+                      reachable by scrolling instead of being clipped out of the
+                      card. The region is keyboard focusable so it can be scrolled
+                      without a pointer; the header control opens the same list at
+                      full height in a side sheet. */}
+                  {/* A scrollable region is keyboard focusable by the WAI
+                      technique so it can be scrolled without a pointer; the
+                      lint rule does not model that exception, so it is disabled
+                      here with the named region standing in for interactivity. */}
+                  {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+                  <div tabIndex={0}
+                    role="region"
+                    aria-label="Tools evaluated, all evidence groups"
+                    className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain border-t border-[var(--line)] focus-visible:outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    <ToolGroups groups={tools.groups} />
                   </div>
-                  {/* Rows hold a legibility floor rather than compressing, so on
-                      a short window some fall past the card's edge. Saying how
-                      many is the honest alternative to clipping them silently. */}
-                  {hiddenTools > 0 && (
-                    <p className="shrink-0 border-t border-[var(--line)] py-1.5 text-center text-[11px] text-[var(--ink-3)]">
-                      {hiddenTools} more below the fold — taller window shows all
-                    </p>
-                  )}
                 </SectionCard>
               </div>
             )}
             </div>
+
+            <ToolsSheet
+              open={toolsOpen}
+              onClose={() => setToolsOpen(false)}
+              groups={tools.groups}
+              count={tools.all.length}
+            />
           </>
         )}
       </div>

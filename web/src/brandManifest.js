@@ -3,16 +3,20 @@
    the script to add tools; it downloads each vendor's own mark so the console
    never calls an icon service at runtime. */
 export const BRAND_MANIFEST = new Map([
+  ["affinda", "/brand/affinda.ico"],
   ["amazonses", "/brand/amazon-ses.ico"],
+  ["aryaai", "/brand/arya-ai.png"],
   ["aws", "/brand/aws.svg"],
   ["azureaisearchopenai", "/brand/azure-ai-search-openai.ico"],
   ["customgpt", "/brand/customgpt.png"],
   ["digitalocean", "/brand/digital-ocean.svg"],
+  ["easyocr", "/brand/easyocr.svg"],
   ["elementor", "/brand/elementor.svg"],
   ["googlecloud", "/brand/google-cloud.svg"],
   ["langchainsharepoint", "/brand/langchain-sharepoint.ico"],
   ["mailgun", "/brand/mailgun.ico"],
   ["microsoftazure", "/brand/microsoft-azure.svg"],
+  ["mindee", "/brand/mindee.png"],
   ["mindeeinvoiceocr", "/brand/mindee-invoice-ocr.png"],
   ["openaivision", "/brand/openai-vision.ico"],
   ["paddleocr", "/brand/paddleocr.ico"],
@@ -20,4 +24,6 @@ export const BRAND_MANIFEST = new Map([
   ["ragie", "/brand/ragie.png"],
   ["resend", "/brand/resend.ico"],
   ["sendgrid", "/brand/sendgrid.ico"],
+  ["tesseract", "/brand/tesseract.png"],
+  ["veryfi", "/brand/veryfi.png"],
 ]);

@@ -228,6 +228,11 @@ def _bounded_data(event: str, data: dict) -> dict:
     value = dict(data)
     if event == "artifact" and value.get("kind") == "sandbox_log":
         value["line"] = str(value.get("line", "")).replace("\r", " ").replace("\n", " ")[:300]
+    if event == "artifact" and value.get("kind") == "sandbox_file":
+        value["sandbox"] = str(value.get("sandbox", ""))[:160]
+        value["path"] = str(value.get("path", ""))[:160]
+        value["language"] = str(value.get("language", ""))[:40]
+        value["content"] = str(value.get("content", ""))[:12_200]
     encoded = json.dumps(value, default=str)
     if len(encoded) > MAX_EVENT_CHARS:
         if event == "delta":
@@ -292,6 +297,54 @@ def set_scraper_order(owner: str, order) -> tuple[str, ...]:
     cleaned = scrapers.parse_order(order)
     STORE.set_setting(owner, SCRAPER_ORDER_KEY, " ".join(cleaned))
     return cleaned
+
+
+DEFAULT_PROVIDER_KEY = "default_provider:"
+PINNABLE_CAPABILITIES = ("orchestration", "assessment", "codegen")
+
+
+def default_providers(owner: str) -> dict[str, str]:
+    """The operator's chosen default provider per capability, where set."""
+    chosen = {}
+    for capability in PINNABLE_CAPABILITIES:
+        value = STORE.get_setting(owner, DEFAULT_PROVIDER_KEY + capability)
+        if value:
+            chosen[capability] = value
+    return chosen
+
+
+def set_default_provider(owner: str, capability: str, provider: str | None) -> None:
+    """Pin a capability to a provider, or clear the pin with a falsy value.
+
+    An unconfigured provider is accepted on purpose: `capability_providers` only
+    reorders by the pin and filters by what is configured, so a pin can never
+    disable a capability, and an operator is allowed to choose the provider they
+    are about to add a key for.
+    """
+    from engine.llm_clients import PROVIDERS
+
+    if capability not in PINNABLE_CAPABILITIES:
+        raise ValueError(f"unknown capability: {capability}")
+    key = DEFAULT_PROVIDER_KEY + capability
+    if not provider:
+        STORE.set_setting(owner, key, "")
+        return
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider: {provider}")
+    STORE.set_setting(owner, key, provider)
+
+
+def provider_keys(owner: str) -> dict[str, str]:
+    """Every credential this tenant has stored, by env name."""
+    return STORE.credentials(owner)
+
+
+def set_provider_key(owner: str, env: str, value: str) -> None:
+    STORE.set_credential(owner, env, value)
+
+
+def delete_provider_key(owner: str, env: str) -> None:
+    STORE.delete_credential(owner, env)
 
 
 def add_findings(session_id: str, items) -> None:

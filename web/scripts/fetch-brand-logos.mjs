@@ -81,6 +81,13 @@ const DOMAIN_HINTS = {
   moonshot: "moonshot.cn",
 };
 
+/* Project-owned marks that are not exposed as a favicon on the documentation
+ * site. These are explicit URLs controlled by the named project, never a
+ * generic host icon. */
+const DIRECT_ASSET_HINTS = {
+  tesseract: "https://avatars.githubusercontent.com/u/8401422?v=4",
+};
+
 const candidates = (name, docsUrl) => candidateDomains(name, docsUrl, DOMAIN_HINTS);
 
 async function get(url, { sameSiteAs = null } = {}) {
@@ -208,6 +215,15 @@ const results = await Promise.all(
     const slug = slugOf(name);
     if (!slug) return null;
     if (existing.has(slug)) return { name, slug, kept: true };
+    const directUrl = DIRECT_ASSET_HINTS[slug];
+    if (directUrl) {
+      const logo = await get(directUrl);
+      if (logo) {
+        const ext = extFor(logo.type);
+        await writeFile(path.join(BRAND_DIR, `${slug}.${ext}`), logo.buf);
+        return { name, slug, ext, domain: hostOf(directUrl), source: directUrl };
+      }
+    }
     for (const domain of candidates(name, docsUrl)) {
       const logo = await fetchLogo(domain);
       if (!logo) continue;

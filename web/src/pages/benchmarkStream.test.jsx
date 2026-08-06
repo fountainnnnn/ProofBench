@@ -30,12 +30,13 @@ vi.mock("../components/ChatThread.jsx", () => ({
   /* Stream status is rendered by the thread now (it is prose about this
      conversation, not page chrome), so the stub has to forward it or these
      assertions would be testing the stub instead of the behaviour. */
-  default: ({ running, statusMessage }) => (
+  default: ({ running, statusMessage, completedFooter }) => (
     <>
       {/* Kept OUTSIDE the running output: tests read that element's exact
           textContent, so anything else inside it would corrupt the assertion. */}
       <output data-testid="running">{String(running)}</output>
       {statusMessage ? <p>{statusMessage}</p> : null}
+      {completedFooter ? <div data-completed-footer-clearance /> : null}
     </>
   ),
 }));
@@ -110,6 +111,7 @@ describe("benchmark stream lifecycle", () => {
 
     await waitFor(() => expect(api.getSession).toHaveBeenCalledWith("s1"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start a new benchmark" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "New benchmark" })).toBeTruthy();
     expect(api.openEvents).not.toHaveBeenCalled();
   });
 
@@ -118,6 +120,60 @@ describe("benchmark stream lifecycle", () => {
     renderAt("/app/benchmark?session=s2");
 
     await waitFor(() => expect(api.openEvents).toHaveBeenCalledTimes(1));
+  });
+
+  it("auto-opens the sandbox execution panel when live output begins", async () => {
+    renderAt("/app/benchmark");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(streams).toHaveLength(1));
+
+    streams[0].emit("artifact", {
+      kind: "sandbox_log",
+      sandbox: "tesseract",
+      phase: "building",
+      line: "$ python -m pip install pytesseract",
+    }, "1");
+
+    expect(screen.getByRole("complementary", { name: "Sandbox execution" })).toBeTruthy();
+    expect(screen.getByText("$ python -m pip install pytesseract")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close sandbox execution" }));
+    expect(screen.queryByRole("complementary", { name: "Sandbox execution" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Execution \(1\)/ })).toBeTruthy();
+  });
+
+  it("restores saved sandbox output without opening a completed run panel", async () => {
+    api.getSession.mockResolvedValue({
+      ...completedSession,
+      events: [
+        [0, "artifact", {
+          kind: "sandbox_log",
+          sandbox: "easyocr",
+          phase: "running",
+          line: "ran images/inv_001.png",
+        }],
+        [1, "artifact", {
+          kind: "sandbox_file",
+          sandbox: "easyocr",
+          path: "adapter.py",
+          language: "python",
+          revision: 1,
+          phase: "building",
+          content: "def extract(path): return {}",
+        }],
+        [2, "state", { phase: "DONE" }],
+      ],
+      event_seq: 3,
+    });
+    renderAt("/app/benchmark?session=saved");
+
+    const button = await waitFor(() => screen.getByRole("button", { name: /View execution \(1\)/ }));
+    expect(screen.queryByRole("complementary", { name: "Sandbox execution" })).toBeNull();
+    fireEvent.click(button);
+
+    expect(screen.getByText("ran images/inv_001.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: /Files 1/ }));
+    expect(screen.getByText("def extract(path): return {}")).toBeTruthy();
+    expect(api.openEvents).not.toHaveBeenCalled();
   });
 
   it("closes the stream when the run reports done", async () => {
@@ -169,10 +225,15 @@ describe("benchmark stream lifecycle", () => {
   it("opens a fresh stream for a follow-up message after the run finished", async () => {
     api.getSession.mockResolvedValue(completedSession);
     renderAt("/app/benchmark?session=s1");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Ask a follow-up" })).toBeTruthy());
+    const followUp = await waitFor(() => screen.getByRole("button", { name: "Ask a follow-up" }));
+    const completedBar = followUp.closest("[data-completed-run-bar]");
+    expect(completedBar?.className).toContain("pb-chat-footer");
+    expect(completedBar?.className).toContain("absolute");
+    expect(completedBar?.className).toContain("bottom-0");
+    expect(document.querySelector("[data-completed-footer-clearance]")).toBeTruthy();
     expect(api.openEvents).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Ask a follow-up" }));
+    fireEvent.click(followUp);
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(api.openEvents).toHaveBeenCalledTimes(1));

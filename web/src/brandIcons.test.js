@@ -37,6 +37,17 @@ describe("brand icons", () => {
        fetched by scripts/fetch-brand-logos.mjs into the generated manifest. */
     expect(brandAssetFor("mindee_invoice_ocr")).toBe("/brand/mindee-invoice-ocr.png");
   });
+
+  it.each([
+    ["tesseract", "/brand/tesseract.png"],
+    ["affinda", "/brand/affinda.ico"],
+    ["arya_ai", "/brand/arya-ai.png"],
+    ["easyocr", "/brand/easyocr.svg"],
+    ["mindee", "/brand/mindee.png"],
+    ["veryfi", "/brand/veryfi.png"],
+  ])("bundles the measured OCR tool %s", (name, asset) => {
+    expect(brandAssetFor(name)).toBe(asset);
+  });
 });
 
 /* The bundled manifest is frozen when the frontend is built, so a tool
@@ -118,5 +129,20 @@ describe("marks for tools newer than this build", () => {
 
     await expect(ensureBrandAssets(["jira_n8n_integration"], fetchLogos)).resolves.toBe(true);
     expect(fetchLogos).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards v1 false-negative entries created by the unbatched client", async () => {
+    localStorage.setItem("proofbench.brandAssets.v1", JSON.stringify({
+      version: 1,
+      items: [["late_tool", { asset: null, cachedAt: Date.now() }]],
+    }));
+    resetRuntimeBrandAssets();
+    const fetchLogos = vi.fn().mockResolvedValue({
+      late_tool: "data:image/png;base64,AA",
+    });
+
+    await expect(ensureBrandAssets(["late_tool"], fetchLogos)).resolves.toBe(true);
+    expect(fetchLogos).toHaveBeenCalledWith(["late_tool"]);
+    expect(runtimeBrandAssetFor("late_tool")).toBe("data:image/png;base64,AA");
   });
 });

@@ -260,6 +260,90 @@ def secure_httpx_client(
     return safe_base, client
 
 
+def local_http_enabled() -> bool:
+    """Whether a self-hosted local scraper may be reached over plain HTTP.
+
+    Off by default. The hardened client above forbids loopback, private, and
+    non-HTTPS destinations so that no attacker-supplied hostname can pivot into
+    the internal network. A local operator running SearXNG or Crawl4AI in Docker
+    needs exactly that forbidden shape, so this one relaxation is gated behind
+    the same insecure-dev flag as runtime credential writes and never applies in
+    a deployment that has not opted into it.
+    """
+    import os
+
+    return os.environ.get("PROOFBENCH_INSECURE_DEV") == "1"
+
+
+def _is_local_host(hostname: str) -> bool:
+    """True only for loopback or private hosts.
+
+    A public hostname is refused here on purpose: this path exists for a local
+    tool, so it must never become a second, weaker route to a public target,
+    and refusing anything non-local also closes a DNS-rebinding pivot.
+    """
+    normalized = str(hostname or "").casefold().rstrip(".")
+    if normalized in ("localhost", "localhost.localdomain") or normalized.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized.split("%", 1)[0])
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
+
+
+def local_service_listening(base_url: str, timeout: float = 0.15) -> bool:
+    """Whether something is accepting connections at a local service's address.
+
+    A TCP connect rather than an HTTP request, for two reasons: "is it running"
+    is a transport question, so there is no health path to guess at; and an HTTP
+    ping to a closed port costs the full timeout once per resolved address, which
+    made `localhost` (both ::1 and 127.0.0.1) take seconds to answer. A refused
+    connection returns immediately, so this is cheap enough to call per request.
+    """
+    if not local_http_enabled():
+        return False
+    try:
+        parsed = urlsplit(str(base_url))
+        hostname = parsed.hostname
+        if not hostname or not _is_local_host(hostname):
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except Exception:
+        return False
+    for family, socket_type, proto, _canon, address in infos:
+        try:
+            with socket.socket(family, socket_type, proto) as probe:
+                probe.settimeout(timeout)
+                if probe.connect_ex(address) == 0:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def local_service_client(base_url: str) -> tuple[str, object]:
+    """A plain client for a self-hosted local service (SearXNG, Crawl4AI).
+
+    Deliberately bypasses the outbound URL policy, so it is fenced in two ways:
+    it works only when `local_http_enabled()` is true, and only for a loopback
+    or private base URL. Redirects and environment proxies stay disabled, and
+    the caller is expected to issue requests only against this local base.
+    """
+    import httpx
+
+    if not local_http_enabled():
+        raise RuntimeError("local service URLs require PROOFBENCH_INSECURE_DEV=1")
+    parsed = urlsplit(str(base_url))
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or not _is_local_host(parsed.hostname)):
+        raise RuntimeError("local service URL must be a loopback or private host")
+    client = httpx.Client(follow_redirects=False, trust_env=False)
+    return str(base_url).rstrip("/"), client
+
+
 def secure_async_httpx_client(
     base_url: str, allowed_hosts=None
 ) -> tuple[str, object]:
