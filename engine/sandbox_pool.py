@@ -183,16 +183,6 @@ class SandboxHandle:
     sandbox: object = field(repr=False)  # daytona Sandbox
 
 
-# How often the streaming exec asks whether its command has finished, and how
-# long it keeps reading afterwards so output written just before exit is not cut.
-_STREAM_POLL_SECONDS = 0.4
-_STREAM_DRAIN_SECONDS = 0.8
-
-
-class _StreamingUnsupported(Exception):
-    """This pool's backend cannot stream; the caller falls back to blocking."""
-
-
 class SandboxPool:
     """Own all Daytona resources created for one orchestrator instance."""
 
@@ -219,7 +209,6 @@ class SandboxPool:
         self._tracked: dict[int, object] = {}
         self._leased: dict[str, object] = {}
         self._remote_ids: dict[int, str] = {}
-        self._sessions: dict[str, str] = {}
         self._lock = threading.RLock()
         self._started = False
         self._lease_stop = threading.Event()
@@ -676,130 +665,36 @@ class SandboxPool:
 
     def exec(self, h: SandboxHandle, cmd: str, timeout: int = 120,
              on_line=None) -> str:
-        """Run one command, optionally reporting its output as it is produced.
+        """Run one command and return its complete output.
 
-        Without ``on_line`` this is the original blocking call. With one, the
-        command runs in a sandbox session and its stdout/stderr are streamed
-        over a websocket, so a caller can show a long build moving instead of
-        one silent line for two minutes.
+        ``on_line`` receives every line once the command finishes. It exists so
+        callers can report output line by line without knowing how it was
+        obtained, and so live streaming can be switched on later without
+        touching them.
 
-        Streaming is opportunistic: a pool whose backend has no session support
-        (the offline test's local pool, an injected fake, an older SDK) falls
-        back to the blocking path and simply reports every line at the end. The
-        return value and the failure behaviour are identical either way, so no
-        caller has to know which path ran.
+        Streaming is deliberately NOT used yet. The provider does offer it, and
+        it demonstrably works — a real `apt-get install` streamed 711 lines over
+        61 seconds, first line at 3.3s — but only sometimes: the same code then
+        returned nothing for the next command in the session, and a fresh
+        session per command failed the same way non-deterministically. Two other
+        traps sit behind it: a session command started with run_async never
+        populates `exit_code` (so a failed build reads as a success unless the
+        status is smuggled out through the log text), and the SDK's async log
+        subscription never completes and ignores cancellation, hanging the
+        interpreter for 300s at loop teardown. A build path that intermittently
+        times out is worse than one that reports late, so this stays blocking
+        until that is reliable.
         """
-        if on_line is None:
-            return self._exec_blocking(h, cmd, timeout)
-        try:
-            return self._exec_streaming(h, cmd, timeout, on_line)
-        except _StreamingUnsupported:
-            output = self._exec_blocking(h, cmd, timeout)
-            for line in output.splitlines():
-                on_line(line)
-            return output
-
-    def _exec_blocking(self, h: SandboxHandle, cmd: str, timeout: int) -> str:
         sandbox = self._sandbox_for(h)
         response = sandbox.process.exec(cmd, timeout=timeout)
         exit_code = getattr(response, "exit_code", getattr(response, "code", None))
+        text = _text(response)
         if exit_code not in (None, 0, "0"):
-            raise RuntimeError(f"sandbox command failed with exit code {exit_code}: {_text(response)[-1200:]}")
-        return _text(response)
-
-    def _exec_streaming(self, h: SandboxHandle, cmd: str, timeout: int, on_line) -> str:
-        """Session-backed exec that forwards each line as it arrives."""
-        import asyncio
-
-        sandbox = self._sandbox_for(h)
-        process = getattr(sandbox, "process", None)
-        needed = ("create_session", "execute_session_command",
-                  "get_session_command_logs_async", "get_session_command")
-        if not all(callable(getattr(process, name, None)) for name in needed):
-            raise _StreamingUnsupported
-        try:
-            from daytona.common.process import SessionExecuteRequest
-        except Exception as exc:
-            raise _StreamingUnsupported from exc
-
-        session_id = self._session_for(h, process)
-        response = process.execute_session_command(
-            session_id, SessionExecuteRequest(command=cmd, run_async=True),
-            timeout=timeout)
-        command_id = getattr(response, "cmd_id", None)
-        if not command_id:
-            raise _StreamingUnsupported
-
-        collected: list[str] = []
-        pending = ""
-
-        def consume(chunk) -> None:
-            # The websocket delivers byte chunks, not lines: a single line can
-            # arrive split across two callbacks, so the remainder is held until
-            # its newline shows up. Whatever the callback does must be cheap —
-            # the SDK drops the socket if it blocks here.
-            nonlocal pending
-            pending += str(chunk or "")
-            while "\n" in pending:
-                line, pending = pending.split("\n", 1)
-                collected.append(line)
+            raise RuntimeError(f"sandbox command failed with exit code {exit_code}: {text[-1200:]}")
+        if on_line is not None:
+            for line in text.splitlines():
                 on_line(line)
-
-        async def run() -> object:
-            """Stream until the command reports an exit code, then stop.
-
-            The log socket does not close when the command ends, so awaiting it
-            alone never returns: a finished command looked like a hang and a
-            FAILING one surfaced as a timeout rather than its exit code. The
-            command's own status is the completion signal; the stream is
-            cancelled once it arrives.
-            """
-            task = asyncio.create_task(
-                process.get_session_command_logs_async(
-                    session_id, command_id, consume, consume))
-            code = None
-            deadline = asyncio.get_running_loop().time() + timeout
-            try:
-                while asyncio.get_running_loop().time() < deadline:
-                    await asyncio.sleep(_STREAM_POLL_SECONDS)
-                    info = await asyncio.to_thread(
-                        process.get_session_command, session_id, command_id)
-                    code = getattr(info, "exit_code", None)
-                    if code is not None:
-                        # Give output produced just before exit time to arrive.
-                        await asyncio.sleep(_STREAM_DRAIN_SECONDS)
-                        break
-            finally:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            return code
-
-        exit_code = asyncio.run(run())
-        if pending:
-            collected.append(pending)
-            on_line(pending)
-        if exit_code is None:
-            raise RuntimeError(f"sandbox command timed out after {timeout}s")
-        output = "\n".join(collected)
-        if exit_code not in (None, 0, "0"):
-            raise RuntimeError(
-                f"sandbox command failed with exit code {exit_code}: {output[-1200:]}")
-        return output
-
-    def _session_for(self, h: SandboxHandle, process) -> str:
-        """One reusable session per sandbox, created on first streaming use."""
-        with self._lock:
-            existing = self._sessions.get(h.id)
-        if existing:
-            return existing
-        session_id = f"pb-{h.id}"
-        process.create_session(session_id)
-        with self._lock:
-            self._sessions[h.id] = session_id
-        return session_id
+        return text
 
     def run_python(self, h: SandboxHandle, code: str, timeout: int = 180) -> str:
         sandbox = self._sandbox_for(h)
