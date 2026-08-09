@@ -87,7 +87,7 @@ export async function bootstrapAuthSession() {
 
 export async function createAuthSession(token) {
   const candidate = String(token || "").trim();
-  if (!candidate) throw new Error("Enter an API token.");
+  if (!candidate) throw new Error("Enter the password.");
   const response = await fetch(`${BASE}/api/auth/session`, {
     method: "POST",
     headers: { Authorization: `Bearer ${candidate}` },
@@ -127,7 +127,7 @@ export async function ensureAuthSession() {
     authRefreshPromise = (authToken
       ? createAuthSession(authToken)
       : bootstrapAuthSession().then((context) => {
-          if (!context.localMode) throw new Error("Re-enter your API token to continue.");
+          if (!context.localMode) throw new Error("Re-enter your password to continue.");
           return context;
         }))
       .finally(() => { authRefreshPromise = null; });

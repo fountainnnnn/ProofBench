@@ -149,7 +149,7 @@ docker compose build --pull
 docker compose up -d --wait
 ```
 
-Open `http://127.0.0.1:8080/`. There is no sign-in screen and no API token:
+Open `http://127.0.0.1:8080/`. There is no sign-in screen and no password:
 every request resolves to the single `local-dev` tenant, and the header shows
 `Local mode` instead of a sign-out control.
 

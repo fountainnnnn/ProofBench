@@ -23,7 +23,7 @@ service is named `Postgres`, the resulting value is normally:
 ```text
 PROOFBENCH_DATABASE_URL=${{Postgres.DATABASE_URL}}
 PROOFBENCH_INSECURE_DEV=0
-PROOFBENCH_API_KEYS={"client-trial":"<32-or-more-random-characters>"}
+PROOFBENCH_API_KEYS={"client-trial":"<the sign-in password, 32+ characters>"}
 PROOFBENCH_COOKIE_SECURE=true
 PROOFBENCH_RETENTION_DAYS=7
 PROOFBENCH_DEPLOYMENT_ID=railway-client-trial

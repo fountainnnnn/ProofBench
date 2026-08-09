@@ -230,7 +230,7 @@ export default function Landing() {
 
               <p className="mt-5 max-w-[48ch] text-[12px] leading-5 text-[var(--ink-3)]">
                 This deployment runs locally. In the local profile there is no sign-in and no
-                API token to enter.
+                password to enter.
               </p>
             </div>
 

@@ -70,7 +70,7 @@ test("production shell, dataset lifecycle, accessibility, and responsive layout"
     await expect(page.getByRole("heading", { name: "Sign in to ProofBench" })).toBeVisible();
     await assertA11y(page, "sign-in");
 
-    await page.getByLabel("API token").fill(token);
+    await page.getByLabel("Password").fill(token);
     await page.getByRole("button", { name: "Sign in" }).click();
   }
   await expect(page.locator("#proofbench-main").getByRole("heading", { name: "Datasets" })).toBeVisible();
@@ -78,7 +78,7 @@ test("production shell, dataset lifecycle, accessibility, and responsive layout"
 
   if (authenticated) {
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Re-enter your API token" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Re-enter your password" })).toBeVisible();
     await expect(page.locator("#proofbench-main")).toHaveCount(0);
     await page.locator("#proofbench-token").fill(token);
     await page.getByRole("button", { name: "Restore write access" }).click();

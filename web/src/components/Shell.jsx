@@ -436,14 +436,14 @@ function AccessGate({ restore, unavailable, onSubmit, busy }) {
       >
         <Logo />
         <h1 id="proofbench-access-title" className="mt-6 text-[24px] font-semibold tracking-[-0.01em]">
-          {unavailable ? "Console unavailable" : restore ? "Re-enter your API token" : "Sign in to ProofBench"}
+          {unavailable ? "Console unavailable" : restore ? "Re-enter your password" : "Sign in to ProofBench"}
         </h1>
         <p className="mt-2 text-[13px] leading-relaxed text-[var(--ink-2)]">
           {unavailable
             ? "ProofBench could not verify this deployment's access settings. Check the service and try again."
             : restore
-              ? "Your read-only session is still active. Re-enter the token to restore write access; it is kept in memory only."
-              : "Enter the client-trial API token. It is kept in memory only and is never saved by the browser."}
+              ? "Your read-only session is still active. Re-enter the password to restore write access; it is kept in memory only."
+              : "Enter the password for this deployment. It is kept in memory only and is never saved by the browser."}
         </p>
         {unavailable ? (
           <button type="button" onClick={() => onSubmit("")} disabled={busy} className={`${BTN_SECONDARY} mt-6 h-10 w-full`}>
@@ -452,12 +452,12 @@ function AccessGate({ restore, unavailable, onSubmit, busy }) {
         ) : (
           <form onSubmit={submit} className="mt-6">
             <label htmlFor="proofbench-token" className="mb-1.5 block text-[12px] font-medium text-[var(--ink-2)]">
-              API token
+              Password
             </label>
             <input
               id="proofbench-token"
               type="password"
-              autoComplete="off"
+              autoComplete="current-password"
               spellCheck="false"
               value={token}
               onChange={(event) => setToken(event.target.value)}

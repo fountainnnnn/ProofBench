@@ -161,7 +161,7 @@ export default function Profile() {
               </h2>
               <p className="mt-1 max-w-[62ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
                 This deployment runs the tokenless local profile, so the browser holds no
-                credential. To require one, set an API token on the server and restart it; the
+                credential. To require one, set a password on the server and restart it; the
                 console will then refuse to open without it. Provider credentials are separate and
                 live in{" "}
                 <Link to="/app/settings" className="font-medium text-[var(--accent)] hover:underline">

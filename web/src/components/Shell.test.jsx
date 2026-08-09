@@ -31,12 +31,12 @@ function renderShell() {
 // Regression: no browser path may render an API-token field or a sign-in
 // heading. The console is local-profile only; a token would not help.
 function expectNoSignInAffordance(container) {
-  expect(screen.queryByLabelText(/API token/i)).toBeNull();
+  expect(screen.queryByLabelText(/Password/i)).toBeNull();
   expect(container.querySelector("#proofbench-token")).toBeNull();
   expect(container.querySelector('input[type="password"]')).toBeNull();
   expect(container.querySelector("form")).toBeNull();
   expect(screen.queryByRole("heading", { name: /Sign in/i })).toBeNull();
-  expect(screen.queryByRole("heading", { name: /API token/i })).toBeNull();
+  expect(screen.queryByRole("heading", { name: /password/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /^Sign (in|out)$/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /Restore write access/i })).toBeNull();
 }
@@ -118,7 +118,7 @@ describe("Shell authenticated client trial", () => {
 
     expect(await screen.findByRole("heading", { name: "Sign in to ProofBench" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Write action" })).toBeNull();
-    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "client-secret" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "client-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByRole("button", { name: "Write action" })).toBeTruthy();
@@ -132,9 +132,9 @@ describe("Shell authenticated client trial", () => {
     });
     renderShell();
 
-    expect(await screen.findByRole("heading", { name: "Re-enter your API token" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Re-enter your password" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Write action" })).toBeNull();
-    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "client-secret" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "client-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Restore write access" }));
     expect(await screen.findByRole("button", { name: "Write action" })).toBeTruthy();
   });
@@ -145,7 +145,7 @@ describe("Shell authenticated client trial", () => {
       cookieAuthenticated: false, writeAuthenticated: false,
     });
     renderShell();
-    fireEvent.change(await screen.findByLabelText("API token"), { target: { value: "client-secret" } });
+    fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "client-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     await screen.findByRole("button", { name: "Write action" });
 
@@ -182,7 +182,7 @@ describe("Shell local tokenless mode", () => {
     );
 
     expect(await screen.findByRole("button", { name: "Write action" })).toBeTruthy();
-    expect(screen.queryByLabelText("API token")).toBeNull();
+    expect(screen.queryByLabelText("Password")).toBeNull();
   });
 
   it("links the shell wordmark back to the landing page", async () => {
