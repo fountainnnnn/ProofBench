@@ -74,6 +74,12 @@ HOSTED_DOC_CONCURRENCY = 8
 # is the record of what actually ran, so it is generous; the session's event
 # budget (PROOFBENCH_MAX_EVENTS) is the outer bound.
 SANDBOX_LOG_LINES = 60
+
+
+def _build_log_path(command: str) -> str:
+    """A stable, readable filename for one build command's full output."""
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", str(command)) if w][:4]
+    return "build-" + ("-".join(words).lower() or "command") + ".log"
 SANDBOX_LOG_LINE_CHARS = 1000
 
 
@@ -2806,8 +2812,9 @@ class Orchestrator:
                 for command in plan["build_commands"]:
                     self._check_cancelled()
                     self._log(name, f"$ {command}", "building")
-                    output = self.pool.exec(handle, command, timeout=300)
-                    self._log_output(name, output, "building")
+                    output = self._stream_command(name, handle, command, "building")
+                    self._sandbox_file(name, output, revision=1,
+                                       path=_build_log_path(command))
 
                 statuses[name] = "validating"
                 self._state("VALIDATING", dict(statuses))
@@ -3228,8 +3235,9 @@ class Orchestrator:
         for cmd in candidate.build_commands:
             self._check_cancelled()
             self._log(handle.label, f"$ {cmd}", "building")
-            out = self.pool.exec(handle, cmd, timeout=300)
-            self._log_output(handle.label, out, "building")
+            out = self._stream_command(handle.label, handle, cmd, "building")
+            self._sandbox_file(handle.label, out, revision=1,
+                               path=_build_log_path(cmd))
 
     def _probe_adapter(self, handle, candidate: Candidate, label: str) -> tuple[bool, str]:
         """Run one validation probe and log its outcome. Returns (ok, raw output)."""
@@ -3652,6 +3660,42 @@ else:
             self.ctx.env_passthrough,
             self._entitlements_for(candidate),
         )
+
+    def _stream_command(self, sandbox: str, handle, command: str, phase: str,
+                        timeout: int = 300) -> str:
+        """Run a build command, showing its output while it runs.
+
+        Lines reach the panel as the command produces them, which is the whole
+        point: a two-minute install used to show one line and then everything
+        at once, which reads as a hang. The live view is capped so a chatty
+        install cannot evict the rest of the run from the session's bounded
+        event log; the complete output is written as a file artifact, so
+        nothing is actually lost.
+        """
+        emitted = 0
+        suppressed = 0
+
+        def on_line(line: str) -> None:
+            nonlocal emitted, suppressed
+            if not line.strip():
+                return
+            if emitted < SANDBOX_LOG_LINES:
+                emitted += 1
+                self._log(sandbox, line, phase)
+            else:
+                suppressed += 1
+
+        try:
+            output = self.pool.exec(handle, command, timeout=timeout, on_line=on_line)
+        except TypeError:
+            # A pool predating the streaming signature. Still correct, just not live.
+            output = self.pool.exec(handle, command, timeout=timeout)
+            self._log_output(sandbox, output, phase)
+            return output
+        if suppressed:
+            self._log(sandbox,
+                      f"... {suppressed} more lines; full output in files ...", phase)
+        return output
 
     def _log_output(self, sandbox: str, output: str, phase: str) -> None:
         """Emit a command's real output, bounded rather than summarised.

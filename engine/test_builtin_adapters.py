@@ -25,6 +25,30 @@ FULL_ENV = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _offline_dns(monkeypatch):
+    """Resolve every hostname to a public address without touching the network.
+
+    Entitling DOUBLEWORD_BASE_URL validates the URL, and validation resolves the
+    host through the real resolver by default. On a machine without DNS (or in a
+    sandbox that blocks it) that made these tests fail on connectivity, which is
+    exactly the ambient dependency an offline suite must not have. The URL
+    policy itself is still exercised; only the lookup is canned.
+    """
+    import functools
+    import socket
+
+    from engine import network_security
+
+    def public(host, port, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(
+        network_security, "validate_external_url",
+        functools.partial(network_security.validate_external_url, resolver=public),
+    )
+
+
 def test_registry_declares_only_credentials_its_adapter_source_reads():
     """Every required name must actually appear in the first-party adapter source."""
     for name, (required, optional) in BUILTIN_ADAPTER_CREDENTIALS.items():
