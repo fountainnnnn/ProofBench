@@ -6,7 +6,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 const api = vi.hoisted(() => ({
   AUTH_CHANGE_EVENT: "proofbench-auth-change",
   bootstrapAuthSession: vi.fn(),
+  createAuthSession: vi.fn(),
   listSessions: vi.fn(),
+  logoutAuthSession: vi.fn(),
 }));
 
 vi.mock("../api.js", () => api);
@@ -91,6 +93,65 @@ describe("Shell without a local profile", () => {
 
     expect(await screen.findByRole("heading", { name: "Console unavailable" })).toBeTruthy();
     expectNoSignInAffordance(container);
+  });
+});
+
+describe("Shell authenticated client trial", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.listSessions.mockResolvedValue([]);
+    api.createAuthSession.mockResolvedValue({
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: true, writeAuthenticated: true,
+    });
+    api.logoutAuthSession.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(cleanup);
+
+  it("signs in with a token and never renders the console before validation", async () => {
+    api.bootstrapAuthSession.mockResolvedValue({
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: false, writeAuthenticated: false,
+    });
+    renderShell();
+
+    expect(await screen.findByRole("heading", { name: "Sign in to ProofBench" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Write action" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "client-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("button", { name: "Write action" })).toBeTruthy();
+    expect(api.createAuthSession).toHaveBeenCalledWith("client-secret");
+  });
+
+  it("requires token re-entry when only the HttpOnly read cookie survived", async () => {
+    api.bootstrapAuthSession.mockResolvedValue({
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: true, writeAuthenticated: false,
+    });
+    renderShell();
+
+    expect(await screen.findByRole("heading", { name: "Re-enter your API token" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Write action" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("API token"), { target: { value: "client-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore write access" }));
+    expect(await screen.findByRole("button", { name: "Write action" })).toBeTruthy();
+  });
+
+  it("clears the cookie and returns to the sign-in gate on sign-out", async () => {
+    api.bootstrapAuthSession.mockResolvedValue({
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: false, writeAuthenticated: false,
+    });
+    renderShell();
+    fireEvent.change(await screen.findByLabelText("API token"), { target: { value: "client-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await screen.findByRole("button", { name: "Write action" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Sign out" })[0]);
+    expect(await screen.findByRole("heading", { name: "Sign in to ProofBench" })).toBeTruthy();
+    expect(api.logoutAuthSession).toHaveBeenCalledOnce();
   });
 });
 

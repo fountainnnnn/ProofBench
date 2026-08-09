@@ -5,13 +5,13 @@ outputs, generated adapters, logs, reports, and provider credentials.
 
 ## Current deployment
 
-ProofBench runs locally, operated by its copyright holder, with no public or
-hosted instance and no third-party users. The data described here is therefore
-the operator's own. The technical controls below are implemented and enforced
-now; the customer-facing obligations at the end of this document are a checklist
-for a future hosted or licensed deployment, not descriptions of anything in
-force today. "Tenant" and "customer" below name the code's ownership model,
-which exists so multi-user operation is possible later.
+ProofBench supports local operation and one narrow Railway deployment for an
+invited client's end-to-end trial. In the trial, Railway PostgreSQL stores
+transactional state and a Railway volume stores uploads and artifacts. Daytona
+and the configured model/search/extraction providers receive the data described
+under third-party egress. The technical controls below are implemented; the
+operator must separately disclose the actual region, providers, retention, and
+deletion terms to the invited client before accepting their documents.
 
 ## Storage boundaries
 
@@ -30,9 +30,9 @@ The default is `0`, which means **no automatic expiry**: data is kept until the
 operator deletes it. Local and on-premises operation defaults this way on
 purpose, so that an operator's own benchmark data is never removed on a horizon
 they did not choose. Setting a positive number enables expiry after that many
-days. Active runs are never removed by retention cleanup. A future hosted
-offering would instead use a finite, contractually disclosed horizon; see
-[ADR-0001](adr/0001-local-product-boundary.md#retention-default).
+days. Active runs are never removed by retention cleanup. The Railway trial
+must use a positive, disclosed value; the example runbook uses seven days. See
+[ADR-0002](adr/0002-railway-client-trial.md).
 
 Deleting a session queues removal of its conversation, immutable run records,
 reports, and run artifacts. Dataset deletion queues both registry metadata and
@@ -63,11 +63,10 @@ restates nor guarantees. An operator who enables a provider is responsible for
 confirming that sending it their data is lawful and permitted. Disabling a
 provider is the only way to stop egress to it.
 
-## Future-launch checklist (not yet satisfied)
+## Third-party launch checklist
 
-None of the following exists yet. Every item must be in place before ProofBench
-processes any third party's data, whether as a hosted service or as software
-licensed to a company to run.
+Every applicable item must be addressed before ProofBench processes a client's
+documents. A synthetic-data technical smoke may happen first.
 
 - A published privacy notice identifying the operator by legal name,
   subprocessors, deployment regions, lawful basis, data-subject rights, a

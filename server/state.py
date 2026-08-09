@@ -1,4 +1,4 @@
-"""SQLite-backed durable state for sessions, immutable runs, messages, and SSE events."""
+"""Durable state operations shared by the SQLite and PostgreSQL backends."""
 from __future__ import annotations
 
 import json
@@ -29,6 +29,13 @@ class BusyError(RuntimeError):
 
 class QuotaError(RuntimeError):
     pass
+
+
+def _is_integrity_error(exc: Exception) -> bool:
+    """Recognize DB-API integrity errors without importing an optional backend."""
+    return isinstance(exc, sqlite3.IntegrityError) or exc.__class__.__name__ in {
+        "IntegrityError", "UniqueViolation",
+    }
 
 
 class SQLiteStore:
@@ -433,7 +440,9 @@ class SQLiteStore:
                         (session_id, owner, title, "INTAKE", now, now, dataset_id),
                     )
                     break
-                except sqlite3.IntegrityError:
+                except Exception as exc:
+                    if not _is_integrity_error(exc):
+                        raise
                     continue
             else:
                 raise RuntimeError("could not allocate a session id")
@@ -561,7 +570,9 @@ class SQLiteStore:
                     )
                     return {"id": dataset_id, "owner": owner, "path": path,
                             "reserved_bytes": requested}
-                except sqlite3.IntegrityError:
+                except Exception as exc:
+                    if not _is_integrity_error(exc):
+                        raise
                     continue
         raise RuntimeError("could not allocate a dataset id")
 
@@ -704,7 +715,8 @@ class SQLiteStore:
             return
         with self.transaction(immediate=True) as connection:
             connection.executemany(
-                "INSERT OR IGNORE INTO findings(session_id,title,url,created_at) VALUES(?,?,?,?)",
+                "INSERT INTO findings(session_id,title,url,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(session_id,url) DO NOTHING",
                 rows,
             )
             connection.execute(
@@ -901,7 +913,9 @@ class SQLiteStore:
                          self._json(spec), dataset_id, self.worker_id, utc_after(self.lease_seconds)),
                     )
                     break
-                except sqlite3.IntegrityError:
+                except Exception as exc:
+                    if not _is_integrity_error(exc):
+                        raise
                     continue
             else:
                 raise RuntimeError("could not allocate a run id")
@@ -1031,8 +1045,11 @@ class SQLiteStore:
                 connection.execute("DELETE FROM events WHERE session_id=? AND seq<=?",
                                    (session_id, count_cutoff))
                 if removed:
-                    connection.execute("UPDATE sessions SET event_bytes=MAX(0,event_bytes-?) WHERE id=?",
-                                       (removed, session_id))
+                    connection.execute(
+                        "UPDATE sessions SET event_bytes="
+                        "CASE WHEN event_bytes>? THEN event_bytes-? ELSE 0 END WHERE id=?",
+                        (removed, removed, session_id),
+                    )
             current_bytes = connection.execute(
                 "SELECT event_bytes FROM sessions WHERE id=?", (session_id,)
             ).fetchone()[0]
@@ -1051,8 +1068,11 @@ class SQLiteStore:
                 if cutoff is not None:
                     connection.execute("DELETE FROM events WHERE session_id=? AND seq<=?",
                                        (session_id, cutoff))
-                    connection.execute("UPDATE sessions SET event_bytes=MAX(0,event_bytes-?) WHERE id=?",
-                                       (removed, session_id))
+                    connection.execute(
+                        "UPDATE sessions SET event_bytes="
+                        "CASE WHEN event_bytes>? THEN event_bytes-? ELSE 0 END WHERE id=?",
+                        (removed, removed, session_id),
+                    )
             connection.execute(
                 "DELETE FROM messages WHERE session_id=? AND id NOT IN "
                 "(SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT ?)",
@@ -1147,7 +1167,7 @@ class SQLiteStore:
         with self.transaction(immediate=True) as connection:
             interrupted = [dict(row) for row in connection.execute(
                 "SELECT id,active_job_id,active_kind FROM sessions WHERE is_running=1 AND "
-                "(? OR (active_lease_expires_at IS NOT NULL AND active_lease_expires_at<=?) OR "
+                "(?=1 OR (active_lease_expires_at IS NOT NULL AND active_lease_expires_at<=?) OR "
                 "(active_lease_expires_at IS NULL AND updated_at<=?))",
                 (1 if force else 0, now, orphan_before),
             ).fetchall()]
@@ -1320,7 +1340,21 @@ class SQLiteStore:
                 return False
             connection.execute(
                 "INSERT INTO request_usage(owner,bucket,count) VALUES(?,?,1) "
-                "ON CONFLICT(owner,bucket) DO UPDATE SET count=count+1", (owner, bucket),
+                "ON CONFLICT(owner,bucket) DO UPDATE SET count=request_usage.count+1",
+                (owner, bucket),
             )
             connection.execute("DELETE FROM request_usage WHERE bucket<?", (bucket - 2,))
             return True
+
+
+def create_state_store(*, sqlite_path: str, **kwargs):
+    """Select PostgreSQL when configured, otherwise preserve local SQLite."""
+    database_url = (
+        os.environ.get("PROOFBENCH_DATABASE_URL", "").strip()
+        or os.environ.get("DATABASE_URL", "").strip()
+    )
+    if database_url:
+        from server.postgres_state import PostgresStore
+
+        return PostgresStore(database_url, **kwargs)
+    return SQLiteStore(sqlite_path, **kwargs)

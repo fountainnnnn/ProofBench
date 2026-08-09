@@ -1,21 +1,19 @@
 # ProofBench technical interfaces and invariants (v2)
 
 This document defines the internal technical interfaces and safety invariants of
-the hardened local build. Git history preserves the hackathon v1 document.
+the hardened local build and the single-client Railway trial. Git history
+preserves the hackathon v1 document.
 
 "Contract" here means a constraint binding on the code, not an agreement with
 any person. These invariants are binding regardless of who runs the software,
-and no change may weaken them. They are not a service commitment: there is no
-public ProofBench instance, and nothing here offers availability, support, or
-retention to anyone.
+and no change may weaken them. They are not a service commitment and offer no
+availability or support target.
 
-Scope: the hardened single-host deployment in this repository, which today is
-run locally by the copyright holder. See
-[docs/adr/0001-local-product-boundary.md](docs/adr/0001-local-product-boundary.md)
-for the product boundary and [ARCHITECTURE.md](ARCHITECTURE.md) for the current
-map. A future hosted SaaS or a licensee's adaptation would have to satisfy these
-invariants and add the multi-host requirements in section 8, plus the
-third-party-facing obligations in
+Scope: the local single-host deployment and the one-replica Railway client
+trial. See [ADR-0002](docs/adr/0002-railway-client-trial.md) and
+[ARCHITECTURE.md](ARCHITECTURE.md). A broader hosted SaaS or a licensee's
+adaptation would have to satisfy these invariants and add the multi-host
+requirements in section 8, plus the third-party-facing obligations in
 [docs/DATA_HANDLING.md](docs/DATA_HANDLING.md). ProofBench is proprietary; see
 [LICENSE](LICENSE).
 
@@ -40,6 +38,11 @@ third-party-facing obligations in
   transports such as SSE and report downloads. The sole cookie-authenticated
   write exception is idempotent logout, which also requires an exact same-origin
   `Origin` check and can only clear the auth cookie.
+- The browser accepts a tenant token only at the sign-in gate and keeps it in
+  JavaScript module memory. It never writes the token to localStorage,
+  sessionStorage, IndexedDB, a URL, or rendered markup. Reload discards write
+  access; a surviving HttpOnly cookie is reported as read-only and the console
+  requires token re-entry before mounting write-capable routes.
 - All sessions, runs, events, messages, datasets, settings, and artifacts are
   owner scoped. Cross-tenant access returns 404 where resource existence would
   otherwise leak.
@@ -64,6 +67,7 @@ GET    /api/auth/session                 auth_mode + cookie/write auth state
 POST   /api/auth/session
 DELETE /api/auth/session
 GET    /api/live                         public process liveness
+GET    /api/deploy-ready                 public detail-free deployment readiness
 GET    /api/ready                        authenticated storage readiness
 GET    /api/metrics                      authenticated bounded operations summary
 POST   /api/chat                         create/continue a session
@@ -98,7 +102,8 @@ mutate session state.
 
 ## 4. Event stream
 
-Events are append-only, monotonically sequenced, bounded, persisted in SQLite,
+Events are append-only, monotonically sequenced, bounded, persisted in the
+configured SQLite or PostgreSQL database,
 and visible across supported worker processes. A terminal event belongs to a
 specific operation/run and cannot terminate or overwrite a newer one.
 
@@ -285,8 +290,12 @@ exactly `invoice_number`, `date`, `vendor`, and `total`, in that order.
 
 ## 8. Persistence and lifecycle
 
-- SQLite WAL is the supported single-host transactional store. Schema upgrades
+- SQLite WAL is the local transactional store. Schema upgrades
   run through ordered migrations and require a tested backup/rollback point.
+- Railway uses PostgreSQL as the transactional store. `PROOFBENCH_DATABASE_URL`
+  takes precedence over Railway's `DATABASE_URL`; startup creates the current
+  versioned schema and rejects a newer schema version. Advisory transaction
+  locks preserve serialized admission, quota, and claim decisions.
 - Admission, ownership, run claims, quotas, dataset references, and deletion
   tombstones are transactional.
 - `PROOFBENCH_RETENTION_DAYS` defaults to `0`, meaning no automatic expiry, so
@@ -297,11 +306,15 @@ exactly `invoice_number`, `date`, `vendor`, and `total`, in that order.
 - The supported Compose deployment uses one API replica. Scaling across hosts
   requires a network database, object storage, external queue, and secret
   manager while preserving these contracts.
+- The Railway trial also uses one application replica. PostgreSQL does not make
+  its artifact volume or in-process run worker horizontally safe.
 
 ## 9. Deployment contract
 
-- The web app uses same-origin `/api` through Nginx. Production TLS termination
-  sets `PROOFBENCH_COOKIE_SECURE=true`.
+- The web app uses same-origin `/api`, through Nginx locally or from the combined
+  Railway image. Public TLS sets `PROOFBENCH_COOKIE_SECURE=true`.
+- Railway binds the injected `PORT`; its healthcheck uses the public
+  `/api/deploy-ready`, which returns no configuration detail.
 - Containers run non-root with a read-only root filesystem, no added Linux
   capabilities, and persistent volumes only for runtime state.
 - Liveness, authenticated readiness, unit/integration tests, accessibility

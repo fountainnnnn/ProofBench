@@ -1,6 +1,6 @@
 # ADR-0001: Local product boundary
 
-- Status: Accepted
+- Status: Superseded for hosted trials by ADR-0002; retained for local operation
 - Date: 2026-07-20
 - Deciders: the copyright holder (sole developer and operator)
 - Supersedes: none

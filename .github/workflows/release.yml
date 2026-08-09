@@ -9,9 +9,9 @@ name: Release images (manual, pre-release)
 # actions, immutable digests) is preserved so the procedure stays testable.
 #
 # Publishing is additionally gated: the operator must acknowledge
-# docs/DISTRIBUTION_CHECKLIST.md, the LICENSE legal-name placeholder must be
-# resolved, and a reviewed THIRD_PARTY_NOTICES.md must exist. None of that is
-# satisfied yet, so this workflow is expected to fail until it is. Local builds
+# docs/DISTRIBUTION_CHECKLIST.md and a reviewed THIRD_PARTY_NOTICES.md must
+# exist. The notice is not currently present, so this workflow is expected to
+# fail until it is. Local builds
 # and the CI workflow are unaffected.
 
 on:
@@ -49,11 +49,6 @@ jobs:
 
           if [[ "$ACKNOWLEDGED" != "true" ]]; then
             echo "::error::Publishing requires distribution_checklist_acknowledged=true. Work through docs/DISTRIBUTION_CHECKLIST.md first." >&2
-            failed=1
-          fi
-
-          if grep -qF 'LEGAL NAME NOT YET SET' LICENSE; then
-            echo "::error::LICENSE still contains the [LEGAL NAME NOT YET SET] placeholder. Resolve the copyright holder's legal name before publishing (checklist section 1)." >&2
             failed=1
           fi
 

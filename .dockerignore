@@ -21,4 +21,5 @@ tmp
 slides
 briefs
 *.pptx
-*.png
+/images
+/web/*.png

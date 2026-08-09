@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { AUTH_CHANGE_EVENT, bootstrapAuthSession, deleteSession, listSessions } from "../api.js";
+import {
+  AUTH_CHANGE_EVENT,
+  bootstrapAuthSession,
+  createAuthSession,
+  deleteSession,
+  listSessions,
+  logoutAuthSession,
+} from "../api.js";
 import Logo from "./Logo.jsx";
 import { SessionList } from "./Sidebar.jsx";
 import StatusIcon from "./StatusIcon.jsx";
-import { BTN_SECONDARY, FlowHighlight, useFlowHighlight } from "./ui.jsx";
+import { BTN_PRIMARY, BTN_SECONDARY, FlowHighlight, INPUT, useFlowHighlight } from "./ui.jsx";
 
 /* One consistent stroke family for navigation icons: 24px box, 1.5 stroke,
    round caps, currentColor. */
@@ -244,7 +251,7 @@ function HomeLogoLink() {
    Escape closes it and returns focus, a click outside dismisses it, and arrow
    keys walk the items. It opens upward because the block sits at the bottom of
    the sidebar. */
-function ProfileMenu({ collapsed }) {
+function ProfileMenu({ authenticated, collapsed, onSignOut }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
@@ -304,12 +311,20 @@ function ProfileMenu({ collapsed }) {
             <span className="text-[var(--ink-3)]"><SettingsGlyph /></span>
             Settings
           </Link>
-          {/* No sign-out entry: the local profile holds no credential, so the
-              control would do nothing. Profile explains this in full rather
-              than offering a dead button here. */}
-          <p className="px-2.5 pb-1 pt-2 text-[11px] leading-relaxed text-[var(--ink-3)]">
-            Local profile. No sign-in is held by this browser.
-          </p>
+          {authenticated ? (
+            <button
+              role="menuitem"
+              type="button"
+              onClick={() => { setOpen(false); onSignOut(); }}
+              className={item}
+            >
+              Sign out
+            </button>
+          ) : (
+            <p className="px-2.5 pb-1 pt-2 text-[11px] leading-relaxed text-[var(--ink-3)]">
+              Local profile. No sign-in is held by this browser.
+            </p>
+          )}
         </div>
       )}
 
@@ -319,7 +334,7 @@ function ProfileMenu({ collapsed }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        title={collapsed ? "Local operator" : undefined}
+        title={collapsed ? (authenticated ? "Client operator" : "Local operator") : undefined}
         className={`flex w-full items-center gap-2.5 rounded-[12px] py-2 transition-colors duration-150 hover:bg-[var(--profile-tint)] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${
           collapsed ? "justify-center px-0" : "px-2.5"
         } ${open ? "bg-[var(--profile-tint)]" : ""}`}
@@ -328,13 +343,15 @@ function ProfileMenu({ collapsed }) {
           aria-hidden="true"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[var(--profile)] text-[12px] font-semibold text-[var(--profile-ink)]"
         >
-          L
+          {authenticated ? "C" : "L"}
         </span>
         <span className={`min-w-0 flex-1 text-left ${collapsed ? "sr-only" : ""}`}>
           <span className="block truncate text-[13px] font-medium text-[var(--ink)]">
-            Local operator
+            {authenticated ? "Client operator" : "Local operator"}
           </span>
-          <span className="block truncate text-[12px] text-[var(--ink-3)]">Local mode</span>
+          <span className="block truncate text-[12px] text-[var(--ink-3)]">
+            {authenticated ? "Authenticated" : "Local mode"}
+          </span>
         </span>
         {!collapsed && (
           <svg
@@ -396,39 +413,82 @@ function ServerStatus({ up }) {
   );
 }
 
-/* The console is local-profile only. There is no credential the browser could
-   collect, so an authenticated or unreachable deployment gets a static,
-   honest notice — never an input that implies a token would help. */
-function ConsoleUnavailable({ onRetry, busy }) {
+function AccessGate({ restore, unavailable, onSubmit, busy }) {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError("");
+    try {
+      await onSubmit(token);
+      setToken("");
+    } catch (cause) {
+      setError(cause?.message || "Sign-in failed.");
+    }
+  };
+
   return (
     <main className="pb-shell-bg pb-viewport-min pb-safe-screen pb-safe-inline-shell flex items-center justify-center px-4 text-[var(--ink)]">
       <section
         className="w-full max-w-[26rem] rounded-[24px] bg-[var(--surface)] p-8 shadow-lift"
-        aria-labelledby="console-unavailable-title"
+        aria-labelledby="proofbench-access-title"
       >
         <Logo />
-        <h1 id="console-unavailable-title" className="mt-6 text-[24px] font-semibold tracking-[-0.01em]">
-          Console unavailable
+        <h1 id="proofbench-access-title" className="mt-6 text-[24px] font-semibold tracking-[-0.01em]">
+          {unavailable ? "Console unavailable" : restore ? "Re-enter your API token" : "Sign in to ProofBench"}
         </h1>
         <p className="mt-2 text-[13px] leading-relaxed text-[var(--ink-2)]">
-          The browser console runs only against a local ProofBench profile. This
-          deployment either requires API authentication or could not be reached,
-          and neither is something a browser sign-in can resolve. Use the API
-          directly with a bearer token, or start a local profile.
+          {unavailable
+            ? "ProofBench could not verify this deployment's access settings. Check the service and try again."
+            : restore
+              ? "Your read-only session is still active. Re-enter the token to restore write access; it is kept in memory only."
+              : "Enter the client-trial API token. It is kept in memory only and is never saved by the browser."}
         </p>
-        <button type="button" onClick={onRetry} disabled={busy} className={`${BTN_SECONDARY} mt-6 h-10 w-full`}>
-          {busy ? "Checking" : "Retry"}
-        </button>
+        {unavailable ? (
+          <button type="button" onClick={() => onSubmit("")} disabled={busy} className={`${BTN_SECONDARY} mt-6 h-10 w-full`}>
+            {busy ? "Checking" : "Retry"}
+          </button>
+        ) : (
+          <form onSubmit={submit} className="mt-6">
+            <label htmlFor="proofbench-token" className="mb-1.5 block text-[12px] font-medium text-[var(--ink-2)]">
+              API token
+            </label>
+            <input
+              id="proofbench-token"
+              type="password"
+              autoComplete="off"
+              spellCheck="false"
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              className={INPUT}
+              required
+            />
+            {error ? <p role="alert" className="mt-2 text-[12px] text-[var(--danger)]">{error}</p> : null}
+            <button type="submit" disabled={busy || !token.trim()} className={`${BTN_PRIMARY} mt-4 h-10 w-full`}>
+              {busy ? "Signing in" : restore ? "Restore write access" : "Sign in"}
+            </button>
+          </form>
+        )}
       </section>
     </main>
   );
+}
+
+function stateFromContext(context) {
+  if (context?.localMode || context?.authMode === "local") return "local";
+  if (context?.writeAuthenticated) return "authenticated";
+  if (context?.authMode === "authenticated" && context?.cookieAuthenticated) return "restore";
+  if (context?.authMode === "authenticated") return "signed-out";
+  return "unavailable";
 }
 
 export default function Shell() {
   const [authState, setAuthState] = useState("checking");
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { sessions, up, refresh } = useSessionHistory(authState === "local");
+  const consoleEnabled = authState === "local" || authState === "authenticated";
+  const { sessions, up, refresh } = useSessionHistory(consoleEnabled);
   const { width, collapsed, setWidth, toggle } = useSidebarGeometry();
   const activeSessionId = searchParams.get("session");
   const { pathname } = useLocation();
@@ -454,10 +514,10 @@ export default function Shell() {
   useEffect(() => {
     let active = true;
     bootstrapAuthSession()
-      .then((session) => { if (active) setAuthState(session?.localMode ? "local" : "unavailable"); })
+      .then((session) => { if (active) setAuthState(stateFromContext(session)); })
       .catch(() => { if (active) setAuthState("unavailable"); });
     const onAuthChange = (event) => {
-      setAuthState(event.detail?.localMode ? "local" : "unavailable");
+      setAuthState(stateFromContext(event.detail));
     };
     window.addEventListener(AUTH_CHANGE_EVENT, onAuthChange);
     return () => {
@@ -476,19 +536,39 @@ export default function Shell() {
       </div>
     );
   }
-  if (authState !== "local") {
+  if (!consoleEnabled) {
     return (
-      <ConsoleUnavailable
-        busy={authState === "retrying"}
-        onRetry={() => {
-          setAuthState("retrying");
-          bootstrapAuthSession()
-            .then((session) => setAuthState(session?.localMode ? "local" : "unavailable"))
-            .catch(() => setAuthState("unavailable"));
+      <AccessGate
+        restore={authState === "restore"}
+        unavailable={authState === "unavailable" || authState === "retrying"}
+        busy={authState === "retrying" || authState === "signing-in"}
+        onSubmit={async (token) => {
+          if (authState === "unavailable" || authState === "retrying") {
+            setAuthState("retrying");
+            try {
+              setAuthState(stateFromContext(await bootstrapAuthSession()));
+            } catch {
+              setAuthState("unavailable");
+            }
+            return;
+          }
+          const prior = authState;
+          setAuthState("signing-in");
+          try {
+            setAuthState(stateFromContext(await createAuthSession(token)));
+          } catch (cause) {
+            setAuthState(prior);
+            throw cause;
+          }
         }}
       />
     );
   }
+
+  const signOut = async () => {
+    await logoutAuthSession().catch(() => {});
+    setAuthState("signed-out");
+  };
 
   const navItem = ({ isActive }) =>
     `pb-nav-item pb-flow-row flex min-h-11 items-center gap-2 text-[13px] ${collapsed ? "justify-center px-0" : "px-2.5"} ${
@@ -579,7 +659,7 @@ export default function Shell() {
             reads as a slab bolted on. It still holds its own tint, just as a
             veil over the same material. */}
         <div className={`border-t border-[var(--line)] bg-[color-mix(in_oklab,var(--profile-tint)_55%,transparent)] ${collapsed ? "p-2" : "p-3"}`}>
-          <ProfileMenu collapsed={collapsed} />
+          <ProfileMenu authenticated={authState === "authenticated"} collapsed={collapsed} onSignOut={signOut} />
         </div>
 
         {!collapsed && <SidebarResizer width={width} onWidth={setWidth} />}
@@ -588,6 +668,11 @@ export default function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="pb-safe-top flex h-14 shrink-0 items-center border-b border-[var(--line)] bg-[var(--surface)] px-4 md:hidden">
           <HomeLogoLink />
+          {authState === "authenticated" ? (
+            <button type="button" onClick={signOut} className={`${BTN_SECONDARY} ml-auto min-h-9 px-4`}>
+              Sign out
+            </button>
+          ) : null}
         </header>
 
         {/* Scrollable region must be keyboard-reachable: pages whose content is

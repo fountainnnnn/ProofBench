@@ -42,7 +42,7 @@ class DatasetRegistry:
         os.makedirs(UPLOADS_DIR, exist_ok=True)
 
     def reload(self) -> None:
-        # SQLite is the only registry authority. Files without a durable row are ignored.
+        # The durable database is the registry authority. Files without a row are ignored.
         return None
 
     def create(self, owner: str, path: str, dataset_id: str | None = None,

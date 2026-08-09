@@ -2,20 +2,22 @@
 
 ## Current stage
 
-ProofBench is a proprietary, source-visible pre-release, written and run locally by one
-developer. There is no hosted instance and no third-party user today, so the only actual
-user is the copyright holder. See
-[docs/adr/0001-local-product-boundary.md](docs/adr/0001-local-product-boundary.md).
+ProofBench is a proprietary, source-visible pre-release operated by one
+developer. It supports the local single-operator shape and a narrow Railway
+deployment for one invited client's end-to-end trial. The trial is not general
+availability and makes no availability, support, or retention promise beyond
+what the operator separately discloses to that client. See
+[ADR-0002](docs/adr/0002-railway-client-trial.md).
 
-## Future target users
+## Target users
 
-If ProofBench is ever offered to others, the intended users are engineering, security,
+The intended users are engineering, security,
 procurement, and platform teams comparing tools before adoption. They would need an
 auditable answer on their own data, clear separation between measured and historical synthetic
 evidence, and a report they can defend to another stakeholder. Operators would also need
-explicit tenant, retention, quota, and credential boundaries. Those boundaries are built
-and tested now, which is why the product is designed against this audience even though it
-does not serve them yet.
+explicit tenant, retention, quota, and credential boundaries. The current
+client trial validates this workflow with one invited tenant; it is not yet a
+multi-customer launch.
 
 ## Product Purpose
 

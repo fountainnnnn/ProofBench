@@ -2,7 +2,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bootstrapAuthSession,
+  createAuthSession,
+  getAuthToken,
   isLocalMode,
+  logoutAuthSession,
   deleteDataset,
   listDatasets,
   listSessions,
@@ -21,20 +24,20 @@ function localSessionResponse() {
 }
 
 describe("API authentication", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     sessionStorage.clear();
     localStorage.clear();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
+    await logoutAuthSession();
+    fetch.mockClear();
   });
 
-  it("exports no browser credential entry point", async () => {
-    const api = await import("./api.js");
-
-    for (const removed of ["createAuthSession", "logoutAuthSession", "getAuthToken"]) {
-      expect(api[removed]).toBeUndefined();
-    }
+  it("exposes an in-memory credential flow without persisting the token", async () => {
+    expect(createAuthSession).toBeTypeOf("function");
+    expect(logoutAuthSession).toBeTypeOf("function");
+    expect(getAuthToken()).toBe("");
   });
 
   it("never attaches an Authorization header to an API request", async () => {
@@ -66,7 +69,34 @@ describe("API authentication", () => {
     expect(fetchMock.mock.calls[0][1].headers.has("Authorization")).toBe(false);
   });
 
-  it("rejects an authenticated deployment instead of offering a browser sign-in", async () => {
+  it("keeps an authenticated token in memory, attaches it to writes, and clears it on logout", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response("[]", {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createAuthSession("client-secret");
+    expect(getAuthToken()).toBe("client-secret");
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer client-secret");
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+
+    await listSessions();
+    expect(fetchMock.mock.calls[1][1].headers.get("Authorization")).toBe("Bearer client-secret");
+
+    await logoutAuthSession();
+    expect(fetchMock.mock.calls[2][1].method).toBe("DELETE");
+    expect(getAuthToken()).toBe("");
+  });
+
+  it("reports an authenticated deployment and whether its read cookie survived", async () => {
     const authEvents = [];
     window.addEventListener("proofbench-auth-change", (event) => authEvents.push(event.detail), { once: true });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
@@ -74,15 +104,21 @@ describe("API authentication", () => {
       { status: 200, headers: { "Content-Type": "application/json" } },
     )));
 
-    await expect(bootstrapAuthSession()).rejects.toThrow("only on a local ProofBench profile");
+    await expect(bootstrapAuthSession()).resolves.toEqual({
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: true, writeAuthenticated: false,
+    });
     expect(isLocalMode()).toBe(false);
-    expect(authEvents).toEqual([{ localMode: false }]);
+    expect(authEvents).toEqual([{
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: true, writeAuthenticated: false,
+    }]);
   });
 
   it("accepts auth_mode local and holds no credential", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(localSessionResponse()));
 
-    await expect(bootstrapAuthSession()).resolves.toEqual({ localMode: true });
+    await expect(bootstrapAuthSession()).resolves.toMatchObject({ authMode: "local", localMode: true });
     expect(isLocalMode()).toBe(true);
     // There is no credential in the local profile, so nothing is held anywhere.
     expect(sessionStorage.length).toBe(0);
@@ -127,14 +163,14 @@ describe("API authentication", () => {
       { status: 200, headers: { "Content-Type": "application/json" } },
     )));
 
-    await expect(bootstrapAuthSession()).rejects.toThrow("only on a local ProofBench profile");
+    await expect(bootstrapAuthSession()).rejects.toThrow("invalid authentication profile");
     expect(isLocalMode()).toBe(false);
   });
 
   it("fails closed when the auth-mode probe is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 503 })));
 
-    await expect(bootstrapAuthSession()).rejects.toThrow("only on a local ProofBench profile");
+    await expect(bootstrapAuthSession()).rejects.toThrow("could not verify");
     expect(isLocalMode()).toBe(false);
   });
 
@@ -186,7 +222,7 @@ describe("API authentication", () => {
     vi.stubGlobal("EventSource", EventSourceMock);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
 
-    await expect(openEvents("session-1")).rejects.toThrow("only on a local ProofBench profile");
+    await expect(openEvents("session-1")).rejects.toThrow("could not verify");
     expect(EventSourceMock).not.toHaveBeenCalled();
   });
 

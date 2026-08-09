@@ -22,14 +22,12 @@ This checklist applies before **any** of the following:
 Local development builds and CI are unaffected. Nothing here blocks running
 `docker compose build` on your own machine.
 
-None of these items is satisfied yet. Each is a prerequisite, not a task in
-progress.
+Unchecked items are prerequisites, not tasks in progress.
 
 ## 1. Ownership and identity
 
-- [ ] Replace the `[LEGAL NAME NOT YET SET]` placeholder in [LICENSE](../LICENSE)
-      with the copyright holder's actual legal name. Do not invent one, and do
-      not guess an entity type.
+- [x] Keep [LICENSE](../LICENSE) expressed in terms of the copyright holder;
+      the repository notice does not require the holder's legal name.
 - [ ] Decide whether the distributing party is the individual or a legal entity,
       and record the governing jurisdiction.
 - [ ] Establish a security contact that will still be monitored after the
@@ -97,7 +95,7 @@ that these are the licensee's responsibility rather than assuming it.
       on-premises defaults to `PROOFBENCH_RETENTION_DAYS=0` (no automatic
       expiry); a hosted offering uses a finite, disclosed horizon.
 - [ ] Complete the remaining operator inputs in
-      [DATA_HANDLING.md](DATA_HANDLING.md#future-launch-checklist-not-yet-satisfied).
+      [DATA_HANDLING.md](DATA_HANDLING.md#third-party-launch-checklist).
 
 ## 6. Release mechanics
 

@@ -8,16 +8,17 @@ export const AUTH_CHANGE_EVENT = "proofbench-auth-change";
 // The only execution mode this client can request. It is a module constant
 // rather than component state so no UI path can make a write non-real.
 export const RUN_MODE = "real";
-// The browser console is local-profile only. It holds no credential of any
-// kind, so this flag is false until the server reports `auth_mode: "local"`.
-// An authenticated or unreachable deployment fails closed: there is no browser
-// path that can supply a token to open it.
-export const LOCAL_PROFILE_REQUIRED =
-  "The browser console is available only on a local ProofBench profile.";
 let localMode = false;
+// Deliberately module memory only. A reload discards write access while the
+// HttpOnly cookie can continue authorising read-only browser transports.
+let authToken = "";
 
 export function isLocalMode() {
   return localMode;
+}
+
+export function getAuthToken() {
+  return authToken;
 }
 
 function emitAuthChange(context) {
@@ -28,12 +29,14 @@ function emitAuthChange(context) {
 
 export async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  // The browser never holds a credential, so no Authorization header is ever
-  // attached. API clients supply their own bearer or API key directly.
+  if (authToken && !headers.has("Authorization") && !headers.has("X-API-Key")) {
+    headers.set("Authorization", `Bearer ${authToken}`);
+  }
   const response = await fetch(url, { ...options, headers, credentials: "include" });
   if (response.status === 401) {
+    authToken = "";
     localMode = false;
-    emitAuthChange({ localMode: false });
+    emitAuthChange({ authMode: "authenticated", cookieAuthenticated: false, writeAuthenticated: false });
   }
   return response;
 }
@@ -54,35 +57,79 @@ async function jsonOrThrow(res, genericMessage = "") {
   return res.json();
 }
 
-// Read-only probe of the deployment profile. It sends no credential and
-// mutates no session: the browser console either runs against a local profile
-// or it does not run at all.
+function authContext(body) {
+  const mode = body?.auth_mode;
+  if (mode !== "local" && mode !== "authenticated") {
+    throw new Error("The server returned an invalid authentication profile.");
+  }
+  localMode = mode === "local";
+  const context = {
+    authMode: mode,
+    localMode,
+    cookieAuthenticated: Boolean(body?.cookie_authenticated),
+    writeAuthenticated: localMode || (Boolean(body?.write_authenticated) && Boolean(authToken)),
+  };
+  emitAuthChange(context);
+  return context;
+}
+
+// Credential-free profile probe. In authenticated mode an HttpOnly cookie can
+// survive reload, but it never restores the in-memory bearer needed to write.
 export async function bootstrapAuthSession() {
   const response = await fetch(`${BASE}/api/auth/session`, { credentials: "include" });
   if (!response.ok) {
+    authToken = "";
     localMode = false;
-    emitAuthChange({ localMode: false });
-    throw new Error(LOCAL_PROFILE_REQUIRED);
+    throw new Error("ProofBench could not verify this deployment's authentication profile.");
   }
-  const body = await jsonOrThrow(response);
-  // Local tokenless profile: the server resolves every caller to the local
-  // tenant, so there is no credential to hold, restore, or discard.
-  if (body?.auth_mode !== "local") {
+  return authContext(await jsonOrThrow(response));
+}
+
+export async function createAuthSession(token) {
+  const candidate = String(token || "").trim();
+  if (!candidate) throw new Error("Enter an API token.");
+  const response = await fetch(`${BASE}/api/auth/session`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${candidate}` },
+    credentials: "include",
+  });
+  await jsonOrThrow(response);
+  authToken = candidate;
+  localMode = false;
+  const context = {
+    authMode: "authenticated", localMode: false,
+    cookieAuthenticated: true, writeAuthenticated: true,
+  };
+  emitAuthChange(context);
+  return context;
+}
+
+export async function logoutAuthSession() {
+  try {
+    const response = await fetch(`${BASE}/api/auth/session`, {
+      method: "DELETE", credentials: "include",
+    });
+    await jsonOrThrow(response);
+  } finally {
+    authToken = "";
     localMode = false;
-    emitAuthChange({ localMode: false });
-    throw new Error(LOCAL_PROFILE_REQUIRED);
+    emitAuthChange({
+      authMode: "authenticated", localMode: false,
+      cookieAuthenticated: false, writeAuthenticated: false,
+    });
   }
-  localMode = true;
-  const local = { localMode: true };
-  emitAuthChange(local);
-  return local;
 }
 
 let authRefreshPromise = null;
 
 export async function ensureAuthSession() {
   if (!authRefreshPromise) {
-    authRefreshPromise = bootstrapAuthSession()
+    authRefreshPromise = (authToken
+      ? createAuthSession(authToken)
+      : bootstrapAuthSession().then((context) => {
+          if (!context.localMode) throw new Error("Re-enter your API token to continue.");
+          return context;
+        }))
       .finally(() => { authRefreshPromise = null; });
   }
   return authRefreshPromise;

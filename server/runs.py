@@ -1,4 +1,4 @@
-"""Durable session/run facade backed by SQLite and confined artifact directories."""
+"""Durable session/run facade with confined artifact directories."""
 from __future__ import annotations
 
 import json
@@ -10,10 +10,10 @@ import threading
 from contextlib import contextmanager
 
 from server.security import redact_event_data
-from server.state import BusyError, QuotaError, SQLiteStore
+from server.state import BusyError, QuotaError, SQLiteStore, create_state_store
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUNS_DIR = os.path.join(ROOT, "runs")
+RUNS_DIR = os.path.abspath(os.environ.get("PROOFBENCH_RUNS_ROOT", os.path.join(ROOT, "runs")))
 MAX_EVENTS = int(os.environ.get("PROOFBENCH_MAX_EVENTS", "1000"))
 MAX_MESSAGES = int(os.environ.get("PROOFBENCH_MAX_MESSAGES", "200"))
 MAX_MESSAGE_CHARS = int(os.environ.get("PROOFBENCH_MAX_MESSAGE_CHARS", "10000"))
@@ -28,12 +28,16 @@ ID_RE = re.compile(r"^[a-f0-9]{12}$")
 WINDOWS_PATH_RE = re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\r\n`\"']+")
 POSIX_PATH_RE = re.compile(r"(^|[\s(`\"'=,])/(?!/)[^\s`\"'():),]+", re.MULTILINE)
 LOGGER = logging.getLogger("proofbench.state")
-STORE = SQLiteStore(os.environ.get("PROOFBENCH_STATE_DB", os.path.join(RUNS_DIR, "proofbench.sqlite3")),
-                    max_events=MAX_EVENTS, max_event_bytes=MAX_EVENT_BYTES,
-                    max_messages=MAX_MESSAGES, recover_interrupted=True,
-                    lease_seconds=int(os.environ.get("PROOFBENCH_JOB_LEASE_SECONDS", "90")),
-                    orphan_grace_seconds=int(os.environ.get("PROOFBENCH_ORPHAN_GRACE_SECONDS", "120")),
-                    artifact_root=RUNS_DIR)
+STORE = create_state_store(
+    sqlite_path=os.environ.get("PROOFBENCH_STATE_DB", os.path.join(RUNS_DIR, "proofbench.sqlite3")),
+    max_events=MAX_EVENTS,
+    max_event_bytes=MAX_EVENT_BYTES,
+    max_messages=MAX_MESSAGES,
+    recover_interrupted=True,
+    lease_seconds=int(os.environ.get("PROOFBENCH_JOB_LEASE_SECONDS", "90")),
+    orphan_grace_seconds=int(os.environ.get("PROOFBENCH_ORPHAN_GRACE_SECONDS", "120")),
+    artifact_root=RUNS_DIR,
+)
 
 
 class PersistentCancelEvent:

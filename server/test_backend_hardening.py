@@ -134,10 +134,12 @@ def upload_dataset(client: TestClient, token: str = "token-a") -> dict:
     return response.json()
 
 
-def test_authentication_is_fail_closed_and_live_is_public(client):
+def test_authentication_is_fail_closed_and_deployment_probes_are_public(client):
     live = client.get("/api/live", headers={"X-Request-ID": "test-request-123"})
     assert live.status_code == 200
     assert live.headers["x-request-id"] == "test-request-123"
+    assert live.headers["x-frame-options"] == "DENY"
+    assert client.get("/api/deploy-ready").status_code == 200
     assert client.get("/api/sessions").status_code == 401
     assert client.get("/api/sessions", headers=headers("wrong")).status_code == 401
 
@@ -292,6 +294,15 @@ def test_reverse_proxy_replaces_untrusted_forwarded_for_before_login_throttling(
     assert "$proxy_add_x_forwarded_for" not in nginx
 
 
+def test_railway_public_domain_is_added_as_an_exact_origin(monkeypatch):
+    monkeypatch.setenv("PROOFBENCH_ALLOWED_ORIGINS", "http://localhost:5173")
+    monkeypatch.setenv("RAILWAY_PUBLIC_DOMAIN", "proofbench-client.up.railway.app")
+    assert main_module._allowed_origins() == [
+        "http://localhost:5173",
+        "https://proofbench-client.up.railway.app",
+    ]
+
+
 def test_sensitive_api_responses_are_no_store(client):
     response = client.get("/api/sessions", headers=headers("token-a"))
     assert response.status_code == 200
@@ -308,8 +319,8 @@ def test_production_rejects_weak_or_shipped_example_tokens(monkeypatch, token):
         auth_is_configured()
 
 
-def test_every_non_liveness_route_has_auth_dependency(client):
-    bootstrap = {"/api/auth/session"}
+def test_every_non_probe_route_has_auth_dependency(client):
+    bootstrap = {"/api/auth/session", "/api/deploy-ready"}
     for route in app.routes:
         if (isinstance(route, APIRoute) and route.path != "/api/live" and
                 route.path not in bootstrap):

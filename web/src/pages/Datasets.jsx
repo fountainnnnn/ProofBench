@@ -300,7 +300,7 @@ export default function Datasets() {
                   <path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" />
                 </svg>
               </span>
-              <h3 className="text-[14px] font-semibold text-[var(--ink)]">Design one for your benchmark</h3>
+              <h2 className="text-[14px] font-semibold text-[var(--ink)]">Design one for your benchmark</h2>
             </div>
             <p className="max-w-[52ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
               Describe what you want to test and the AI designs a labelled dataset to match:
@@ -368,7 +368,7 @@ export default function Datasets() {
                   <path d="m7.8 16.2-2.2 2.2" />
                 </svg>
               </span>
-              <h3 className="text-[14px] font-semibold text-[var(--ink)]">Start with the sample</h3>
+              <h2 className="text-[14px] font-semibold text-[var(--ink)]">Start with the sample</h2>
             </div>
             <p className="max-w-[52ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
               15 synthetic invoice images with known ground truth. The images are synthetic;
@@ -409,7 +409,7 @@ export default function Datasets() {
                   <path d="M4 20h16" />
                 </svg>
               </span>
-              <h3 className="text-[14px] font-semibold text-[var(--ink)]">Upload your own</h3>
+              <h2 className="text-[14px] font-semibold text-[var(--ink)]">Upload your own</h2>
             </div>
             <div
               role="button"

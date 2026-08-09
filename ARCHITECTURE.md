@@ -1,9 +1,9 @@
 # ProofBench architecture
 
-This is a map of what the code does today. The product boundary it sits inside
-is recorded in [ADR-0001: Local product boundary](docs/adr/0001-local-product-boundary.md):
-ProofBench is a proprietary, source-visible, solo-operated local pre-release
-running as one hardened single-host unit. Interface guarantees are in
+This is a map of what the code does today. The local boundary is recorded in
+[ADR-0001](docs/adr/0001-local-product-boundary.md); the hosted client-trial
+boundary is recorded in [ADR-0002](docs/adr/0002-railway-client-trial.md).
+Interface guarantees are in
 [CONTRACTS.md](CONTRACTS.md).
 
 Everything described in the present tense below is implemented. Anything not
@@ -17,7 +17,9 @@ Browser (React 18 / Vite, web/)
         |
         | same-origin REST + authenticated SSE
         v
-loopback Nginx :8080  --->  FastAPI :8000 (server/)  --->  SQLite WAL + owned volumes
+local: Browser -> Nginx :8080 -> FastAPI :8000 -> SQLite WAL + owned volumes
+
+trial: Browser -> Railway HTTPS -> FastAPI + built React -> PostgreSQL + one runtime volume
                                     |
                                     +--> engine/docs_intel.py      search and scrape
                                     +--> engine/adapter_gen.py     adapter generation
@@ -26,9 +28,10 @@ loopback Nginx :8080  --->  FastAPI :8000 (server/)  --->  SQLite WAL + owned vo
                                     +--> engine/report_gen.py, pdf_report.py
 ```
 
-One API replica, one web replica, one durable host. SQLite WAL is the single
-transactional store; run artefacts, uploaded datasets, and the sandbox ownership
-ledger live on named volumes.
+Both shapes use one API replica. Local Compose has a separate Nginx web replica
+and SQLite WAL. Railway serves the built console from FastAPI and uses managed
+PostgreSQL. Run artefacts, uploaded datasets, and the sandbox ownership ledger
+remain on one durable volume. Neither shape supports horizontal app replicas.
 
 ## Components
 
@@ -37,7 +40,7 @@ ledger live on named volumes.
 | `web/` | React console and landing page; Nginx image. Holds the bearer in memory only. |
 | `server/main.py` | FastAPI application, configuration validation, request telemetry. |
 | `server/security.py` | Fail-closed authentication, tenant resolution, redaction. |
-| `server/state.py`, `server/storage.py` | Durable transactional state, migrations, artefact volumes. |
+| `server/state.py`, `server/postgres_state.py`, `server/storage.py` | SQLite/PostgreSQL transactional state, schema setup, artefact volumes. |
 | `server/runs.py` | Run admission, claims, quotas, terminal-state persistence. |
 | `engine/agent.py` | Orchestrator loop and capability-bound tool dispatch. |
 | `engine/tools.py` | Run-scoped capabilities; the only path to credentials. |
@@ -152,10 +155,10 @@ exists today.
 
 ## Data and retention
 
-Uploaded datasets, run artefacts, reports, and the SQLite database live on the
-host's named volumes. `PROOFBENCH_RETENTION_DAYS` defaults to `0`, which means
-no automatic expiry: an operator's own data is kept until they delete it.
-Setting it to a positive number enables expiry of completed tenant data; active
+Locally, SQLite plus uploaded datasets, run artefacts, and reports live on named
+volumes. On Railway, PostgreSQL is managed separately and `/app/runtime` holds
+filesystem data and the sandbox ledger. Local retention defaults to `0`; the
+client-trial runbook requires an explicitly disclosed positive horizon. Active
 runs are never expired. See [docs/DATA_HANDLING.md](docs/DATA_HANDLING.md).
 
 Benchmark runs send documents to disposable sandboxes and to whichever
@@ -163,8 +166,9 @@ third-party providers the operator enables, under those providers' own terms.
 
 ## Operational surface
 
-`GET /api/live` is public process liveness. `GET /api/ready` is authenticated
-and verifies auth configuration, SQLite, and writable volumes. `GET /api/metrics`
+`GET /api/live` is public process liveness. `GET /api/deploy-ready` is a public,
+detail-free deployment healthcheck. `GET /api/ready` is authenticated and
+verifies auth configuration, the selected database, and writable volumes. `GET /api/metrics`
 is authenticated and bounded. Containers run non-root with a read-only root
 filesystem and no added capabilities. The day-to-day runbook is
 [docs/OPERATIONS.md](docs/OPERATIONS.md).
@@ -174,10 +178,9 @@ filesystem and no added capabilities. The day-to-day runbook is
 Decisions only. None of this is built, and none of it should be built before the
 corresponding stage in ADR-0001 is entered deliberately.
 
-- **Hosted SaaS** would add multi-host components behind the seams above: a
-  network database, object storage, an external job queue, and an external
-  secret manager. It would also switch the retention default to a finite,
-  contractually disclosed horizon.
+- **General-availability hosted SaaS** would add object storage, an external job
+  queue, managed secret handling, monitoring, and the legal/operational controls
+  absent from the single-client Railway trial.
 - **Licensed enterprise / on-premises** would keep the single-host shape and the
   no-expiry retention default, and would add reviewed third-party notices, a
   written licence, and validated handoff procedures. See

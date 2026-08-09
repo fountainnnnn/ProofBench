@@ -11,6 +11,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.32
 reportlab==5.0.0
 pypdf==6.15.0
+psycopg[binary]==3.3.4
 
 # Transitive via daytona, pinned forward for PYSEC-2026-3545/3546/3547. Remove
 # this floor once daytona's own constraint moves past it.

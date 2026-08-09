@@ -22,7 +22,8 @@ Browser (React/Vite)
         |
         | same-origin REST + authenticated SSE
         v
-TLS ingress ---> loopback Nginx :8080 ---> FastAPI :8000 ---> SQLite WAL + owned artifact volumes
+local: TLS ingress -> Nginx :8080 -> FastAPI :8000 -> SQLite WAL + owned volumes
+trial: Railway HTTPS -> FastAPI + built React -> PostgreSQL + one runtime volume
                          |
                          +--> docs/search providers
                          +--> trusted adapter generation
@@ -33,14 +34,12 @@ TLS ingress ---> loopback Nginx :8080 ---> FastAPI :8000 ---> SQLite WAL + owned
 Authentication is fail closed, resources are tenant scoped, attempts have
 immutable run IDs, datasets use server-issued IDs, and persisted results declare
 their provenance. ProofBench is real-only: every new run persists `measured`,
-and `synthetic` survives solely as a read-only label on historical runs. The
-included Compose deployment supports
-one API replica on one durable host. See [CONTRACTS.md](CONTRACTS.md) and
+and `synthetic` survives solely as a read-only label on historical runs. Both
+supported shapes use one API replica. See [CONTRACTS.md](CONTRACTS.md) and
 [docs/OPERATIONS.md](docs/OPERATIONS.md) for the supported boundary.
 
-This hardened single-host stack is what "production" means throughout these
-docs: the controls are built and tested, but they are exercised today only in
-local, single-operator use. See [License and project status](#license-and-project-status).
+The Railway shape is a narrow, single-client trial, not general availability or
+an SLA-backed production service. See [License and project status](#license-and-project-status).
 
 ## Requirements
 
@@ -53,6 +52,19 @@ If you configure Daytona, set `DAYTONA_TARGET` to a region your organization is
 entitled to and declare your tier's concurrent-memory budget before the first
 run. Getting either wrong makes every benchmark fail in ways that read like
 something else — see [Sandbox capacity and cleanup](#sandbox-capacity-and-cleanup).
+
+## Railway client-trial quickstart
+
+The repository includes `railway.json` and `Dockerfile.railway`. Add a Railway
+PostgreSQL service, connect its `DATABASE_URL` to the application as
+`PROOFBENCH_DATABASE_URL`, mount one application volume at `/app/runtime`, use
+authenticated mode, and generate a public domain. Do not add a custom start
+command and keep the application at one replica.
+
+The exact variables, provider checklist, backup procedure, and end-to-end smoke
+are in [docs/RAILWAY.md](docs/RAILWAY.md). The public healthcheck is
+`/api/deploy-ready`; authenticated `/api/ready` includes detailed database and
+filesystem checks.
 
 ## Local development
 
@@ -232,11 +244,10 @@ and starts/probes the Compose stack.
 
 Nothing is published. `.github/workflows/release.yml` runs only on manual
 `workflow_dispatch` — pushing a `v*` tag does not build or publish anything —
-and it is intentionally blocked today: it refuses to run until the LICENSE
-legal-name placeholder is resolved, a human-reviewed `THIRD_PARTY_NOTICES.md`
-exists, and the operator acknowledges
-[docs/DISTRIBUTION_CHECKLIST.md](docs/DISTRIBUTION_CHECKLIST.md). None of those
-is satisfied, so the workflow is expected to fail. It is kept wired up (SBOM,
+and it is intentionally blocked today: it refuses to run until a human-reviewed
+`THIRD_PARTY_NOTICES.md` exists and the operator acknowledges
+[docs/DISTRIBUTION_CHECKLIST.md](docs/DISTRIBUTION_CHECKLIST.md). The notice is
+absent, so the workflow is expected to fail. It is kept wired up (SBOM,
 maximum provenance attestation, pinned actions, immutable digests) so the
 procedure stays testable. Local builds are unaffected.
 
@@ -394,6 +405,8 @@ come from a deployment secret manager or environment and must never be committed
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — component boundaries and data flow
 - [docs/adr/0001-local-product-boundary.md](docs/adr/0001-local-product-boundary.md) — ADR-0001, the local single-operator product boundary
+- [docs/adr/0002-railway-client-trial.md](docs/adr/0002-railway-client-trial.md) — ADR-0002, the one-client hosted-trial boundary
+- [docs/RAILWAY.md](docs/RAILWAY.md) — Railway deployment and verification runbook
 - [docs/DISTRIBUTION_CHECKLIST.md](docs/DISTRIBUTION_CHECKLIST.md) — what must be done before any distribution or hosted launch
 
 ## Security and data handling
@@ -445,15 +458,11 @@ all rights are reserved, and use, copying, modification, or distribution
 requires the copyright holder's prior written permission. Third-party
 dependencies are not covered by that file and remain under their own licenses.
 
-There is no public ProofBench service, no hosted instance, and no domain. The
-only supported deployment today is the hardened stack in this repository, run
-locally or on a single trusted host by the copyright holder. Nothing here is an
-offer of a service, and no availability, support, or retention commitment is
-made to anyone.
+ProofBench may be run locally or as the one-client Railway trial described in
+[ADR-0002](docs/adr/0002-railway-client-trial.md). The trial is a hosted SaaS
+test operated by the copyright holder, but it is not a public signup service,
+software distribution, availability commitment, or support commitment.
 
-Selling ProofBench as a hosted SaaS, or licensing it to a company to adapt,
-remains open. Either would first require, at minimum: the holder's legal name
-recorded in [LICENSE](LICENSE), a written contract, a published privacy notice
-and terms, a named security contact, and the multi-host work described in
-[CONTRACTS.md](CONTRACTS.md) section 8. None of that exists yet, so no
-third-party-facing claims should be made about this software.
+A broader commercial launch still requires written customer terms, an
+appropriate privacy notice, a security contact, reviewed provider disclosures,
+and the multi-host work described in [CONTRACTS.md](CONTRACTS.md) section 8.

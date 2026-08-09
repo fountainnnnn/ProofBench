@@ -1,6 +1,8 @@
 # Operations
 
-This document has two parts, and they are not the same kind of thing.
+This document covers the local Compose runbook and future operational
+commitments. The supported one-client Railway trial has its own concrete
+runbook: [RAILWAY.md](RAILWAY.md).
 
 **Part 1, the current local runbook**, is the operating procedure for the
 hardened single-host stack in this repository as the copyright holder runs it
@@ -13,10 +15,9 @@ it is offered to anyone. It is recorded here so the work is scoped, not so it
 can be cited as a commitment.
 
 No availability, response, or support commitment is offered for ProofBench
-today. See
-[docs/adr/0001-local-product-boundary.md](adr/0001-local-product-boundary.md).
+today. See [ADR-0002](adr/0002-railway-client-trial.md).
 Serving other parties would additionally require the items in
-[DATA_HANDLING.md](DATA_HANDLING.md#future-launch-checklist-not-yet-satisfied)
+[DATA_HANDLING.md](DATA_HANDLING.md#third-party-launch-checklist)
 and [DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md).
 
 ## Part 1: current local runbook
@@ -70,9 +71,9 @@ output into tickets because it can contain resolved secrets.
    smoke jobs for the exact commit.
 2. Build images locally, or run the manual release workflow. Pushing a `v*` tag
    deliberately does not publish. The workflow additionally refuses to publish
-   unless its checklist acknowledgement input is true, the LICENSE legal-name
-   placeholder is resolved, and a reviewed `THIRD_PARTY_NOTICES.md` exists; none
-   of those is satisfied today, so publishing currently fails by design. See
+   unless its checklist acknowledgement input is true and a reviewed
+   `THIRD_PARTY_NOTICES.md` exists. The notice is absent, so publishing currently
+   fails by design. See
    [DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md). When it does run, it
    publishes both images with BuildKit SBOM and maximum provenance attestations.
    Save its digest manifest with the release. Set `PROOFBENCH_API_IMAGE` and
@@ -98,7 +99,10 @@ of manually editing `PRAGMA user_version`.
 ### Health and traffic gating
 
 - `GET /api/live` is public process liveness.
-- `GET /api/ready` is authenticated and verifies auth configuration, SQLite,
+- `GET /api/deploy-ready` is public, detail-free deployment readiness for
+  managed-platform healthchecks.
+- `GET /api/ready` is authenticated and verifies auth configuration, the
+  selected database,
   and writable run/dataset volumes.
 - `GET /api/providers` reports provider readiness from configured environment
   and tenant credentials only. It contacts no provider and never issues a paid
@@ -243,5 +247,5 @@ capability, and do not quote a number from it to anyone.
 - A published privacy notice, terms of service, and a data processing agreement
   where the operator acts as a processor, with subprocessors disclosed.
 - The remaining prerequisites in
-  [DATA_HANDLING.md](DATA_HANDLING.md#future-launch-checklist-not-yet-satisfied)
+  [DATA_HANDLING.md](DATA_HANDLING.md#third-party-launch-checklist)
   and [DISTRIBUTION_CHECKLIST.md](DISTRIBUTION_CHECKLIST.md).

@@ -48,6 +48,7 @@ from server.storage import (MAX_CSV_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TOTA
                             validate_ground_truth, validate_image)
 
 ROOT = runs.ROOT
+WEB_ROOT = os.environ.get("PROOFBENCH_WEB_ROOT", "").strip()
 # ProofBench executes real benchmarks only. Legacy runs persisted before this
 # remain readable and are surfaced as historical synthetic evidence; nothing in
 # the write path can produce a simulated run.
@@ -144,6 +145,13 @@ def _allowed_origins() -> list[str]:
                 parsed.username or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
             raise RuntimeError("PROOFBENCH_ALLOWED_ORIGINS must contain explicit HTTP(S) origins")
         origins.append(f"{parsed.scheme}://{parsed.netloc}")
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        parsed = urlsplit(f"https://{railway_domain}")
+        if (not parsed.hostname or parsed.netloc != railway_domain or parsed.username or
+                parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            raise RuntimeError("RAILWAY_PUBLIC_DOMAIN is invalid")
+        origins.append(f"https://{railway_domain}")
     if not origins:
         raise RuntimeError("PROOFBENCH_ALLOWED_ORIGINS must contain at least one origin")
     return list(dict.fromkeys(origins))
@@ -309,7 +317,8 @@ async def _tenant_request_quota(request: Request, call_next):
             return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail},
                                 headers=exc.headers)
         return await call_next(request)
-    if (request.method == "OPTIONS" or request.url.path == "/api/live" or bootstrap or auth_status or
+    if (request.method == "OPTIONS" or request.url.path in {"/api/live", "/api/deploy-ready"} or
+            bootstrap or auth_status or
             not request.url.path.startswith("/api/")):
         return await call_next(request)
     try:
@@ -339,6 +348,18 @@ async def _request_observability(request: Request, call_next):
     if response.status_code == 429:
         _ops_increment("quota_rejections")
     response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
+        "form-action 'self'"
+    )
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    if request.url.scheme == "https" or forwarded == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     if request.url.path.startswith("/api/") and request.url.path != "/api/live":
         response.headers["Cache-Control"] = "no-store"
     route = getattr(request.scope.get("route"), "path", "unmatched")
@@ -762,6 +783,33 @@ def api_live():
     return {"status": "ok"}
 
 
+def _readiness_checks() -> dict[str, bool]:
+    checks = {"authentication": auth_is_configured(), "runs_storage": False,
+              "dataset_storage": False, "state_database": False}
+    for key, path in (("runs_storage", runs.RUNS_DIR), ("dataset_storage", UPLOADS_DIR)):
+        try:
+            os.makedirs(path, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=path, prefix=".ready-", delete=True):
+                pass
+            checks[key] = True
+        except OSError:
+            checks[key] = False
+    try:
+        with runs.STORE.connect() as connection:
+            checks["state_database"] = connection.execute("SELECT 1").fetchone()[0] == 1
+    except Exception:
+        checks["state_database"] = False
+    return checks
+
+
+@app.get("/api/deploy-ready")
+def api_deploy_ready():
+    """Secret-free deployment readiness for Railway's headerless probe."""
+    if not all(_readiness_checks().values()):
+        raise HTTPException(status_code=503, detail="not ready")
+    return {"status": "ready"}
+
+
 # The bootstrap route runs before authentication, so its body is attacker
 # controlled and unmetered by the per-tenant quota. A token is a few dozen
 # bytes; 16 KiB is generous for the whole JSON envelope.
@@ -944,21 +992,7 @@ def api_auth_logout():
 @app.get("/api/ready")
 def api_ready(identity: Identity = Depends(authenticate)):
     """Authenticated readiness: configuration and writable durable storage."""
-    checks = {"authentication": auth_is_configured(), "runs_storage": False,
-              "dataset_storage": False, "state_database": False}
-    for key, path in (("runs_storage", runs.RUNS_DIR), ("dataset_storage", UPLOADS_DIR)):
-        try:
-            os.makedirs(path, exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=path, prefix=".ready-", delete=True):
-                pass
-            checks[key] = True
-        except OSError:
-            checks[key] = False
-    try:
-        with runs.STORE.connect() as connection:
-            checks["state_database"] = connection.execute("SELECT 1").fetchone()[0] == 1
-    except Exception:
-        checks["state_database"] = False
+    checks = _readiness_checks()
     if not all(checks.values()):
         raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})
     return {"status": "ready", "checks": checks}
@@ -2265,3 +2299,24 @@ async def api_run(session_id: str, request: Request,
 
     threading.Thread(target=worker, daemon=True).start()
     return {"session_id": session_id, "run_id": run_id, "status": "started"}
+
+
+if WEB_ROOT:
+    _web_root = Path(WEB_ROOT).resolve()
+    _web_index = _web_root / "index.html"
+    if not _web_index.is_file():
+        raise RuntimeError("PROOFBENCH_WEB_ROOT must contain index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def api_web_app(full_path: str):
+        """Serve the built React app in the single-service Railway image."""
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="not found")
+        candidate = (_web_root / full_path).resolve()
+        if os.path.commonpath((_web_root, candidate)) != str(_web_root):
+            raise HTTPException(status_code=404, detail="not found")
+        if candidate.is_file():
+            headers = ({"Cache-Control": "public, max-age=31536000, immutable"}
+                       if full_path.startswith("assets/") else {"Cache-Control": "no-cache"})
+            return FileResponse(candidate, headers=headers)
+        return FileResponse(_web_index, headers={"Cache-Control": "no-cache"})
