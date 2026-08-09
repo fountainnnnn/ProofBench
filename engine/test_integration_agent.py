@@ -317,6 +317,37 @@ def test_a_question_about_shipped_behaviour_is_answered_without_research(monkeyp
     assert "tesseract" in planner.prompt
 
 
+def test_offering_a_key_for_a_shipped_provider_still_gets_a_field_to_paste_it(monkeypatch):
+    # The planner answers this from the facts without researching, and that path
+    # used to drop the credential name — so the reply said "set SCRAPEDO_API_TOKEN"
+    # and gave the operator nothing to set it with.
+    _planning_agent(
+        '{"thought":"Scrape.do ships; it just has no token yet.","action":"answer",'
+        '"answer":"Scrape.do is already implemented here. Paste the key below.",'
+        '"credential":{"env":"SCRAPEDO_API_TOKEN","label":"Scrape.do"}}',
+        monkeypatch,
+    )
+
+    result = integration_agent.respond("add this api key to scrape.do", {"OPENROUTER_API_KEY": "k",
+                                                                         "SCRAPEDO_API_TOKEN": "t"})
+
+    assert result["credential"] == {"env": "SCRAPEDO_API_TOKEN", "label": "Scrape.do"}
+
+
+def test_an_answer_that_owes_no_key_carries_no_credential_field(monkeypatch):
+    _planning_agent(
+        '{"thought":"Plain question.","action":"answer","answer":"Scrape.do is implemented."}',
+        monkeypatch,
+    )
+
+    result = integration_agent.respond(
+        "is scrape.do implemented",
+        {"OPENROUTER_API_KEY": "k", "SCRAPEDO_API_TOKEN": "t"},
+    )
+
+    assert "credential" not in result
+
+
 def test_deployment_facts_report_configuration_without_any_value(monkeypatch):
     facts = integration_agent._deployment_facts({
         "OPENAI_API_KEY": "a-real-secret-value",

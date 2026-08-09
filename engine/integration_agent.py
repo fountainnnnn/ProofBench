@@ -253,13 +253,23 @@ Return one strict JSON object with:
   "thought": "One short sentence naming what is being asked and how you will answer it.",
   "action": "answer" | "research",
   "query": "A web search query. Only when action is research.",
-  "answer": "The full answer in markdown. Only when action is answer."
+  "answer": "The full answer in markdown. Only when action is answer.",
+  "credential": {{
+    "env": "The exact variable a credential the operator still owes belongs in,
+            copied verbatim from the facts above. Never invent a spelling.",
+    "label": "The provider's display name, for example Scrape.do."
+  }}
 }}
 
 Choose "answer" when the facts above already settle it — anything about what
 ProofBench implements, what is configured, which provider serves a role, or
 what a setting means. Say plainly that something IS implemented when it is
 listed above, and name its credential variable exactly as written.
+
+Include "credential" whenever answering leaves the operator owing a key — they
+are offering one, or the provider they asked about is listed with no credential.
+The interface collects the value, so do not ask for it in prose and do not tell
+them to set the variable themselves. Omit "credential" entirely otherwise.
 
 Choose "research" only when the answer depends on what an external vendor
 offers and the facts above do not cover it — adding a provider that is not
@@ -295,7 +305,13 @@ listed, or a vendor's endpoints, models, or authentication.
         action = "research"
     if action == "research" and not query:
         query = f"{request} official API documentation"
-    return {"action": action, "thought": thought, "answer": answer, "query": query}
+    return {
+        "action": action,
+        "thought": thought,
+        "answer": answer,
+        "query": query,
+        "credential": _credential(value.get("credential")),
+    }
 
 
 def _bounded_history(history: list[dict[str, str]] | None) -> str:
@@ -446,11 +462,17 @@ def respond(
     report(phase="plan", thought=plan["thought"], action=plan["action"])
 
     # A question this deployment can already answer is answered, not researched.
+    # It still carries a credential name when one is owed: an operator offering
+    # a key for a provider that already ships takes this path every time, and
+    # without the name there is no field to paste it into — only prose telling
+    # them to go set the variable themselves, which is the one thing this flow
+    # exists to spare them.
     if plan["action"] == "answer":
         return {
             "message": plan["answer"][:MAX_RESPONSE_CHARS],
             "sources": [],
             "implementation": {"status": "answer", "summary": plan["thought"] or "Answered."},
+            **({"credential": plan["credential"]} if plan["credential"] else {}),
         }
 
     sources, documentation = _research(plan["query"], settings, on_progress)
