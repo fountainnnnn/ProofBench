@@ -1128,8 +1128,12 @@ export default function Benchmark() {
   // During PROVISIONING no sandbox has logged a line yet, but the run has
   // already named its candidates; counting them keeps the Execution button
   // (and its panel) reachable through the slowest, least-informative phase.
+  // Only the phases that actually provision count: a tool assessment names
+  // every candidate while reading documentation and gives most of them no
+  // sandbox, so counting those advertised an execution that never happens.
+  const EXECUTION_PHASES = ["PROVISIONING", "BUILDING", "VALIDATING", "RUNNING"];
   const liveCandidateNames =
-    running && state.phaseState && !["DONE", "FAILED", "STOPPED"].includes(
+    running && state.phaseState && EXECUTION_PHASES.includes(
       String(state.phaseState.phase || "").toUpperCase())
       ? Object.keys(state.phaseState.candidates || {})
       : [];

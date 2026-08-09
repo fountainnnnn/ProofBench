@@ -70,6 +70,11 @@ DOCS_CONCURRENCY = 8
 # Documents a hosted candidate processes at once inside its sandbox. Each one is
 # an HTTP round trip, so this is bounded by provider rate limits, not by CPU.
 HOSTED_DOC_CONCURRENCY = 8
+# How much of a sandbox command's own output reaches the execution panel. This
+# is the record of what actually ran, so it is generous; the session's event
+# budget (PROOFBENCH_MAX_EVENTS) is the outer bound.
+SANDBOX_LOG_LINES = 60
+SANDBOX_LOG_LINE_CHARS = 1000
 
 
 def _schema_fields(spec_fields: list | None) -> list[dict]:
@@ -2802,8 +2807,7 @@ class Orchestrator:
                     self._check_cancelled()
                     self._log(name, f"$ {command}", "building")
                     output = self.pool.exec(handle, command, timeout=300)
-                    for line in output.splitlines()[-5:]:
-                        self._log(name, line[:300], "building")
+                    self._log_output(name, output, "building")
 
                 statuses[name] = "validating"
                 self._state("VALIDATING", dict(statuses))
@@ -3225,8 +3229,7 @@ class Orchestrator:
             self._check_cancelled()
             self._log(handle.label, f"$ {cmd}", "building")
             out = self.pool.exec(handle, cmd, timeout=300)
-            for line in out.splitlines()[-5:]:
-                self._log(handle.label, line[:300], "building")
+            self._log_output(handle.label, out, "building")
 
     def _probe_adapter(self, handle, candidate: Candidate, label: str) -> tuple[bool, str]:
         """Run one validation probe and log its outcome. Returns (ok, raw output)."""
@@ -3650,9 +3653,31 @@ else:
             self._entitlements_for(candidate),
         )
 
+    def _log_output(self, sandbox: str, output: str, phase: str) -> None:
+        """Emit a command's real output, bounded rather than summarised.
+
+        The previous behaviour kept the last five lines of every command, which
+        threw away the installation a build actually performed and, when a
+        command failed early, kept five lines of trailing noise instead of the
+        error. Long output is elided in the middle: the head shows what the
+        command started doing and the tail carries the failure, and the count of
+        dropped lines is stated rather than silently omitted.
+        """
+        lines = [line for line in str(output or "").splitlines() if line.strip()]
+        if len(lines) > SANDBOX_LOG_LINES:
+            head = SANDBOX_LOG_LINES // 3
+            tail = SANDBOX_LOG_LINES - head
+            elided = len(lines) - head - tail
+            lines = (lines[:head]
+                     + [f"... {elided} lines elided ..."]
+                     + lines[-tail:])
+        for line in lines:
+            self._log(sandbox, line, phase)
+
     def _log(self, sandbox: str, line: str, phase: str) -> None:
         self.emit("artifact", {"kind": "sandbox_log", "sandbox": sandbox,
-                               "line": self._redact(line)[:300], "phase": phase})
+                               "line": self._redact(line)[:SANDBOX_LOG_LINE_CHARS],
+                               "phase": phase})
 
     def _sandbox_file(
         self,

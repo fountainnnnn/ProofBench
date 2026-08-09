@@ -21,6 +21,7 @@ import { THEME_CHOICES, applyTheme, storedTheme } from "../theme.js";
 import daytonaLogo from "../assets/provider-logos/daytona.svg";
 import deepseekLogo from "../assets/provider-logos/deepseek.svg";
 import doublewordLogo from "../assets/provider-logos/doubleword.svg";
+import kimiLogo from "../assets/provider-logos/kimi.svg";
 import openaiLogo from "../assets/provider-logos/openai.svg";
 import openrouterLogo from "../assets/provider-logos/openrouter.svg";
 import oxylabsLogo from "../assets/provider-logos/oxylabs.svg";
@@ -61,6 +62,9 @@ const PROVIDER_LOGOS = {
   daytona: daytonaLogo,
   deepseek: deepseekLogo,
   doubleword: doublewordLogo,
+  // The mark was already bundled for the Kimi models this provider serves; it
+  // was simply never wired up, because the row it belongs to did not exist.
+  moonshot: kimiLogo,
   openai: openaiLogo,
   openrouter: openrouterLogo,
   oxylabs: oxylabsLogo,

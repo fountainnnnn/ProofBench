@@ -77,3 +77,37 @@ describe("sandbox execution panel", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("cards only exist for candidates that get a sandbox", () => {
+  it("shows no card for a candidate merely being assessed", () => {
+    render(
+      <SandboxExecutionPanel
+        open
+        onClose={() => {}}
+        sandboxLogs={{}}
+        sandboxFiles={{}}
+        phaseState={{ phase: "ADAPTER_GEN", candidates: { "math-aids": "batching" } }}
+        running
+      />
+    );
+    // A tool assessment names every candidate while reading documentation.
+    // Inventing a sandbox card for one left it on "Waiting for sandbox
+    // output..." for the rest of the run, and after it too.
+    expect(screen.queryByText("math-aids")).toBeNull();
+    expect(screen.getByText(/execution stream will appear/i)).toBeTruthy();
+  });
+
+  it("shows a card once the run is actually provisioning", () => {
+    render(
+      <SandboxExecutionPanel
+        open
+        onClose={() => {}}
+        sandboxLogs={{}}
+        sandboxFiles={{}}
+        phaseState={{ phase: "PROVISIONING", candidates: { tesseract: "provisioning" } }}
+        running
+      />
+    );
+    expect(screen.getByText("tesseract")).toBeTruthy();
+  });
+});

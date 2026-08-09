@@ -4,6 +4,10 @@ import { phaseLabel, phaseTone } from "../phaseLabel.js";
 import StatusIcon from "./StatusIcon.jsx";
 
 const TERMINAL_PHASES = new Set(["DONE", "FAILED", "STOPPED"]);
+// The phases in which a candidate is given a sandbox. Docs intelligence,
+// adapter generation, evaluation and reporting name candidates too, but never
+// provision for them.
+const EXECUTION_PHASES = new Set(["PROVISIONING", "BUILDING", "VALIDATING", "RUNNING"]);
 
 function phaseFor(lines, candidateStatus, overallPhase) {
   if (TERMINAL_PHASES.has(overallPhase)) {
@@ -129,10 +133,14 @@ export default function SandboxExecutionPanel({
   const closeRef = useRef(null);
   const sandboxes = useMemo(() => {
     const names = new Set([...Object.keys(sandboxLogs), ...Object.keys(sandboxFiles)]);
-    // A live run's candidates get a card from the moment they are named, so
-    // provisioning shows per-candidate progress instead of an empty panel.
-    if (running && phaseState && !TERMINAL_PHASES.has(
-        String(phaseState.phase || "").toUpperCase())) {
+    // Candidates get a card early so provisioning is not an empty panel — but
+    // only while the run is in a phase that actually provisions sandboxes. A
+    // tool assessment names every candidate during docs intelligence and
+    // adapter generation and gives most of them no sandbox at all, so seeding
+    // from those phases invented cards that sat on "Waiting for sandbox
+    // output..." forever, including after the run had finished.
+    const phase = String(phaseState?.phase || "").toUpperCase();
+    if (running && EXECUTION_PHASES.has(phase)) {
       Object.keys(phaseState.candidates || {}).forEach((name) => names.add(name));
     }
     return [...names].map((name) => ({
