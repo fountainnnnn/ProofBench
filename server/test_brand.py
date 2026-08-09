@@ -13,6 +13,9 @@ import time
 
 import pytest
 
+from server.test_backend_hardening import (  # noqa: F401  (client fixture)
+    client, headers,
+)
 from server import brand
 
 
@@ -130,11 +133,16 @@ def test_a_candidate_with_no_docs_url_is_never_fetched_for(tmp_path):
 
 # ---------------------------------------------------------------- the endpoint
 
-def test_the_endpoint_only_resolves_names_this_tenant_has_benchmarked(monkeypatch):
-    """It must never be pointed at a host of the caller's choosing."""
+def test_the_endpoint_only_resolves_names_this_tenant_has_benchmarked(client, monkeypatch):
+    """It must never be pointed at a host of the caller's choosing.
+
+    Takes the shared `client` fixture rather than building a bare TestClient:
+    the app refuses to serve a request when no authentication mode is
+    configured, and a raw client only worked on a machine that happened to have
+    a `.env` for python-dotenv to load. CI has none, so the test was asserting
+    the local operator's environment as much as the endpoint.
+    """
     import server.main as main_module
-    from fastapi.testclient import TestClient
-    from server.test_backend_hardening import headers  # noqa: F401
 
     asked = []
 
@@ -146,18 +154,16 @@ def test_the_endpoint_only_resolves_names_this_tenant_has_benchmarked(monkeypatc
     monkeypatch.setattr(main_module.runs, "candidate_docs_urls",
                         lambda owner: {"known_tool": "https://known.test/docs"})
 
-    with TestClient(main_module.app) as client:
-        response = client.get("/api/brand?names=known_tool,evil_tool",
-                              headers={"Authorization": "Bearer token-a"})
+    response = client.get("/api/brand?names=known_tool,evil_tool",
+                          headers=headers("token-a"))
 
     assert response.status_code == 200
     assert list(response.json()["logos"]) == ["known_tool"]
     assert asked == [("known_tool", "https://known.test/docs")]
 
 
-def test_the_endpoint_bounds_how_many_names_one_request_can_ask_for(monkeypatch):
+def test_the_endpoint_bounds_how_many_names_one_request_can_ask_for(client, monkeypatch):
     import server.main as main_module
-    from fastapi.testclient import TestClient
 
     known = {f"tool_{i}": "https://x.test/docs" for i in range(100)}
     asked = []
@@ -165,8 +171,6 @@ def test_the_endpoint_bounds_how_many_names_one_request_can_ask_for(monkeypatch)
     monkeypatch.setattr(main_module._LOGOS, "get",
                         lambda name, url, **kw: asked.append(name) or None)
 
-    with TestClient(main_module.app) as client:
-        client.get("/api/brand?names=" + ",".join(known),
-                   headers={"Authorization": "Bearer token-a"})
+    client.get("/api/brand?names=" + ",".join(known), headers=headers("token-a"))
 
     assert len(asked) == main_module._MAX_LOGO_NAMES

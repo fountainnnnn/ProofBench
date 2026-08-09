@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   deleteProviderKey,
   fetchBrandLogos,
@@ -167,6 +167,10 @@ function TrashIcon() {
  * value is in the listing: a provisioning key like DAYTONA_API_KEY is set but
  * outside the sandbox env, so "no mask" must not read as "missing". */
 function EnvRow({ env, stored, missing = false, onSave, onRemove }) {
+  // Focused when the editor opens rather than with autoFocus: the prop steals
+  // focus whenever the element mounts, which a screen reader user experiences
+  // as the page moving under them.
+  const focusRef = useRef(null);
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [value, setValue] = useState("");
@@ -174,6 +178,10 @@ function EnvRow({ env, stored, missing = false, onSave, onRemove }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const id = useId();
+
+  useEffect(() => {
+    if (editing) focusRef.current?.focus();
+  }, [editing]);
 
   const configured = Boolean(stored);
   const secret = stored?.secret !== false;
@@ -324,7 +332,7 @@ function EnvRow({ env, stored, missing = false, onSave, onRemove }) {
               autoComplete="off"
               disabled={busy}
               className={`${INPUT} text-[12px]`}
-              autoFocus
+              ref={focusRef}
               required
             />
           </div>
@@ -367,6 +375,7 @@ function PlusIcon() {
  * reads the vendor's documentation and resolves the name — so that is what the
  * escape hatch says, rather than inviting a guess into a free-text box. */
 function AddCredential({ groups, defaults, onSave, onAskAgent }) {
+  const focusRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [env, setEnv] = useState("");
   const [value, setValue] = useState("");
@@ -375,6 +384,10 @@ function AddCredential({ groups, defaults, onSave, onAskAgent }) {
   const [researched, setResearched] = useState({});
   const [researching, setResearching] = useState(false);
   const id = useId();
+
+  useEffect(() => {
+    if (open) focusRef.current?.focus();
+  }, [open]);
 
   /* An API key has no published value to look up and no default to fall back
      on, so it stays a blank secret box. A model id or a base URL is a fact
@@ -461,7 +474,7 @@ function AddCredential({ groups, defaults, onSave, onAskAgent }) {
           aria-label="Service setting"
           disabled={busy}
           className={`pb-mono ${INPUT} text-[12px]`}
-          autoFocus
+          ref={focusRef}
           required
         >
           <option value="">Choose a setting</option>
