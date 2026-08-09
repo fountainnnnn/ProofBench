@@ -151,7 +151,13 @@ def public_session(session_id: str, owner: str) -> dict | None:
     session.pop("active_worker_id", None)
     session.pop("active_lease_expires_at", None)
     session.pop("active_job_id", None)
-    session.pop("active_kind", None)
+    # What kind of work is in flight, not which job is doing it. The console has
+    # to tell a chat turn apart from a benchmark run: both set is_running, but
+    # only a run produces scores and sandboxes, and a client that assumes the
+    # benchmark meaning shows a results skeleton and an execution panel for a
+    # turn that will never fill them. The job identifier stays private.
+    active_kind = session.pop("active_kind", None)
+    session["active_kind"] = active_kind if session.get("is_running") else None
     session.pop("latest_job_id", None)
     spec = session.get("spec")
     if isinstance(spec, dict) and isinstance(spec.get("dataset"), dict):

@@ -19,10 +19,18 @@ import {
 } from "../provenance.js";
 
 const TERMINAL_PHASES = ["DONE", "FAILED", "STOPPED"];
-/* Before a specification is confirmed the session is still deciding WHAT to
-   run, so a results placeholder there promises the wrong thing: the next card
-   to appear is the spec, not a score. */
-const PRE_RUN_PHASES = ["INTAKE", "SPEC_CONFIRM"];
+/* The phases a confirmed run actually moves through. A results placeholder is
+   honest only inside one of them: before that the session is still deciding
+   WHAT to run, and the next card to appear is the spec, not a score.
+
+   This is an allowlist because the denylist it replaces ("not INTAKE, not
+   SPEC_CONFIRM") let every other pre-run state through — including the empty
+   phase a session carries while it is still searching, which is exactly when
+   the placeholder was seen promising results nobody had asked for yet. */
+const RUN_PHASES = [
+  "DOCS_INTEL", "ADAPTER_GEN", "PROVISIONING", "BUILDING",
+  "VALIDATING", "RUNNING", "EVALUATING", "REPORTING",
+];
 
 /* The orchestrator proposes a specification as a fenced JSON block. Printed raw
    it is a wall of braces the reader has to parse by eye, so the shape it always
@@ -331,8 +339,8 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
 
   // Real output always renders. A loading placeholder only once the run is past
   // the point where the spec is what arrives next.
-  const awaitingSpec = PRE_RUN_PHASES.includes(phase);
-  const resultsCard = (results || report || ((running || terminal) && !awaitingSpec)) ? (
+  const inRun = RUN_PHASES.includes(phase);
+  const resultsCard = (results || report || terminal || (running && inRun)) ? (
     <ResultsCard
       metrics={provenanceMismatch || evidenceWithheld ? null : results}
       report={provenanceMismatch || reportProvenanceMismatch || evidenceWithheld ? null : report}

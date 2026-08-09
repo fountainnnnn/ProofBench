@@ -32,6 +32,10 @@ const MAX_LOG_LINES = 400;
 const MAX_TRACE_EVENTS = 300;
 const RECONNECT_TIMEOUT_MS = 20000;
 const STREAM_ACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+/* The phases in which a run actually has sandboxes: what makes the execution
+   panel worth showing. A tool assessment scores from documentation and reaches
+   none of them. */
+const SANDBOX_PHASES = ["PROVISIONING", "BUILDING", "VALIDATING", "RUNNING"];
 
 export function buildRunSpec(spec, dataset) {
   if (spec?.benchmark_type === "tool_assessment" || !dataset?.id) return spec;
@@ -433,6 +437,12 @@ export default function Benchmark() {
           : (s.provenance || provenanceFor(data)),
       } : s));
       const phase = String(data.phase || "").toUpperCase();
+      // First sign that this run actually provisions something. A tool
+      // assessment reads documentation and never reaches these, so its panel
+      // stays shut rather than promising an execution stream.
+      if (SANDBOX_PHASES.includes(phase) && !sandboxPanelDismissedRef.current) {
+        setSandboxPanelOpen(true);
+      }
       if (["DONE", "FAILED", "STOPPED"].includes(phase)) setRunning(false);
       refreshSessions();
     });
@@ -684,12 +694,19 @@ export default function Benchmark() {
           return next;
         });
       }
-      sessionIsRunning = Boolean(full.is_running);
+      // is_running covers both kinds of work. Only a benchmark run produces
+      // scores and sandboxes, so only a benchmark makes this view "running":
+      // treating a chat turn as one showed a results skeleton and an execution
+      // panel for work that fills neither, and then waited for a run-completion
+      // event a chat turn never sends. A turn in flight is the composer's
+      // business, which is what `typing` drives.
+      const activeKind = String(full.active_kind || "").toLowerCase();
+      const chatInFlight = Boolean(full.is_running) && activeKind === "chat";
+      sessionIsRunning = Boolean(full.is_running) && !chatInFlight;
       setRunning(sessionIsRunning);
-      // A session restored mid-run shows its execution too. Waiting for logs to
-      // already exist meant reopening a tab during provisioning hid the panel.
-      if (sessionIsRunning) setSandboxPanelOpen(true);
-      setStreamStatus({ state: sessionIsRunning ? "connecting" : "idle", message: sessionIsRunning ? "Reconnecting to run updates" : "" });
+      setTyping(chatInFlight);
+      const reconnecting = Boolean(full.is_running);
+      setStreamStatus({ state: reconnecting ? "connecting" : "idle", message: reconnecting ? "Reconnecting to run updates" : "" });
       localStorage.setItem("proofbench.activeSessionId", id);
       setLoadingSession(false);
     } catch {
@@ -927,12 +944,12 @@ export default function Benchmark() {
       rememberFollowUp(activeId, false);
       setActiveRunId(null);
       activeRunIdRef.current = null;
-      // Execution is the thing the user is waiting on, so the panel opens with
-      // the run instead of after the first sandbox happens to log a line: that
-      // was several minutes of provisioning and docs work with nothing to look
-      // at unless they knew to click. Dismissing it still sticks for the run.
+      // The panel is armed here, not opened. Opening it with the run advertised
+      // an execution that a documentation-only assessment never performs, and
+      // left an empty "the stream will appear when a sandbox starts" panel next
+      // to a run that will never start one. It opens on the first real sign of
+      // execution instead — an execution phase, or a sandbox artifact.
       sandboxPanelDismissedRef.current = false;
-      setSandboxPanelOpen(true);
       setState((s) => ({
         ...s,
         sandboxLogs: {},
@@ -1115,9 +1132,8 @@ export default function Benchmark() {
   // Only the phases that actually provision count: a tool assessment names
   // every candidate while reading documentation and gives most of them no
   // sandbox, so counting those advertised an execution that never happens.
-  const EXECUTION_PHASES = ["PROVISIONING", "BUILDING", "VALIDATING", "RUNNING"];
   const liveCandidateNames =
-    running && state.phaseState && EXECUTION_PHASES.includes(
+    running && state.phaseState && SANDBOX_PHASES.includes(
       String(state.phaseState.phase || "").toUpperCase())
       ? Object.keys(state.phaseState.candidates || {})
       : [];

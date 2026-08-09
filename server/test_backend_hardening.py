@@ -1066,3 +1066,35 @@ def test_every_scraper_credential_name_is_one_the_endpoint_accepts():
     for name, meta in scrapers.META.items():
         for env_name in meta.get("credentials", ()):
             assert _is_provider_env_name(env_name), f"{name} declares unusable {env_name}"
+
+
+def test_running_session_reports_which_kind_of_work_is_in_flight(local_client):
+    """A chat turn and a benchmark run both set is_running; only one has scores.
+
+    The console reads this to decide whether to show a results placeholder and
+    open the sandbox execution panel. Collapsing both kinds into one boolean had
+    it promise a ranking and a live execution stream for a session that was
+    still searching the web for candidates, and then wait for a run-completion
+    event that a chat turn never sends.
+    """
+    from server import runs
+
+    session_id = local_client.post("/api/sessions").json()["session_id"]
+    owner = runs.STORE.get_session(session_id, None) or {}
+    tenant = owner.get("owner")
+
+    idle = local_client.get(f"/api/sessions/{session_id}").json()
+    assert idle["is_running"] is False
+    assert idle["active_kind"] is None
+
+    runs.STORE.claim_chat_atomic(session_id, tenant, None, "real", "job-chat", 4, 100)
+    chatting = local_client.get(f"/api/sessions/{session_id}").json()
+    assert chatting["is_running"] is True
+    assert chatting["active_kind"] == "chat"
+    # The job identifier behind it stays private.
+    assert "active_job_id" not in chatting
+
+    runs.STORE.finish(session_id)
+    settled = local_client.get(f"/api/sessions/{session_id}").json()
+    assert settled["is_running"] is False
+    assert settled["active_kind"] is None
