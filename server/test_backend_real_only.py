@@ -494,6 +494,45 @@ def test_provider_readiness_reports_status_without_values(client, monkeypatch):
     assert body["run_ready"] is True
 
 
+def test_every_implemented_provider_has_a_settings_row(client, monkeypatch):
+    """Settings lists what the engine ships, not a hand-kept subset of it.
+
+    The two lists drifted once: Moonshot, Scrape.do, and Bright Data were fully
+    implemented and individually accepted by the credentials endpoint, yet had
+    no row, so configuring one meant adding it by hand as an unknown service.
+    Deriving the rows from the registries is what stops that recurring, and this
+    is the assertion that the derivation stays honest.
+    """
+    from engine import scrapers
+    from engine.llm_clients import PROVIDERS
+
+    body = client.get("/api/providers", headers=headers("token-a")).json()
+    listed = {item["provider"] for item in body["providers"]}
+
+    assert set(PROVIDERS) <= listed
+    # Every scraper that needs a credential is configurable here. The
+    # self-hosted pair needs none, so it has nothing to show in this list and
+    # reports its liveness through the scraper chain instead.
+    for name in scrapers.DEFAULT_ORDER:
+        needs_credential = bool(scrapers.META.get(name, {}).get("credentials"))
+        assert (name in listed) is needs_credential
+    assert "daytona" in listed
+
+
+def test_a_settings_row_asks_for_exactly_the_variables_its_provider_reads(client):
+    from engine.llm_clients import PROVIDERS
+
+    body = client.get("/api/providers", headers=headers("token-a")).json()
+    rows = {item["provider"]: item for item in body["providers"]}
+
+    for name, spec in PROVIDERS.items():
+        names = set(rows[name]["required"]) | set(rows[name]["optional"])
+        assert spec.api_key_env in rows[name]["required"]
+        assert spec.model_env in names
+        if spec.base_url_env:
+            assert spec.base_url_env in names
+
+
 def test_provider_readiness_blocks_when_no_orchestration_provider_is_configured(
     client, monkeypatch
 ):

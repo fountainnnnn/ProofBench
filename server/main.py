@@ -977,33 +977,94 @@ def api_health(identity: Identity = Depends(authenticate)):
 # Provider readiness is derived from configuration only. Each entry names the
 # variables a capability needs; no request is ever issued to a provider here, so
 # loading this page cannot bill anyone.
-PROVIDER_READINESS = (
-    {"provider": "daytona", "label": "Daytona sandboxes",
-     "capability": "Executes every benchmark candidate in an isolated sandbox.",
-     "required": ("DAYTONA_API_KEY",), "optional": (), "essential": True},
-    # Essential by product decision, not by technical necessity: the capability
-    # layer below would accept any configured LLM, but OpenAI is the default a
-    # deployment is expected to hold, so a run is blocked without it.
-    {"provider": "openai", "label": "OpenAI",
-     "capability": "Orchestrator reasoning and the built-in openai_vision candidate.",
-     "required": ("OPENAI_API_KEY",),
-     "optional": ("OPENAI_ORCHESTRATOR_MODEL", "OPENAI_VISION_MODEL"), "essential": True},
-    {"provider": "openrouter", "label": "OpenRouter",
-     "capability": "OpenAI-compatible orchestration, documentation assessment, and reports.",
-     "required": ("OPENROUTER_API_KEY",),
-     "optional": ("OPENROUTER_MODEL", "OPENROUTER_BASE_URL"), "essential": False},
-    {"provider": "doubleword", "label": "Doubleword",
-     "capability": "Batched documentation assessment and the built-in doubleword candidate.",
-     "required": ("DOUBLEWORD_API_KEY", "DOUBLEWORD_MODEL"),
-     "optional": ("DOUBLEWORD_BASE_URL",), "essential": False},
-    {"provider": "deepseek", "label": "DeepSeek",
-     "capability": "Generates and repairs adapters for candidates without a built-in.",
-     "required": ("DEEPSEEK_API_KEY",),
-     "optional": ("DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"), "essential": False},
-    {"provider": "oxylabs", "label": "Oxylabs",
-     "capability": "Scrapes vendor documentation during intake and docs intelligence.",
-     "required": ("OXYLABS_USERNAME", "OXYLABS_PASSWORD"), "optional": (), "essential": False},
-)
+#
+# Only the prose and the product decisions live here. Which providers exist, and
+# which variables each one reads, are derived from the engine registries in
+# `_provider_readiness` below. Hand-listing both drifted: Moonshot, Scrape.do,
+# and Bright Data were fully implemented and individually accepted by the
+# credentials endpoint, yet absent from Settings, so the only way to configure
+# one was to add it by hand as though it were a service ProofBench did not know.
+PROVIDER_NOTES = {
+    "openai": {
+        # Essential by product decision, not by technical necessity: the
+        # capability layer below would accept any configured LLM, but OpenAI is
+        # the default a deployment is expected to hold, so a run is blocked
+        # without it.
+        "label": "OpenAI", "essential": True,
+        "capability": "Orchestrator reasoning and the built-in openai_vision candidate.",
+        "optional": ("OPENAI_VISION_MODEL",),
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "capability": "OpenAI-compatible orchestration, documentation assessment, and reports.",
+    },
+    "doubleword": {
+        "label": "Doubleword",
+        "capability": "Batched documentation assessment and the built-in doubleword candidate.",
+        # A gateway serves many models, so choosing the provider is not yet a
+        # choice of model: this one is required rather than optional.
+        "required": ("DOUBLEWORD_MODEL",),
+    },
+    "deepseek": {
+        "label": "DeepSeek",
+        "capability": "Generates and repairs adapters for candidates without a built-in.",
+    },
+    "moonshot": {
+        "label": "Moonshot (Kimi)",
+        "capability": "Orchestration and supervisor reasoning with Kimi models.",
+    },
+}
+
+
+def _provider_readiness() -> tuple[dict, ...]:
+    """One Settings row per service this deployment can actually hold a key for.
+
+    Everything the engine implements appears, configured or not, so an operator
+    never has to add a provider ProofBench already ships. A scraper that needs
+    no credential (the self-hosted pair) is left out: there is nothing to enter,
+    and its liveness is reported by the scraper chain card instead.
+    """
+    from engine import scrapers
+    from engine.llm_clients import PROVIDERS
+
+    rows = [{"provider": "daytona", "label": "Daytona sandboxes",
+             "capability": "Executes every benchmark candidate in an isolated sandbox.",
+             "required": ("DAYTONA_API_KEY",), "optional": (), "essential": True}]
+
+    for name, spec in PROVIDERS.items():
+        notes = PROVIDER_NOTES.get(name, {})
+        extra_required = tuple(notes.get("required", ()))
+        optional = tuple(
+            item for item in (spec.model_env, spec.base_url_env, *notes.get("optional", ()))
+            if item and item not in extra_required)
+        rows.append({
+            "provider": name,
+            "label": notes.get("label", name.replace("_", " ").title()),
+            "capability": notes.get("capability", "An OpenAI-compatible LLM provider."),
+            "required": (spec.api_key_env, *extra_required),
+            "optional": optional,
+            "essential": bool(notes.get("essential", False)),
+        })
+
+    for name in scrapers.DEFAULT_ORDER:
+        meta = scrapers.META.get(name, {})
+        credentials = tuple(meta.get("credentials", ()))
+        if not credentials:
+            continue
+        rows.append({
+            "provider": name,
+            "label": scrapers.LABELS.get(name, name.title()),
+            "capability": meta.get(
+                "hint", "Scrapes vendor documentation during intake and docs intelligence."),
+            "required": credentials,
+            "optional": (),
+            "essential": False,
+        })
+
+    return tuple(rows)
+
+
+PROVIDER_READINESS = _provider_readiness()
 
 # LLM work is capability based: any one of the listed providers satisfies the
 # capability. This is what lets a deployment holding only OPENROUTER_API_KEY run
