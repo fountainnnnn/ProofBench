@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 
-const base = "http://localhost:5199";
+const base = "http://localhost:5299";
 const shots = [
   { path: "/", name: "landing" },
   { path: "/app/overview", name: "overview" },

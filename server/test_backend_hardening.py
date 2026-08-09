@@ -170,30 +170,18 @@ def test_local_mode_accepts_a_tokenless_write_and_scopes_it_to_the_local_tenant(
     assert owner == "local-dev"
 
 
-def test_local_mode_still_refuses_runtime_provider_credential_writes(local_client, monkeypatch):
-    # The tokenless bypass covers authentication only. Writing provider secrets
-    # at runtime stays off unless it is separately and explicitly enabled.
-    monkeypatch.delenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", raising=False)
+def test_local_mode_stores_a_runtime_provider_credential_without_echoing_it(local_client):
+    # Adding a service is always available; the write must still answer with the
+    # name alone, never the value it just stored.
     response = local_client.post("/api/settings/provider-keys",
                                  json={"env": "CUSTOM_API_KEY", "value": "secret-value"})
-    assert response.status_code == 503
+    assert response.status_code == 200
     assert "secret-value" not in response.text
     settings = local_client.get("/api/settings/provider-keys").json()
-    assert settings["runtime_writes_enabled"] is False
-    assert all(item["env"] != "CUSTOM_API_KEY" for item in settings["keys"])
-
-
-def test_reveal_is_refused_unless_runtime_credentials_are_enabled(local_client, monkeypatch):
-    # Reveal is the one endpoint that returns a secret, so it inherits the same
-    # explicit opt-in as writing one. Local mode alone must not unlock it.
-    monkeypatch.delenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", raising=False)
-    response = local_client.post("/api/settings/provider-keys/reveal",
-                                 json={"env": "OPENAI_API_KEY"})
-    assert response.status_code == 503
+    assert any(item["env"] == "CUSTOM_API_KEY" for item in settings["keys"])
 
 
 def test_reveal_returns_a_stored_value_that_the_listing_only_masks(local_client, monkeypatch):
-    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
     secret = "provider-secret-value-1234"
     saved = local_client.post("/api/settings/provider-keys",
                               json={"env": "CUSTOM_API_KEY", "value": secret})
@@ -216,7 +204,6 @@ def test_reveal_returns_a_stored_value_that_the_listing_only_masks(local_client,
 
 
 def test_reveal_rejects_names_that_are_not_provider_settings(local_client, monkeypatch):
-    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
     assert local_client.post("/api/settings/provider-keys/reveal",
                              json={"env": "PATH"}).status_code == 422
     # A well-formed name with nothing stored is a miss, not a leak.
@@ -225,7 +212,6 @@ def test_reveal_rejects_names_that_are_not_provider_settings(local_client, monke
 
 
 def test_local_runtime_credentials_accept_only_the_exact_oxylabs_pair(local_client, monkeypatch):
-    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
 
     username = local_client.post(
         "/api/settings/provider-keys",
@@ -242,7 +228,6 @@ def test_local_runtime_credentials_accept_only_the_exact_oxylabs_pair(local_clie
 
     listed_response = local_client.get("/api/settings/provider-keys")
     listed = listed_response.json()
-    assert listed["runtime_writes_enabled"] is True
     assert {item["env"] for item in listed["keys"]} >= {
         "OXYLABS_USERNAME",
         "OXYLABS_PASSWORD",
@@ -262,7 +247,6 @@ def test_local_runtime_credentials_accept_only_the_exact_oxylabs_pair(local_clie
 def test_local_runtime_settings_accept_the_supervisor_provider_selector(
     local_client, monkeypatch
 ):
-    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
 
     saved = local_client.post(
         "/api/settings/provider-keys",
@@ -384,18 +368,20 @@ def test_sessions_and_results_are_tenant_isolated(client):
     assert client.get(f"/api/runs/{session_id}/results", headers=headers("token-a")).status_code == 404
 
 
-def test_runtime_provider_credentials_are_disabled_in_production(client, monkeypatch):
-    # The runtime flag alone is insufficient. Authenticated/production mode
-    # remains locked unless the separate local-only bypass is also active.
-    monkeypatch.setenv("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "1")
+def test_runtime_provider_credentials_stay_scoped_to_the_writing_tenant(client):
+    # Authenticated mode can add a service too, so the guarantee that matters is
+    # isolation: one tenant's credential must not appear in another's listing.
     response = client.post("/api/settings/provider-keys", headers=headers("token-a"),
                            json={"env": "CUSTOM_API_KEY", "value": "secret-value"})
-    assert response.status_code == 503
+    assert response.status_code == 200
     assert "secret-value" not in response.text
-    settings = client.get("/api/settings/provider-keys", headers=headers("token-a")).json()
-    assert settings["runtime_writes_enabled"] is False
-    assert settings["managed_by"] == "deployment"
-    assert all(item["env"] != "CUSTOM_API_KEY" for item in settings["keys"])
+
+    mine = client.get("/api/settings/provider-keys", headers=headers("token-a")).json()
+    assert any(item["env"] == "CUSTOM_API_KEY" for item in mine["keys"])
+
+    theirs = client.get("/api/settings/provider-keys", headers=headers("token-b"))
+    assert all(item["env"] != "CUSTOM_API_KEY" for item in theirs.json()["keys"])
+    assert "secret-value" not in theirs.text
 
 
 def test_upload_validation_and_dataset_ownership(client):
@@ -443,7 +429,12 @@ def test_invalid_spec_and_arbitrary_dataset_path_are_rejected(client):
     invalid["unexpected"] = True
     assert client.post(f"/api/sessions/{session_id}/run", headers=headers("token-a"),
                        json={"spec": invalid}).status_code == 422
+    # A bound dataset, so the path check is what rejects this rather than the
+    # earlier missing-dataset check. A client-chosen path must never be honoured
+    # even when the session legitimately has data of its own.
+    dataset = upload_dataset(client)
     arbitrary = valid_spec(os.path.abspath("secrets"))
+    arbitrary["dataset"]["dataset_id"] = dataset["dataset_id"]
     response = client.post(f"/api/sessions/{session_id}/run", headers=headers("token-a"),
                            json={"spec": arbitrary})
     assert response.status_code == 422
@@ -1010,3 +1001,57 @@ def test_auth_status_remains_public_and_reports_the_local_profile(local_client):
     response = local_client.get("/api/auth/session")
     assert response.status_code == 200
     assert response.json()["auth_mode"] == "local"
+
+
+def test_setting_options_refuses_to_research_a_secret(local_client):
+    # The endpoint must never read as a place to obtain a credential, so a
+    # secret name is rejected before any research or model call happens.
+    for env_name in ("OPENAI_API_KEY", "OXYLABS_PASSWORD"):
+        response = local_client.post("/api/settings/setting-options",
+                                     json={"env": env_name})
+        assert response.status_code == 422
+
+    # A name outside the provider set is refused on the same path.
+    assert local_client.post("/api/settings/setting-options",
+                             json={"env": "PATH"}).status_code == 422
+
+
+def test_setting_options_reports_when_the_agent_is_unavailable(local_client, monkeypatch):
+    # Researching needs the same LLM and scraper the integration agent needs;
+    # with neither configured this is a stated prerequisite, not a 500.
+    #
+    # The prerequisites are cleared explicitly. A developer machine has real
+    # keys in its environment, and without this the test would reach a live
+    # provider — a billable network call is never an acceptable test.
+    for name in ("DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "MOONSHOT_API_KEY",
+                 "OXYLABS_USERNAME", "OXYLABS_PASSWORD",
+                 "SCRAPEDO_API_TOKEN", "BRIGHTDATA_API_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    response = local_client.post("/api/settings/setting-options",
+                                 json={"env": "OPENROUTER_MODEL"})
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "integration_agent_unavailable"
+
+
+def test_readiness_names_the_fallback_for_every_model_and_base_url(local_client):
+    payload = local_client.get("/api/providers").json()
+    defaults = payload["setting_defaults"]
+
+    assert defaults["OPENROUTER_MODEL"]
+    assert defaults["OPENROUTER_BASE_URL"].startswith("https://")
+    # A default is configuration, never a credential.
+    assert not any(name.endswith("_API_KEY") for name in defaults)
+
+
+def test_every_scraper_credential_name_is_one_the_endpoint_accepts():
+    # The integration agent offers these names to the operator as somewhere to
+    # paste a credential. A name the write endpoint rejects would send them
+    # straight back to guessing, which is the failure this whole path removes.
+    from engine import scrapers
+
+    from server.main import _is_provider_env_name
+
+    for name, meta in scrapers.META.items():
+        for env_name in meta.get("credentials", ()):
+            assert _is_provider_env_name(env_name), f"{name} declares unusable {env_name}"

@@ -121,6 +121,24 @@ export async function uploadDataset({ images, groundTruth, useSynthetic }) {
   return jsonOrThrow(res);
 }
 
+export async function generateDataset(prompt, n = 12) {
+  const res = await apiFetch(`${BASE}/api/datasets/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, n }),
+  });
+  return jsonOrThrow(res, "The dataset designer could not produce a dataset.");
+}
+
+export async function getDatasetPreview(datasetId) {
+  const res = await apiFetch(`${BASE}/api/datasets/${encodeURIComponent(datasetId)}/preview`);
+  return jsonOrThrow(res);
+}
+
+export function datasetImageUrl(datasetId, docId) {
+  return `${BASE}/api/datasets/${encodeURIComponent(datasetId)}/images/${encodeURIComponent(docId)}`;
+}
+
 export async function listDatasets() {
   const res = await apiFetch(`${BASE}/api/datasets`);
   const body = await jsonOrThrow(res);
@@ -363,6 +381,18 @@ export async function revealProviderKey(env) {
     body: JSON.stringify({ env }),
   });
   return jsonOrThrow(res, "Could not read this provider credential.");
+}
+
+/* Ask the integration agent which values a non-secret setting can take. POST
+   because it does real work (search, scrape, one model call), not because it
+   writes anything. */
+export async function getSettingOptions(env) {
+  const res = await apiFetch(`${BASE}/api/settings/setting-options`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ env }),
+  });
+  return jsonOrThrow(res, "Could not research values for this setting.");
 }
 
 export async function getSettingsDefaults() {

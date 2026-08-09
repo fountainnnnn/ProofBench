@@ -15,9 +15,9 @@ into one that looks saved and never authenticates. The upgrade is a forward-only
 **This table holds plaintext provider secrets.** Any backup of the database —
 including the automatic `.bak` taken below — is therefore a credential dump and
 must be handled as one. Exclude `tenant_credentials` from exports that are not
-treated as secret. Writing and revealing these values both require
-`PROOFBENCH_INSECURE_DEV=1` together with `PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS=1`,
-so a hosted deployment that has not opted in never populates the table.
+treated as secret. Writing and revealing these values is available to any
+authenticated tenant, so the table is populated on any deployment where an
+operator has saved a credential from Settings.
 
 Version 4 makes run provenance an authoritative SQLite field so missing or
 corrupt filesystem artifacts cannot cause synthetic results to be reported as

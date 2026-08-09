@@ -71,18 +71,32 @@ def test_explicit_demo_is_rejected_before_any_mutation(client):
     assert after["run_history"] == []
 
 
-def test_extraction_fields_must_match_the_deterministic_evaluator_schema(client):
+def test_extraction_fields_accept_any_valid_schema_and_reject_bad_names(client):
+    """The evaluator scores whatever schema the spec declares.
+
+    Arbitrary well-formed schemas — bare names or typed {name, type} objects —
+    are accepted; malformed names, duplicates, and unknown types still 422.
+    """
     dataset = upload_dataset(client)
     session_id = create_session(client)
+
     spec = valid_spec()
     spec["dataset"] = {"dataset_id": dataset["dataset_id"]}
-    spec["fields"] = ["amount"]
-
+    spec["fields"] = ["amount", {"name": "issued_on", "type": "date"}]
     response = client.post(f"/api/sessions/{session_id}/run", headers=headers("token-a"),
                            json={"spec": spec})
+    assert response.status_code in (200, 503)  # schema accepted; 503 only if providers absent
 
-    assert response.status_code == 422
-    assert runs.get_session(session_id, "tenant-a")["run_history"] == []
+    for bad in (["amount", "amount"],                      # duplicate names
+                [{"name": "x", "type": "geojson"}],        # unknown type
+                ["not a valid name!"],                     # malformed name
+                []):                                       # empty schema
+        spec = valid_spec()
+        spec["dataset"] = {"dataset_id": dataset["dataset_id"]}
+        spec["fields"] = bad
+        response = client.post(f"/api/sessions/{session_id}/run", headers=headers("token-a"),
+                               json={"spec": spec})
+        assert response.status_code == 422, bad
 
 
 def test_demo_mode_cannot_be_smuggled_through_the_spec(client):
@@ -459,6 +473,10 @@ def test_provider_readiness_reports_status_without_values(client, monkeypatch):
                  "DOUBLEWORD_MODEL", "DEEPSEEK_API_KEY", "OXYLABS_USERNAME",
                  "OXYLABS_PASSWORD", "NOSANA_API_KEY", "NOSANA_BASE_URL", "NOSANA_MODEL"):
         monkeypatch.delenv(name, raising=False)
+    # run_ready needs the scraping capability, which otherwise resolves through
+    # live probes of local SearXNG/Crawl4AI containers — ambient machine state a
+    # unit test must not depend on. One inert scraper credential pins it.
+    monkeypatch.setenv("SCRAPEDO_API_TOKEN", "scrapedo-test-token")
 
     response = client.get("/api/providers", headers=headers("token-a"))
     assert response.status_code == 200
@@ -535,3 +553,155 @@ def test_openrouter_settings_are_listed_but_never_sandbox_eligible(client, monke
 
 def test_provider_readiness_requires_authentication(client):
     assert client.get("/api/providers").status_code == 401
+
+
+def test_generated_dataset_flow_previews_and_serves_images(client, monkeypatch):
+    """AI proposal → deterministic render → registered dataset with a preview.
+
+    The model is stubbed at the proposal seam: everything downstream — the
+    render, registration, preview shape, image serving, and tenant isolation —
+    is the real path.
+    """
+    from engine import dataset_gen
+
+    proposal = {
+        "title": "Receipts",
+        "description": "Cafe receipts",
+        "document_kind": "receipt",
+        "fields": [{"name": "merchant", "type": "text"},
+                   {"name": "total", "type": "currency"}],
+        "rows": [{"merchant": f"Cafe {i}", "total": f"{10 + i}.50"} for i in range(1, 7)],
+    }
+    monkeypatch.setattr(dataset_gen, "propose_dataset",
+                        lambda prompt, n, env=None, fields=None: dataset_gen._validated_proposal(proposal, n, fields))
+
+    response = client.post("/api/datasets/generate", headers=headers("token-a"),
+                           json={"prompt": "benchmark receipt OCR", "n": 6})
+    assert response.status_code == 200
+    body = response.json()
+    preview = body["preview"]
+    assert preview["kind"] == "generated"
+    assert preview["schema"] == proposal["fields"]
+    assert len(preview["rows"]) == 6
+    assert preview["doc_ids"] == [f"doc_{i:03d}" for i in range(1, 7)]
+
+    dataset_id = body["dataset_id"]
+    image = client.get(f"/api/datasets/{dataset_id}/images/doc_001",
+                       headers=headers("token-a"))
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+
+    # Another tenant can see none of it.
+    assert client.get(f"/api/datasets/{dataset_id}/preview",
+                      headers=headers("token-b")).status_code == 404
+    assert client.get(f"/api/datasets/{dataset_id}/images/doc_001",
+                      headers=headers("token-b")).status_code == 404
+    # Path traversal in doc_id is rejected before touching the filesystem.
+    assert client.get(f"/api/datasets/{dataset_id}/images/..%2Fground_truth",
+                      headers=headers("token-a")).status_code in (404, 422)
+
+
+def test_a_session_binds_no_data_until_the_user_brings_some(client):
+    """Nothing is attached implicitly — not at creation, not on a chat turn.
+
+    Binding the invoice sample by default made every session arrive at intake
+    already holding a document schema, which is how OCR became the implicit
+    default for questions that were never about documents.
+    """
+    session_id = create_session(client)
+    assert not runs.get_session(session_id, "tenant-a")["dataset_id"]
+
+    assert client.post("/api/chat", headers=headers("token-a"), json={
+        "session_id": session_id,
+        "message": "which speech-to-text API is most accurate?"}).status_code == 200
+    assert not runs.get_session(session_id, "tenant-a")["dataset_id"]
+
+    # Data the user actually brings still binds.
+    dataset = upload_dataset(client)
+    other_id = create_session(client)
+    assert client.post("/api/chat", headers=headers("token-a"), json={
+        "session_id": other_id, "message": "score these",
+        "dataset_id": dataset["dataset_id"]}).status_code == 200
+    assert runs.get_session(other_id, "tenant-a")["dataset_id"] == dataset["dataset_id"]
+
+
+def test_a_dataset_less_turn_does_not_detach_data_already_bound(client):
+    """One message that mentions no data must not lose data already attached."""
+    dataset = upload_dataset(client)
+    session_id = create_session(client)
+    runs.bind_dataset(session_id, "tenant-a", dataset["dataset_id"],
+                      runs.get_dataset(dataset["dataset_id"], "tenant-a")["path"])
+
+    runs.begin_chat(session_id, "tenant-a", None, "real", "and what about latency?")
+
+    stored = runs.get_session(session_id, "tenant-a")
+    assert stored["dataset_id"] == dataset["dataset_id"]
+    assert stored["dataset_path"]
+
+
+def test_measured_run_without_bound_data_builds_its_own_and_starts(client, monkeypatch):
+    """A benchmark always runs. Missing data is built, not handed back as a 422.
+
+    The spec carries source="generate" because intake judged the question needs
+    measuring. The examples must be built for the SPEC's own schema — the
+    evaluator matches ground truth to predictions by column name, so a dataset
+    with different columns would score every candidate as all-missing.
+    """
+    from engine import dataset_gen
+
+    seen = {}
+
+    def stub(prompt, n, env=None, fields=None):
+        seen["prompt"], seen["n"], seen["fields"] = prompt, n, fields
+        rows = [{field["name"]: f"value {i}" for field in fields} for i in range(1, 7)]
+        return dataset_gen._validated_proposal(
+            {"title": "Built for the run", "document_kind": "record",
+             "fields": fields, "rows": rows}, n, fields)
+
+    monkeypatch.setattr(dataset_gen, "propose_dataset", stub)
+
+    session_id = create_session(client)
+    runs.add_message(session_id, "user", "which tool reads parking tickets best?")
+
+    spec = valid_spec()
+    spec["category"] = "parking ticket reading"
+    spec["fields"] = [{"name": "plate_number", "type": "text"},
+                      {"name": "fine_amount", "type": "currency"}]
+    spec["dataset"] = {"source": "generate"}
+    response = client.post(f"/api/sessions/{session_id}/run", headers=headers("token-a"),
+                           json={"spec": spec})
+    # Admitted, not refused. 503 only when this deployment has no providers.
+    assert response.status_code in (200, 503), response.text
+    assert response.status_code != 422
+
+    assert [field["name"] for field in seen["fields"]] == ["plate_number", "fine_amount"]
+    assert "parking ticket reading" in seen["prompt"]
+    # The run's own words reach the designer, so the documents are about what
+    # the user asked for and not just about the column names.
+    assert "parking tickets" in seen["prompt"]
+
+    # The built dataset is bound to the session, so a follow-up run reuses it
+    # rather than paying to design another.
+    stored = runs.get_session(session_id, "tenant-a")
+    assert stored["dataset_id"]
+
+
+def test_measured_run_still_refuses_a_missing_dataset_it_was_not_asked_to_build(client):
+    """source="generate" is the only license to build. Its absence still 422s."""
+    session_id = create_session(client)
+    spec = valid_spec()
+    response = client.post(f"/api/sessions/{session_id}/run", headers=headers("token-a"),
+                           json={"spec": spec})
+    assert response.status_code == 422
+
+
+def test_generate_rejects_when_no_proposal_is_possible(client, monkeypatch):
+    from engine import dataset_gen
+
+    def refuse(prompt, n, env=None):
+        raise ValueError("no provider")
+
+    monkeypatch.setattr(dataset_gen, "propose_dataset", refuse)
+    response = client.post("/api/datasets/generate", headers=headers("token-a"),
+                           json={"prompt": "benchmark receipt OCR"})
+    assert response.status_code == 503

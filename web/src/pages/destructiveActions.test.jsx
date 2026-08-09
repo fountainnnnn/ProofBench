@@ -104,19 +104,15 @@ describe("destructive action confirmation and session presentation", () => {
     await waitFor(() => expect(api.deleteProviderKey).toHaveBeenCalledWith("VENDOR_API_KEY"));
   });
 
-  it("disables credential edits when settings are managed by deployment", async () => {
+  it("offers an editor and a live remove control for a stored credential", async () => {
     api.listProviderKeys.mockResolvedValue({
       keys: [{ env: "VENDOR_API_KEY", source: "settings" }],
-      runtime_writes_enabled: false,
-      managed_by: "deployment",
     });
     render(<Settings />);
 
-    // With writes disabled the row offers no editor at all, and the one
-    // destructive control it still renders is inert.
     expect(await screen.findByText("VENDOR_API_KEY")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Remove VENDOR_API_KEY" }).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Change" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove VENDOR_API_KEY" }).disabled).toBe(false);
   });
 
   it("sanitizes API session titles in the runs table", async () => {

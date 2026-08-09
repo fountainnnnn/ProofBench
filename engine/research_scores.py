@@ -16,7 +16,10 @@ of evidence the reader is looking at.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Iterable
+
+from engine.docs_intel import SCRAPE_CONCURRENCY
 
 # Imported at module scope rather than inside each function: this module is
 # itself only imported at evaluation time, so the cost lands in the same place
@@ -120,19 +123,39 @@ def research_scores(
         def fetch(url: str) -> str:
             return scrape_page(url, env=dict(env or {}))
 
-    requests: list[dict[str, str]] = []
-    for candidate in candidates:
-        name = str(candidate.get("name") or "").strip()
-        docs_url = str(candidate.get("docs_url") or "").strip()
-        if not name or not docs_url:
-            continue
+    scrapeable = [
+        candidate for candidate in candidates
+        if str(candidate.get("name") or "").strip()
+        and str(candidate.get("docs_url") or "").strip()
+    ]
+
+    def read(candidate: dict) -> tuple[str | None, Exception | None]:
+        """Fetch one candidate's documentation, returning failures as values.
+
+        Each fetch is an independent network wait, so they run concurrently;
+        reporting and ordering below stay driven by ``candidates``.
+        """
         try:
-            docs_text = str(fetch(docs_url))[:MAX_DOCS_CHARS]
-        except Exception as exc:
+            return str(fetch(str(candidate.get("docs_url")).strip()))[:MAX_DOCS_CHARS], None
+        except Exception as exc:  # reported per candidate below
+            return None, exc
+
+    if scrapeable:
+        with ThreadPoolExecutor(
+            max_workers=min(SCRAPE_CONCURRENCY, len(scrapeable))
+        ) as ex:
+            fetched = list(ex.map(read, scrapeable))
+    else:
+        fetched = []
+
+    requests: list[dict[str, str]] = []
+    for candidate, (docs_text, error) in zip(scrapeable, fetched):
+        name = str(candidate.get("name") or "").strip()
+        if error is not None:
             if on_event:
-                on_event(name, f"{type(exc).__name__}: documentation scrape failed")
+                on_event(name, f"{type(error).__name__}: documentation scrape failed")
             continue
-        if not docs_text.strip():
+        if not docs_text or not docs_text.strip():
             continue
         requests.append({
             "name": name,

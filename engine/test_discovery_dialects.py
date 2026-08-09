@@ -223,13 +223,15 @@ def test_the_review_appends_its_drops_to_what_discovery_recorded(monkeypatch, tm
     import json
     import types
 
-    def _complete(env=None, **kwargs):
-        content = json.dumps({"drop": [
-            {"name": "hosted", "violates": "Hosted only; the constraint is on-prem."}]})
-        return types.SimpleNamespace(
-            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=content))])
-
-    monkeypatch.setattr(agent_mod, "_orchestrator_complete", _complete)
+    # The review runs on the supervision seam: stub _review_completion, the
+    # method that resolves a distinct reviewer, so the test neither depends on
+    # a supervisor being configured on this machine nor makes a network call.
+    content = json.dumps({"drop": [
+        {"name": "hosted", "violates": "Hosted only; the constraint is on-prem."}]})
+    monkeypatch.setattr(
+        agent_mod.Orchestrator, "_review_completion",
+        lambda self, system, user: (
+            content, types.SimpleNamespace(label=lambda: "stub/reviewer")))
     a = agent_mod.Orchestrator(run_id="run-d", run_dir=str(tmp_path / "run"),
                                emit=lambda kind, payload: None)
     a._delta = lambda text: None

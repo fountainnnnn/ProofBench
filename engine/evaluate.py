@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 
+# The default schema. A run scores against the fields its spec declares; this
+# stays the fallback so existing callers and stored runs keep their meaning.
 FIELDS = ("invoice_number", "date", "vendor", "total")
 SETUP_COMPLEXITY = {
     "tesseract": 2,
@@ -156,16 +158,20 @@ def cer(pred: str, gt: str) -> float:
     return previous[-1] / max(len(gt_value), 1)
 
 
-def _normalized_field(field: str, value: Any) -> str:
-    if field == "date":
-        return normalize_date(value)
-    if field == "total":
-        amount = normalize_amount(value)
-        return "" if amount is None else str(amount)
-    return normalize_text(value)
+def _normalized_field(field: Any, value: Any) -> str:
+    """Canonicalize one value for comparison.
+
+    Accepts a typed Field or a bare name; a bare name is typed the way it always
+    was, so legacy callers normalize identically.
+    """
+    from engine.fields import Field, infer_type, normalize_value
+
+    if not isinstance(field, Field):
+        field = Field(str(field), infer_type(str(field)))
+    return normalize_value(field, value)
 
 
-def _read_ground_truth(path: str) -> dict[str, dict[str, str]]:
+def _read_ground_truth(path: str, fields: tuple = FIELDS) -> dict[str, dict[str, str]]:
     source = Path(path)
     _checked_file_size(source, MAX_GROUND_TRUTH_BYTES, "ground truth")
     try:
@@ -174,7 +180,7 @@ def _read_ground_truth(path: str) -> dict[str, dict[str, str]]:
         raise ValueError("ground truth is unavailable") from exc
     with handle:
         reader = csv.DictReader(handle)
-        required = {"doc_id", *FIELDS}
+        required = {"doc_id", *(getattr(f, "name", f) for f in fields)}
         if reader.fieldnames is None or not required.issubset(reader.fieldnames):
             raise ValueError("ground truth CSV is missing required columns")
         rows: dict[str, dict[str, str]] = {}
@@ -184,7 +190,8 @@ def _read_ground_truth(path: str) -> dict[str, dict[str, str]]:
                 raise ValueError("invalid ground-truth document identifier")
             if doc_id in rows:
                 raise ValueError("duplicate ground-truth document")
-            if any(len(str(row.get(field) or "")) > MAX_FIELD_CHARS for field in FIELDS):
+            if any(len(str(row.get(getattr(f, "name", f)) or "")) > MAX_FIELD_CHARS
+                   for f in fields):
                 raise ValueError("ground-truth field exceeds the allowed size")
             rows[doc_id] = row
             if len(rows) > MAX_DOCUMENTS:
@@ -225,8 +232,8 @@ def _read_results(path: str) -> dict[str, dict[str, dict[str, Any]]]:
                 if not isinstance(prediction, dict):
                     raise ValueError("invalid result prediction")
                 if any(
-                    len(str(prediction.get(field) or "")) > MAX_FIELD_CHARS
-                    for field in FIELDS
+                    len(str(value or "")) > MAX_FIELD_CHARS
+                    for value in prediction.values()
                 ):
                     raise ValueError("result field exceeds the allowed size")
             if len(str(row.get("error") or "")) > MAX_FIELD_CHARS:
@@ -250,13 +257,21 @@ def evaluate_results(
     results_path: str,
     ground_truth_path: str,
     pricing: dict | None = None,
+    fields: Any = None,
 ) -> dict:
-    """Evaluate candidate JSONL results against the ground-truth CSV."""
-    ground_truth = _read_ground_truth(ground_truth_path)
+    """Evaluate candidate JSONL results against the ground-truth CSV.
+
+    ``fields`` is the benchmark's extraction schema. Omitted, it is the invoice
+    schema this product started with, so existing callers are unaffected.
+    """
+    from engine.fields import parse_fields
+
+    schema = parse_fields(fields)
+    ground_truth = _read_ground_truth(ground_truth_path, schema)
     results = _read_results(results_path)
     prices = pricing or {}
     n_docs = len(ground_truth)
-    field_slots = n_docs * len(FIELDS)
+    field_slots = n_docs * len(schema)
     metrics: dict[str, dict[str, int | float]] = {}
     evaluation_cells = 0
 
@@ -282,9 +297,9 @@ def evaluate_results(
             except (TypeError, ValueError):
                 latencies.append(0.0)
 
-            for field in FIELDS:
-                pred_value = _normalized_field(field, prediction.get(field, ""))
-                gt_value = _normalized_field(field, gt_row.get(field, ""))
+            for field in schema:
+                pred_value = _normalized_field(field, prediction.get(field.name, ""))
+                gt_value = _normalized_field(field, gt_row.get(field.name, ""))
                 evaluation_cells += max(len(pred_value), 1) * max(len(gt_value), 1)
                 if evaluation_cells > MAX_EVALUATION_CELLS:
                     raise ValueError("evaluation exceeds the total work limit")

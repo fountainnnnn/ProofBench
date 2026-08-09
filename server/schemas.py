@@ -77,8 +77,13 @@ class CandidateSpec(StrictModel):
 
 
 class DatasetSpec(StrictModel):
+    # source="generate" is intake saying this measured benchmark needs labelled
+    # examples that do not exist yet. The server builds them from the spec's own
+    # field schema at run start, so the run is never blocked on the user having
+    # attached data first. A dataset_id, once bound, always wins over it.
     dataset_id: str | None = None
     path: str | None = Field(default=None, max_length=4096)
+    source: Literal["generate"] | None = None
 
     @field_validator("dataset_id")
     @classmethod
@@ -88,20 +93,46 @@ class DatasetSpec(StrictModel):
         return value
 
 
+class FieldSpec(StrictModel):
+    """One column of an extraction schema.
+
+    The type decides how two values are judged equal by the deterministic
+    evaluator (engine/fields.py): dates compare as calendar dates, currency as
+    minor units, and so on. A bare string in `fields` is accepted for backwards
+    compatibility and carries the typing those names always had.
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    type: Literal["text", "date", "currency", "number"] = "text"
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        if not NAME_RE.fullmatch(value):
+            raise ValueError("invalid field name")
+        return value
+
+
 class BenchmarkSpec(StrictModel):
     benchmark_type: Literal["extraction"] = "extraction"
     category: str = Field(min_length=1, max_length=128)
-    fields: list[str] = Field(min_length=1, max_length=32)
+    fields: list[str | FieldSpec] = Field(min_length=1, max_length=32)
     candidates: list[CandidateSpec] = Field(min_length=1, max_length=20)
     dataset: DatasetSpec | None = None
 
     @field_validator("fields")
     @classmethod
-    def valid_fields(cls, fields: list[str]) -> list[str]:
-        if any(not NAME_RE.fullmatch(field) for field in fields):
-            raise ValueError("invalid field name")
-        if fields != EXTRACTION_FIELDS:
-            raise ValueError("fields must be invoice_number, date, vendor, total in that order")
+    def valid_fields(cls, fields: list) -> list:
+        names = []
+        for field in fields:
+            if isinstance(field, str):
+                if not NAME_RE.fullmatch(field):
+                    raise ValueError("invalid field name")
+                names.append(field)
+            else:
+                names.append(field.name)
+        if len(set(names)) != len(names):
+            raise ValueError("field names must be unique")
         return fields
 
     @model_validator(mode="after")
@@ -205,6 +236,18 @@ class SyntheticDatasetRequest(StrictModel):
     use_synthetic: Literal[True]
 
 
+class GenerateDatasetRequest(StrictModel):
+    """Ask the AI to design and render a labelled dataset for this benchmark.
+
+    The model proposes the schema and ground-truth rows; a deterministic
+    renderer draws the images. The response carries a preview so the user can
+    approve or regenerate before anything runs against it.
+    """
+
+    prompt: str = Field(min_length=3, max_length=2_000)
+    n: int = Field(default=12, ge=5, le=30)
+
+
 class AuthSessionRequest(StrictModel):
     token: str = Field(min_length=1, max_length=16_384)
 
@@ -229,6 +272,12 @@ class ProviderKeyRequest(StrictModel):
 
 
 class ProviderKeyRevealRequest(StrictModel):
+    env: str = Field(min_length=2, max_length=128)
+
+
+class SettingOptionsRequest(StrictModel):
+    """Which non-secret setting the agent should research values for."""
+
     env: str = Field(min_length=2, max_length=128)
 
 

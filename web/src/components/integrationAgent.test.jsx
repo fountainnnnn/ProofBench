@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({
   getIntegrationAgentStatus: vi.fn(),
   sendIntegrationAgentMessage: vi.fn(),
   streamIntegrationAgentMessage: vi.fn(),
+  saveProviderKey: vi.fn(),
 }));
 
 vi.mock("../api.js", () => api);
@@ -63,12 +64,16 @@ describe("Integration agent panel", () => {
 
     render(<IntegrationAgentPanel />);
 
-    // This panel is scoped to LLM provider integrations, not tools generally.
-    expect(await screen.findByText(/reads the provider's own API documentation/i)).toBeTruthy();
-    expect(screen.getByText(/Ask about adding an LLM provider/i)).toBeTruthy();
-    // Prompt starters give the empty state something to act on immediately.
+    // The panel covers every kind of provider, and says it answers from what
+    // ProofBench implements before it reaches for anyone's documentation.
+    expect(
+      await screen.findByText(/answers from what ProofBench already implements/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/Ask about a provider/i)).toBeTruthy();
+    // Prompt starters give the empty state something to act on immediately,
+    // and one of them is a question rather than a build request.
+    expect(screen.getByRole("button", { name: "Is Scrape.do implemented?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add support for Mistral" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check if Groq is supported" })).toBeTruthy();
     // Credentials are the Services card's job, not this panel's.
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
   });
@@ -229,5 +234,108 @@ describe("Integration agent panel", () => {
       await screen.findByText(/The integration agent is unavailable right now/i),
     ).toBeTruthy();
     expect(screen.getByLabelText("Message the integration agent").disabled).toBe(true);
+  });
+
+  it("saves a pasted key under the variable name the agent resolved", async () => {
+    api.getIntegrationAgentStatus.mockResolvedValue(READY);
+    api.streamIntegrationAgentMessage.mockResolvedValue({
+      message: "Mistral is OpenAI-compatible.",
+      sources: [],
+      implementation: { status: "proposal", summary: "Config-only connector." },
+      credential: { env: "MISTRAL_API_KEY", label: "Mistral" },
+    });
+    api.saveProviderKey.mockResolvedValue({ env: "MISTRAL_API_KEY" });
+    const onCredentialSaved = vi.fn();
+
+    render(<IntegrationAgentPanel onCredentialSaved={onCredentialSaved} />);
+    const composer = await screen.findByLabelText("Message the integration agent");
+    fireEvent.change(composer, { target: { value: "Add support for Mistral" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    // The operator never types the variable name; the agent supplies it.
+    const field = await screen.findByLabelText("Mistral API key");
+    fireEvent.change(field, { target: { value: "mistral-secret-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+
+    await waitFor(() =>
+      expect(api.saveProviderKey).toHaveBeenCalledWith("MISTRAL_API_KEY", "mistral-secret-value"),
+    );
+    await waitFor(() => expect(onCredentialSaved).toHaveBeenCalled());
+    // The key itself must not survive anywhere in the rendered transcript.
+    expect(document.body.textContent).not.toContain("mistral-secret-value");
+    // And it was never handed to the agent.
+    const [, history] = api.streamIntegrationAgentMessage.mock.calls[0];
+    expect(JSON.stringify(history)).not.toContain("mistral-secret-value");
+  });
+
+  it("offers no key field when the agent named no credential", async () => {
+    api.getIntegrationAgentStatus.mockResolvedValue(READY);
+    api.streamIntegrationAgentMessage.mockResolvedValue({
+      message: "Groq is already supported.",
+      sources: [],
+      implementation: { status: "proposal", summary: "No change needed." },
+    });
+
+    render(<IntegrationAgentPanel />);
+    const composer = await screen.findByLabelText("Message the integration agent");
+    fireEvent.change(composer, { target: { value: "Check if Groq is supported" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await screen.findByText("Groq is already supported.");
+    expect(screen.queryByRole("button", { name: "Save key" })).toBeNull();
+  });
+
+  it("shows what the agent decided before it shows what it did", async () => {
+    api.getIntegrationAgentStatus.mockResolvedValue(READY);
+    let emit;
+    api.streamIntegrationAgentMessage.mockImplementation((message, history, onEvent) => {
+      emit = onEvent;
+      return new Promise(() => {});
+    });
+
+    render(<IntegrationAgentPanel />);
+    const composer = await screen.findByLabelText("Message the integration agent");
+    fireEvent.change(composer, { target: { value: "is scrape.do implemented" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(emit).toBeTruthy());
+
+    emit({ phase: "thinking" });
+    expect(await screen.findByText("Planning…")).toBeTruthy();
+
+    // The reasoning replaces the placeholder in place rather than stacking a
+    // second line: it is the same step, now settled.
+    emit({ phase: "plan", thought: "Scrape.do already ships as a scraper.", action: "answer" });
+    expect(await screen.findByText("Scrape.do already ships as a scraper.")).toBeTruthy();
+    expect(screen.queryByText("Planning…")).toBeNull();
+
+    // A search names what it is actually looking for.
+    emit({ phase: "search", query: "Mistral API documentation" });
+    expect(await screen.findByText("Searching for Mistral API documentation")).toBeTruthy();
+  });
+
+  it("renders a markdown answer as markup rather than literal syntax", async () => {
+    api.getIntegrationAgentStatus.mockResolvedValue(READY);
+    api.streamIntegrationAgentMessage.mockResolvedValue({
+      message: "### LLM providers\n- **openai**: credential `OPENAI_API_KEY` (configured)",
+      sources: [],
+      implementation: { status: "answer", summary: "Listed what ships." },
+    });
+
+    const { container } = render(<IntegrationAgentPanel />);
+    const composer = await screen.findByLabelText("Message the integration agent");
+    fireEvent.change(composer, { target: { value: "what is implemented" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    // The heading, the emphasis, and the code span become elements. Before
+    // this the reply printed its own ###, ** and backticks at the reader.
+    expect(await screen.findByText("LLM providers")).toBeTruthy();
+    expect(container.querySelector("li strong")).toBeTruthy();
+    expect(container.querySelector("li code").textContent).toBe("OPENAI_API_KEY");
+    expect(container.textContent).not.toContain("###");
+    expect(container.textContent).not.toContain("**openai**");
+
+    // A direct answer carries no proposal verdict block.
+    expect(screen.queryByText("Answer")).toBeNull();
   });
 });

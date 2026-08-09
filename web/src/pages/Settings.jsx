@@ -4,6 +4,7 @@ import {
   fetchBrandLogos,
   getProviderReadiness,
   getScraperOrder,
+  getSettingOptions,
   getSettingsDefaults,
   listProviderKeys,
   revealProviderKey,
@@ -165,7 +166,7 @@ function TrashIcon() {
  * `missing` is authoritative from readiness, NOT derived from whether a masked
  * value is in the listing: a provisioning key like DAYTONA_API_KEY is set but
  * outside the sandbox env, so "no mask" must not read as "missing". */
-function EnvRow({ env, stored, missing = false, canWrite, onSave, onRemove }) {
+function EnvRow({ env, stored, missing = false, onSave, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [value, setValue] = useState("");
@@ -257,7 +258,7 @@ function EnvRow({ env, stored, missing = false, canWrite, onSave, onRemove }) {
             <EyeIcon off={Boolean(revealed)} />
           </button>
         )}
-        {canWrite && !editing && !confirming && (
+        {!editing && !confirming && (
           <button
             type="button"
             onClick={() => setEditing(true)}
@@ -274,7 +275,7 @@ function EnvRow({ env, stored, missing = false, canWrite, onSave, onRemove }) {
             role="group"
             aria-label={`Confirm removal of ${env}`}
           >
-            <button type="button" onClick={remove} disabled={busy || !canWrite} className={BTN_DANGER}>
+            <button type="button" onClick={remove} disabled={busy} className={BTN_DANGER}>
               {busy ? "Removing" : "Confirm remove"}
             </button>
             <button
@@ -290,7 +291,6 @@ function EnvRow({ env, stored, missing = false, canWrite, onSave, onRemove }) {
           <button
             type="button"
             onClick={() => setConfirming(true)}
-            disabled={!canWrite}
             aria-label={`Remove ${env}`}
             title="Remove"
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-[var(--ink-3)] transition-colors duration-150 hover:bg-[var(--danger-tint)] hover:text-[var(--danger)] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
@@ -310,7 +310,7 @@ function EnvRow({ env, stored, missing = false, canWrite, onSave, onRemove }) {
         </div>
       )}
 
-      {editing && canWrite && (
+      {editing && (
         <form onSubmit={submit} className="mt-2 flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <input
@@ -360,27 +360,69 @@ function PlusIcon() {
 
 /* Add a credential for a provider the built-in list does not cover.
  *
- * The env NAME is the identifier, because that is what the backend and the
- * sandbox key off; the value is write-only like every other secret here. The
- * server validates the name shape, so a typo comes back as an error rather
- * than being stored as an unusable key. */
-function AddCredential({ onSave }) {
+ * The env NAME is a choice, not something to recall: every variable ProofBench
+ * already implements is offered by provider, so adding a key is picking a name
+ * and pasting a value. A service that is NOT on this list has no variable to
+ * pick yet, and the honest next step for it is the integration agent, which
+ * reads the vendor's documentation and resolves the name — so that is what the
+ * escape hatch says, rather than inviting a guess into a free-text box. */
+function AddCredential({ groups, defaults, onSave, onAskAgent }) {
   const [open, setOpen] = useState(false);
   const [env, setEnv] = useState("");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [researched, setResearched] = useState({});
+  const [researching, setResearching] = useState(false);
   const id = useId();
 
-  const reset = () => { setEnv(""); setValue(""); setError(""); };
+  /* An API key has no published value to look up and no default to fall back
+     on, so it stays a blank secret box. A model id or a base URL is a fact
+     someone wrote down, so those get the engine's own fallback as a starting
+     point and can be researched from the vendor's documentation. */
+  const secret = !env || /_API_KEY$/.test(env) || /^OXYLABS_/.test(env);
+  const suggestions = {
+    defaultValue: defaults?.[env] || "",
+    options: researched[env] || [],
+  };
+
+  const reset = () => {
+    setEnv("");
+    setValue("");
+    setError("");
+    setResearched({});
+  };
+
+  const research = async () => {
+    if (researching || secret) return;
+    setResearching(true);
+    setError("");
+    try {
+      const found = await getSettingOptions(env);
+      const options = (found?.options || [])
+        .map((option) => ({
+          value: String(option?.value || ""),
+          note: String(option?.note || ""),
+        }))
+        .filter((option) => option.value);
+      setResearched((current) => ({ ...current, [env]: options }));
+      if (options.length === 0) {
+        setError("The agent found no documented values for this setting.");
+      }
+    } catch (failure) {
+      setError(failure.message || "Could not research values for this setting.");
+    } finally {
+      setResearching(false);
+    }
+  };
 
   const submit = async (event) => {
     event.preventDefault();
-    if (busy || !env.trim() || !value) return;
+    if (busy || !env || !value) return;
     setBusy(true);
     setError("");
     try {
-      await onSave(env.trim().toUpperCase(), value);
+      await onSave(env, value);
       reset();
       setOpen(false);
     } catch (failure) {
@@ -407,35 +449,82 @@ function AddCredential({ onSave }) {
     <form onSubmit={submit} className="mt-4 rounded-[12px] bg-[var(--surface-2)] p-3.5">
       <p className="text-[13px] font-medium text-[var(--ink)]">Add a service</p>
       <p className="pb-contain mt-0.5 max-w-[52ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
-        Name the environment variable and paste its value. Use the provider&apos;s exact key name,
-        for example <code className="pb-mono text-[var(--ink)]">MISTRAL_API_KEY</code>.
+        Pick the setting you want to fill and paste its value.
       </p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_auto]">
-        <input
+      {/* The picker gets the wider column: a variable name like
+          OPENAI_ORCHESTRATOR_MODEL is the longest string in this form, and a
+          truncated option is exactly the recall problem the picker removes. */}
+      <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_auto]">
+        <select
           value={env}
           onChange={(e) => setEnv(e.target.value)}
-          placeholder="PROVIDER_API_KEY"
-          aria-label="Environment variable name"
-          autoComplete="off"
-          spellCheck={false}
+          aria-label="Service setting"
           disabled={busy}
-          className={`pb-mono ${INPUT} text-[12px] uppercase placeholder:normal-case`}
+          className={`pb-mono ${INPUT} text-[12px]`}
           autoFocus
           required
-        />
-        <input
-          type="password"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="Value"
-          aria-label="Credential value"
-          autoComplete="off"
-          disabled={busy}
-          className={`${INPUT} text-[12px]`}
-          required
-        />
+        >
+          <option value="">Choose a setting</option>
+          {groups.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.envs.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        {secret ? (
+          <input
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="Value"
+            aria-label="Credential value"
+            autoComplete="off"
+            disabled={busy}
+            className={`${INPUT} text-[12px]`}
+            required
+          />
+        ) : (
+          /* A datalist rather than a select: a model id an operator already
+             knows must still be typeable, and the published list is a helpful
+             starting point, never the whole truth. */
+          <>
+            <input
+              type="text"
+              list={`${id}-options`}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={suggestions.defaultValue || "Value"}
+              aria-label="Credential value"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              className={`pb-mono ${INPUT} text-[12px]`}
+              required
+            />
+            <datalist id={`${id}-options`}>
+              {suggestions.options.map((option) => (
+                <option key={option.value} value={option.value}>{option.note}</option>
+              ))}
+            </datalist>
+          </>
+        )}
         <div className="flex items-start gap-2">
-          <button type="submit" disabled={busy || !env.trim() || !value} className={`${BTN_PRIMARY} shrink-0`}>
+          {/* Only offered where there is something to look up. It costs a
+              search, a scrape, and one model call, so it is a button the
+              operator presses, never something this form does on its own. */}
+          {!secret && (
+            <button
+              type="button"
+              onClick={research}
+              disabled={busy || researching}
+              className={`${BTN_SECONDARY} shrink-0`}
+            >
+              {researching ? "Asking" : "Ask AI"}
+            </button>
+          )}
+          <button type="submit" disabled={busy || !env || !value} className={`${BTN_PRIMARY} shrink-0`}>
             {busy ? "Adding" : "Add"}
           </button>
           <button
@@ -448,11 +537,36 @@ function AddCredential({ onSave }) {
           </button>
         </div>
       </div>
+      {!secret && (
+        <p className="pb-contain mt-2 max-w-[62ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+          {suggestions.options.length > 0
+            ? `${suggestions.options.length} documented ${
+                suggestions.options.length === 1 ? "value" : "values"
+              } are offered in the field above.`
+            : suggestions.defaultValue
+              ? <>Unset, the engine uses{" "}
+                  <code className="pb-mono text-[var(--ink)]">{suggestions.defaultValue}</code>. Ask
+                  the agent which other values this provider publishes.</>
+              : "Ask the agent which values this provider publishes."}
+        </p>
+      )}
       {error && (
         <p id={`${id}-error`} role="alert" className="mt-2 text-[12px] text-[var(--danger)]">
           {error}
         </p>
       )}
+      <p className="pb-contain mt-3 max-w-[52ch] border-t border-[var(--line)] pt-3 text-[12px] leading-relaxed text-[var(--ink-2)]">
+        Service not listed?{" "}
+        <button
+          type="button"
+          onClick={onAskAgent}
+          className="font-medium text-[var(--accent)] underline underline-offset-2 hover:text-[var(--accent-hover)] focus-visible:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        >
+          Tell the integration agent
+        </button>{" "}
+        which one to add. It reads the vendor&apos;s documentation, works out the key name, and
+        takes your key from there.
+      </p>
     </form>
   );
 }
@@ -462,7 +576,7 @@ function AddCredential({ onSave }) {
    every LLM capability on its own. */
 const RECOMMENDED = new Set(["openrouter"]);
 
-function ServiceRow({ item, canWrite, keysByEnv, onSaveKey, onRemoveKey }) {
+function ServiceRow({ item, keysByEnv, onSaveKey, onRemoveKey }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const st = READINESS[item.status] || READINESS.missing;
@@ -516,7 +630,6 @@ function ServiceRow({ item, canWrite, keysByEnv, onSaveKey, onRemoveKey }) {
                   env={env}
                   stored={keysByEnv.get(env)}
                   missing={missingSet.has(env)}
-                  canWrite={canWrite}
                   onSave={onSaveKey}
                   onRemove={onRemoveKey}
                 />
@@ -535,7 +648,7 @@ function ServiceRow({ item, canWrite, keysByEnv, onSaveKey, onRemoveKey }) {
  * Shown inline rather than sending the operator back to the service row: having
  * just chosen a gateway, naming its model is the very next thing they need, and
  * the built-in default is a guess. */
-function ModelField({ option, canWrite, onSave, onSaved }) {
+function ModelField({ option, onSave, onSaved }) {
   const [value, setValue] = useState(option.model || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -571,13 +684,13 @@ function ModelField({ option, canWrite, onSave, onSaved }) {
           id={id}
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          disabled={!canWrite || busy}
+          disabled={busy}
           spellCheck={false}
           autoComplete="off"
           placeholder={option.model || "provider/model-name"}
           className={`pb-mono ${INPUT} max-w-[24rem] text-[12px]`}
         />
-        {dirty && canWrite && (
+        {dirty && (
           <button type="submit" disabled={busy} className={`${BTN_SECONDARY} shrink-0`}>
             {busy ? "Saving" : "Save"}
           </button>
@@ -603,7 +716,7 @@ function ModelField({ option, canWrite, onSave, onSaved }) {
  *
  * "Auto" is not the same as picking the first provider: it follows the
  * configured order, so adding a key changes the answer without an edit here. */
-function DefaultModels({ canWrite, onSaveKey }) {
+function DefaultModels({ onSaveKey }) {
   const [state, setState] = useState(null);
   const [saving, setSaving] = useState("");
   const [error, setError] = useState("");
@@ -685,7 +798,6 @@ function DefaultModels({ canWrite, onSaveKey }) {
           {pinnedOption && (
             <ModelField
               option={pinnedOption}
-              canWrite={canWrite}
               onSave={onSaveKey}
               onSaved={() => getSettingsDefaults().then(setState).catch(() => {})}
             />
@@ -967,7 +1079,7 @@ function ScraperOrder() {
 
 /* One place for "which provider does what", rather than a card for the scrapers
    and nothing at all for the models. */
-function Defaults({ canWrite, onSaveKey }) {
+function Defaults({ onSaveKey }) {
   return (
     <section className={`${PANEL} mt-8 p-5`} aria-labelledby="defaults-heading">
       <h2 id="defaults-heading" className="text-[16px] font-semibold text-[var(--ink)]">
@@ -976,7 +1088,7 @@ function Defaults({ canWrite, onSaveKey }) {
       <p className="mt-1 max-w-[65ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
         Which provider serves each part of a run. Keys are set on the service itself, above.
       </p>
-      <DefaultModels canWrite={canWrite} onSaveKey={onSaveKey} />
+      <DefaultModels onSaveKey={onSaveKey} />
       <div className="mt-6 border-t border-[var(--line)] pt-5">
         <ScraperOrder />
       </div>
@@ -997,24 +1109,16 @@ export default function Settings() {
     return () => window.removeEventListener("pb-theme-change", sync);
   }, []);
   const [providerKeys, setProviderKeys] = useState([]);
-  const [providerPolicy, setProviderPolicy] = useState({
-    loaded: false,
-    runtimeWritesEnabled: false,
-    managedBy: "deployment",
-  });
   const [readiness, setReadiness] = useState(null);
   const [readinessFailed, setReadinessFailed] = useState(false);
   const [agentStatusVersion, setAgentStatusVersion] = useState(0);
+  // A counter, not a boolean: asking twice in a row must move focus twice.
+  const [agentFocusRequest, setAgentFocusRequest] = useState(0);
   const [logoVersion, setLogoVersion] = useState(0);
 
   const refreshProviderKeys = async () => {
     const data = await listProviderKeys();
     setProviderKeys(data.keys || []);
-    setProviderPolicy({
-      loaded: true,
-      runtimeWritesEnabled: data.runtime_writes_enabled === true,
-      managedBy: data.managed_by || "deployment",
-    });
   };
 
   const refreshReadiness = async () => {
@@ -1050,17 +1154,11 @@ export default function Settings() {
   }, [unbrandedProviders]);
 
   const saveProviderKeyValue = async (env, value) => {
-    if (!providerPolicy.runtimeWritesEnabled) {
-      throw new Error("Runtime credential changes are disabled in this environment.");
-    }
     await saveProviderKey(env, value);
     await Promise.all([refreshProviderKeys(), refreshReadiness()]);
   };
 
   const removeProviderKeyValue = async (env) => {
-    if (!providerPolicy.runtimeWritesEnabled) {
-      throw new Error("Runtime credential changes are disabled in this environment.");
-    }
     await deleteProviderKey(env);
     await Promise.all([refreshProviderKeys(), refreshReadiness()]);
   };
@@ -1085,6 +1183,17 @@ export default function Settings() {
   const unclaimed = (providerKeys || []).filter(
     (key) => key.source === "settings" && !claimed.has(key.env),
   );
+
+  /* Every variable an implemented provider declares, grouped under its label,
+     so the add form is a choice rather than a memory test. Providers are listed
+     in their readiness order, which puts what is unconfigured where it is
+     easiest to find. */
+  const credentialGroups = ordered
+    .map((item) => ({
+      label: item.label || item.provider,
+      envs: [...(item.required || []), ...(item.optional || [])],
+    }))
+    .filter((group) => group.envs.length > 0);
 
   return (
     <div className="flex min-h-full flex-col xl:h-full xl:overflow-hidden">
@@ -1174,7 +1283,6 @@ export default function Settings() {
                     <ServiceRow
                       key={item.provider}
                       item={item}
-                      canWrite={providerPolicy.runtimeWritesEnabled}
                       keysByEnv={keysByEnv}
                       onSaveKey={saveProviderKeyValue}
                       onRemoveKey={removeProviderKeyValue}
@@ -1198,7 +1306,6 @@ export default function Settings() {
                         key={key.env}
                         env={key.env}
                         stored={key}
-                        canWrite={providerPolicy.runtimeWritesEnabled}
                         onSave={saveProviderKeyValue}
                         onRemove={removeProviderKeyValue}
                       />
@@ -1207,13 +1314,15 @@ export default function Settings() {
                 </div>
               )}
 
-              {providerPolicy.runtimeWritesEnabled && (
-                <AddCredential onSave={saveProviderKeyValue} />
-              )}
+              <AddCredential
+                groups={credentialGroups}
+                defaults={readiness?.setting_defaults}
+                onSave={saveProviderKeyValue}
+                onAskAgent={() => setAgentFocusRequest((value) => value + 1)}
+              />
             </section>
 
             <Defaults
-              canWrite={providerPolicy.runtimeWritesEnabled}
               onSaveKey={saveProviderKeyValue}
             />
 
@@ -1303,6 +1412,13 @@ export default function Settings() {
               ceiling to scroll against and the whole page scrolls instead. */}
           <IntegrationAgentPanel
             refreshKey={agentStatusVersion}
+            focusRequest={agentFocusRequest}
+            /* A key saved from the agent is a real credential, so the Services
+               card and its readiness must reflect it without a reload. */
+            onCredentialSaved={() => {
+              refreshProviderKeys().catch(() => {});
+              refreshReadiness().catch(() => {});
+            }}
             className="h-[80vh] xl:h-full xl:self-stretch xl:pb-6"
           />
         </div>

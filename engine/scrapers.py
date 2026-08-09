@@ -35,14 +35,23 @@ LABELS = {"scrapedo": "Scrape.do", "oxylabs": "Oxylabs", "brightdata": "Bright D
 FREE = frozenset({"selfhosted"})
 
 # What each provider answers, and a one-line note for the Settings tooltip.
+# `credentials` names the environment variables each provider authenticates
+# with. The provider modules each read their own names, so this is the one place
+# that states them together — anything describing a provider to a person (or to
+# the integration agent) needs the real spelling, not a guess at it.
 META = {
     "scrapedo": {"role": "search+read",
+                 "credentials": ("SCRAPEDO_API_TOKEN",),
                  "hint": "Searches and fetches pages through Scrape.do. Paid, fastest measured."},
     "oxylabs": {"role": "search+read",
+                "credentials": ("OXYLABS_USERNAME", "OXYLABS_PASSWORD"),
                 "hint": "Searches and fetches pages through Oxylabs. Paid."},
     "brightdata": {"role": "search+read",
+                   "credentials": ("BRIGHTDATA_API_TOKEN", "BRIGHTDATA_SERP_ZONE",
+                                   "BRIGHTDATA_UNLOCKER_ZONE"),
                    "hint": "Searches and fetches pages through Bright Data. Paid."},
     "selfhosted": {"role": "search+read",
+                   "credentials": (),
                    "hint": "Self-hosted and free: SearXNG finds candidate pages and Crawl4AI "
                            "reads them. Available whenever both services answer — the row "
                            "below reports which are up."},

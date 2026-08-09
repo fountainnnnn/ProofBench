@@ -49,6 +49,11 @@ local, single-operator use. See [License and project status](#license-and-projec
 - Docker Desktop or Docker Engine with Compose v2 for the production stack
 - Provider credentials for the integrations you enable
 
+If you configure Daytona, set `DAYTONA_TARGET` to a region your organization is
+entitled to and declare your tier's concurrent-memory budget before the first
+run. Getting either wrong makes every benchmark fail in ways that read like
+something else — see [Sandbox capacity and cleanup](#sandbox-capacity-and-cleanup).
+
 ## Local development
 
 ```powershell
@@ -220,6 +225,75 @@ procedure stays testable. Local builds are unaffected.
 6. Review provenance, deterministic metrics where applicable, citations, and the
    downloadable report. New runs persist `measured`; `synthetic` appears only on
    read-only historical runs written before ProofBench became real-only.
+
+## Sandbox capacity and cleanup
+
+Every candidate runs in its own disposable Daytona sandbox. Two provider facts
+govern whether a run executes at all, and neither of them announces itself
+clearly when it is wrong.
+
+**Your region must be entitled.** `DAYTONA_TARGET` has to name a region your
+organization can use for container-class sandboxes. A wrong region does not say
+so plainly: creating from an image reports `Declarative builds are not available
+to your organization in region <x>`, which reads like a build-feature problem.
+The honest error only appears when creating from a snapshot: `Region <x> is not
+available to the organization for class container`. If sandbox creation fails
+everywhere, check the region before anything else.
+
+**Concurrency is metered in memory, not in sandboxes — and stopped sandboxes
+still count.** Providers cap total concurrent sandbox memory per account. A
+sandbox that has been stopped but not deleted keeps consuming that budget, so
+leaked sandboxes silently starve every later run. Declare the budget and the
+pool will never ask for more than it allows:
+
+```dotenv
+# Total concurrent sandbox memory your tier permits, in GiB. 0 disables the cap.
+PROOFBENCH_SANDBOX_MEMORY_BUDGET_GIB=10
+# Per-sandbox shape. 4 GiB is the supported baseline (EasyOCR needs it).
+PROOFBENCH_SANDBOX_MEMORY_GIB=4
+```
+
+With those values the pool runs at most two sandboxes at once. Additional
+candidates wait for a peer to finish rather than asking the provider for memory
+it will refuse. Leaving the budget unset restores the previous behaviour: the
+pool asks for as many as the pipeline is wide, and the provider rejects the
+excess.
+
+### Sandboxes leak when a run is killed
+
+Cleanup runs when a run ends. A run that never ends — because the API process
+was restarted, killed, or crashed mid-flight — leaves its sandboxes alive on the
+provider, holding memory budget indefinitely. This is the failure that looks
+like something else: later runs appear to hang, because each one is retrying
+`Total memory limit exceeded` against a wall that will never clear.
+
+Two safeguards exist, and one operator habit matters more than both:
+
+- The orphan reconciler deletes sandboxes recorded in this deployment's
+  ownership ledger that no active run claims. It runs at API startup and every
+  ten minutes thereafter, so a leak self-heals within minutes.
+  `PROOFBENCH_RECONCILE_SANDBOXES_ON_STARTUP=0` disables it; keep it on.
+  Reconciliation is scoped to `PROOFBENCH_DEPLOYMENT_ID`, so keep that stable
+  across restarts or the ledger loses track of what it owns.
+- Sandbox creation retries a transient `limit exceeded`, which covers the normal
+  case of a previous run's sandboxes still tearing down.
+
+**Stop a running benchmark before restarting the API.** Use the console's Stop
+control or `POST /api/sessions/{id}/stop`. A clean stop releases sandboxes
+immediately; a killed process defers that work to the reconciler.
+
+To audit or clear the account by hand:
+
+```python
+from daytona import Daytona
+
+client = Daytona()  # reads DAYTONA_* from the environment
+for sandbox in client.list():
+    print(sandbox.id, sandbox.state, getattr(sandbox, "memory", "?"))
+    # client.delete(sandbox)  # uncomment to remove one
+```
+
+Anything not `ARCHIVED` is consuming budget, whatever its state says.
 
 ## Repository layout
 

@@ -1,6 +1,7 @@
 ﻿"""ProofBench FastAPI service with authenticated, tenant-scoped resources."""
 from __future__ import annotations
 
+import csv
 import json
 import hmac
 import logging
@@ -9,6 +10,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -17,6 +19,7 @@ import inspect
 import socket
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -33,7 +36,9 @@ from server import brand, runs
 from server.schemas import (AuthSessionRequest, ChatRequest, IntegrationAgentMessageRequest,
                             DefaultsRequest, ProviderKeyRequest,
                             ProviderKeyRevealRequest,
+                            GenerateDatasetRequest,
                             RunRequest, ScraperOrderRequest,
+                            SettingOptionsRequest,
                             SyntheticDatasetRequest)
 from server.security import (Identity, auth_is_configured, auth_mode, authenticate,
                              authenticate_token, check_auth_mode, is_secret_env,
@@ -233,6 +238,13 @@ async def _lifespan(_app):
                     runs.process_deletion_queue([runs.RUNS_DIR, UPLOADS_DIR])
                     if int(time.time()) % (6 * 60 * 60) < 20 and runs.acquire_leader("retention", 300):
                         _run_retention()
+                    # Sandboxes leaked by a killed worker sit STOPPED on the
+                    # provider and still count against the account's memory
+                    # budget, starving every later run. Reconciliation is
+                    # lease-guarded and owner-scoped, so running it on a cycle
+                    # (not only at startup) reclaims them within minutes.
+                    if int(time.time()) % (10 * 60) < 20:
+                        _reconcile_sandboxes()
                 except Exception as exc:
                     _ops_increment("retention_failures")
                     LOGGER.warning(json.dumps({"event": "retention_cycle_failed",
@@ -373,8 +385,7 @@ def provider_environment(tenant_id: str) -> dict[str, str]:
     values = {name: os.environ[name]
               for name in SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV | SYSTEM_SCRAPER_ENV
               if os.environ.get(name)}
-    if _runtime_credentials_enabled():
-        values.update(provider_credentials.snapshot(tenant_id))
+    values.update(provider_credentials.snapshot(tenant_id))
     # The engine reads all its configuration from this snapshot, so the stored
     # scraper preference travels the same path as everything else and a run uses
     # the order that was set when it started.
@@ -386,11 +397,6 @@ def provider_environment(tenant_id: str) -> dict[str, str]:
         if env_name:
             values[env_name] = chosen
     return values
-
-
-def _runtime_credentials_enabled() -> bool:
-    return (os.environ.get("PROOFBENCH_INSECURE_DEV") == "1" and
-            os.environ.get("PROOFBENCH_ALLOW_RUNTIME_CREDENTIALS", "0") == "1")
 
 
 def _is_provider_env_name(name: str) -> bool:
@@ -448,8 +454,14 @@ def _validate_provider_setting(name: str, value: str) -> None:
 
 
 def _venv_python() -> str:
-    candidate = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
-    return candidate if os.path.exists(candidate) else "python"
+    # Windows lays the venv interpreter out under Scripts/, POSIX under bin/.
+    # Fall back to the interpreter running this server rather than a bare
+    # "python", which is absent on systems that only ship python3.
+    for parts in (("Scripts", "python.exe"), ("bin", "python")):
+        candidate = os.path.join(ROOT, ".venv", *parts)
+        if os.path.exists(candidate):
+            return candidate
+    return sys.executable or "python"
 
 
 def _session_or_404(session_id: str, identity: Identity) -> dict:
@@ -464,10 +476,6 @@ def _dataset_or_404(dataset_id: str, identity: Identity):
     if not dataset:
         raise HTTPException(status_code=404, detail="dataset not found")
     return dataset
-
-
-def _bind_dataset(session: dict, dataset) -> None:
-    runs.bind_dataset(session["id"], dataset.owner, dataset.id, dataset.path)
 
 
 def _emit_chat_event(session_id: str, event: str, data: dict,
@@ -631,13 +639,52 @@ def _run_summary(session: dict) -> str:
     return "\n".join(lines)
 
 
+def _dataset_schema(dataset_path: str | None) -> list[dict] | None:
+    """The labelled schema of a bound dataset, as [{name, type}, ...].
+
+    A generated dataset declares its types in ``schema.json``; anything else
+    falls back to the ground-truth CSV header with legacy type inference, so
+    the sample invoice dataset keeps meaning what it always meant.
+    """
+    if not dataset_path:
+        return None
+    from engine.fields import FIELD_TYPES, infer_type
+
+    manifest = os.path.join(dataset_path, "schema.json")
+    if os.path.isfile(manifest):
+        try:
+            with open(manifest, encoding="utf-8") as handle:
+                declared = json.load(handle)
+            fields = [
+                {"name": str(item["name"]),
+                 "type": item.get("type") if item.get("type") in FIELD_TYPES
+                 else infer_type(str(item["name"]))}
+                for item in declared if isinstance(item, dict) and item.get("name")
+            ]
+            if fields:
+                return fields
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # fall through to the CSV header
+    truth = os.path.join(dataset_path, "ground_truth.csv")
+    try:
+        with open(truth, encoding="utf-8-sig", newline="") as handle:
+            header = next(csv.reader(handle), [])
+    except (OSError, StopIteration):
+        return None
+    names = [name.strip() for name in header if name.strip() and name.strip() != "doc_id"]
+    return [{"name": name, "type": infer_type(name)} for name in names] or None
+
+
 def _get_or_create_orchestrator(identity: Identity, session: dict, run_id: str | None = None,
                                 chat_job_id: str | None = None):
     from engine.agent import Orchestrator, intake_system
 
-    # A labelled dataset is what makes a scored extraction benchmark possible,
-    # so intake is only allowed to propose one when the session has one bound.
+    # Not a gate on which benchmark intake may propose — the question decides
+    # that. This says only whether labelled examples already exist, which is
+    # what pins the spec's schema to columns that have ground truth; without
+    # them intake declares the schema and the run builds examples to match.
     dataset_available = bool(session.get("dataset_path"))
+    dataset_fields = _dataset_schema(session.get("dataset_path"))
     if run_id:
         directory = runs.run_dir(run_id, identity.tenant_id)
         return Orchestrator(
@@ -646,6 +693,7 @@ def _get_or_create_orchestrator(identity: Identity, session: dict, run_id: str |
             cancel_event=session["cancel_event"],
             provider_env=provider_environment(identity.tenant_id),
             dataset_available=dataset_available,
+            dataset_fields=dataset_fields,
         )
     run_dir = runs.session_dir(session["id"], identity.tenant_id)
     os.makedirs(run_dir, exist_ok=True)
@@ -658,12 +706,13 @@ def _get_or_create_orchestrator(identity: Identity, session: dict, run_id: str |
         # cannot leave one process using stale tenant configuration.
         provider_env=provider_environment(identity.tenant_id),
         dataset_available=dataset_available,
+        dataset_fields=dataset_fields,
         run_summary=_run_summary(session),
     )
     history = list(session.get("messages") or [])
     if history and history[-1].get("role") == "user":
         history = history[:-1]
-    orch._messages = [{"role": "system", "content": intake_system(dataset_available)}, *(
+    orch._messages = [{"role": "system", "content": intake_system(dataset_available, dataset_fields)}, *(
         {"role": item["role"], "content": item["text"]} for item in history
     )]
     # Durable message history carries only what was said. Research lives in tool
@@ -920,8 +969,7 @@ def api_health(identity: Identity = Depends(authenticate)):
     keys = ["DAYTONA_API_KEY", "MOONSHOT_API_KEY", "NOSANA_API_KEY",
             "DOUBLEWORD_API_KEY", "OXYLABS_USERNAME", "OXYLABS_PASSWORD", "OPENAI_API_KEY",
             "OPENROUTER_API_KEY"]
-    tenant_keys = (set(provider_credentials.names(identity.tenant_id))
-                   if _runtime_credentials_enabled() else set())
+    tenant_keys = set(provider_credentials.names(identity.tenant_id))
     return {"status": "ok", "version": "0.1.0",
             "keys": {name: bool(os.environ.get(name)) or name in tenant_keys for name in keys}}
 
@@ -1020,6 +1068,10 @@ def api_providers(identity: Identity = Depends(authenticate)):
             "capability": entry["capability"], "essential": entry["essential"],
             "status": status,
             "required": list(entry["required"]),
+            # The full optional set, not just what is set: the Settings card
+            # offers these names as choices, so an operator can pick a variable
+            # that is not configured yet instead of recalling its spelling.
+            "optional": list(entry["optional"]),
             "missing": missing,
             "optional_configured": present_optional,
         })
@@ -1079,13 +1131,26 @@ def api_providers(identity: Identity = Depends(authenticate)):
             "config": ["SUPERVISOR_PROVIDER", "SUPERVISOR_MODEL"],
         })
 
+    # What the engine already falls back to when a model or base URL is unset.
+    # A model id and a URL are values nobody recalls, so the console offers the
+    # known-good one as a starting point instead of an empty box. Credentials
+    # are deliberately absent: there is no default for a secret.
+    from engine.llm_clients import PROVIDERS as LLM_PROVIDERS
+
+    setting_defaults = {}
+    for spec in LLM_PROVIDERS.values():
+        setting_defaults[spec.model_env] = spec.default_model
+        if spec.base_url_env:
+            setting_defaults[spec.base_url_env] = spec.default_base_url
+
     blocked = [item["provider"] for item in providers
                if item["essential"] and item["status"] != "ready"]
     blocked += [item["capability"] for item in capabilities
                 if item["essential"] and item["status"] != "ready"]
     return {"mode": RUN_MODE, "run_ready": not blocked,
             "blocked_by": blocked, "providers": providers,
-            "capabilities": capabilities, "supervision": supervision}
+            "capabilities": capabilities, "supervision": supervision,
+            "setting_defaults": setting_defaults}
 
 
 @app.get("/api/metrics")
@@ -1109,9 +1174,7 @@ def api_session(session_id: str, identity: Identity = Depends(authenticate)):
 
 @app.get("/api/settings/provider-keys")
 def api_provider_keys(identity: Identity = Depends(authenticate)):
-    runtime_writes_enabled = _runtime_credentials_enabled()
-    tenant_names = (set(provider_credentials.names(identity.tenant_id))
-                    if runtime_writes_enabled else set())
+    tenant_names = set(provider_credentials.names(identity.tenant_id))
     system = {name for name in SETTINGS_PROVIDER_ENV if os.environ.get(name)}
     # A mask is the tail of a secret and nothing else. Non-secret settings
     # (model ids, base URLs, the supervisor selector) carry no mask at all
@@ -1124,11 +1187,9 @@ def api_provider_keys(identity: Identity = Depends(authenticate)):
         return {"env": name, "source": source,
                 "masked": mask_secret(value) if secret else None,
                 "secret": secret,
-                "revealable": runtime_writes_enabled}
+                "revealable": True}
 
-    return {"runtime_writes_enabled": runtime_writes_enabled,
-            "managed_by": "runtime" if runtime_writes_enabled else "deployment",
-            "keys": [
+    return {"keys": [
         *(entry(name, "system") for name in sorted(system - tenant_names)),
         *(entry(name, "settings") for name in sorted(tenant_names)),
     ]}
@@ -1345,9 +1406,6 @@ async def api_set_scraper_order(request: Request, identity: Identity = Depends(a
 
 @app.post("/api/settings/provider-keys")
 async def api_save_provider_key(request: Request, identity: Identity = Depends(authenticate)):
-    if not _runtime_credentials_enabled():
-        raise HTTPException(status_code=503,
-                            detail="runtime credentials are disabled; configure deployment secrets")
     payload = _payload(ProviderKeyRequest, await _json(request))
     env = payload.env.upper()
     if not _is_provider_env_name(env):
@@ -1359,6 +1417,45 @@ async def api_save_provider_key(request: Request, identity: Identity = Depends(a
     return {"env": env, "source": "settings"}
 
 
+@app.post("/api/settings/setting-options")
+async def api_setting_options(request: Request, identity: Identity = Depends(authenticate)):
+    """Research the values one non-secret provider setting can take.
+
+    Secrets are rejected before any research runs: a model id and a base URL are
+    published facts, an API key is not, and this endpoint must never look like a
+    place to obtain one.
+    """
+    from engine import integration_agent
+
+    payload = _payload(SettingOptionsRequest, await _json(request))
+    env_name = payload.env.upper()
+    if not _is_provider_env_name(env_name) or is_secret_env(env_name):
+        raise HTTPException(status_code=422,
+                            detail="only a provider model or base URL setting can be researched")
+
+    env = provider_environment(identity.tenant_id)
+    state = integration_agent.readiness(env)
+    if not state["ready"]:
+        raise HTTPException(status_code=409, detail={
+            "error": "integration_agent_unavailable",
+            "message": "Configure one default LLM and one web scraping API first.",
+            "missing": state["missing"],
+        })
+    try:
+        return integration_agent.suggest_values(env_name, env)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.warning(json.dumps({
+            "event": "setting_options_failed",
+            "error_type": type(exc).__name__,
+        }))
+        raise HTTPException(
+            status_code=502,
+            detail="The integration agent could not research that setting.",
+        ) from exc
+
+
 @app.post("/api/settings/provider-keys/reveal")
 async def api_reveal_provider_key(request: Request, identity: Identity = Depends(authenticate)):
     """Return one credential in plaintext, for an operator who asked to see it.
@@ -1368,9 +1465,6 @@ async def api_reveal_provider_key(request: Request, identity: Identity = Depends
     the one endpoint that hands back a secret, and keeps the value out of URLs,
     referrers, and any caching layer.
     """
-    if not _runtime_credentials_enabled():
-        raise HTTPException(status_code=503,
-                            detail="runtime credentials are disabled; configure deployment secrets")
     payload = _payload(ProviderKeyRevealRequest, await _json(request))
     env = payload.env.upper()
     if not _is_provider_env_name(env):
@@ -1396,9 +1490,6 @@ async def api_reveal_provider_key(request: Request, identity: Identity = Depends
 
 @app.delete("/api/settings/provider-keys/{env}")
 def api_delete_provider_key(env: str, identity: Identity = Depends(authenticate)):
-    if not _runtime_credentials_enabled():
-        raise HTTPException(status_code=503,
-                            detail="runtime credentials are disabled; configure deployment secrets")
     env = env.upper()
     if not _is_provider_env_name(env):
         raise HTTPException(status_code=422, detail="invalid environment variable name")
@@ -1432,9 +1523,13 @@ def api_brand(names: str = "", identity: Identity = Depends(authenticate)):
 
 @app.post("/api/sessions")
 def api_create_session(identity: Identity = Depends(authenticate)):
-    dataset = datasets.synthetic(identity.tenant_id)
+    # A new session starts with nothing bound. Auto-binding the invoice sample
+    # made every session look to intake like an OCR session with an invoice
+    # schema already chosen, which is how document extraction became the
+    # implicit default for questions that were never about documents. What a
+    # run measures is now decided by the question; the sample is one dataset a
+    # user can reach for, not the one every session begins holding.
     session = runs.new_session(identity.tenant_id)
-    _bind_dataset(session, dataset)
     return {"session_id": session["id"], "title": session["title"]}
 
 
@@ -1522,6 +1617,10 @@ def api_events(session_id: str, request: Request,
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _bind_dataset(session: dict, dataset) -> None:
+    runs.bind_dataset(session["id"], dataset.owner, dataset.id, dataset.path)
+
+
 @app.post("/api/chat")
 async def api_chat(request: Request, identity: Identity = Depends(authenticate)):
     payload = _payload(ChatRequest, await _json(request))
@@ -1531,19 +1630,20 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
     if payload.session_id:
         session = _session_or_404(payload.session_id, identity)
     else:
-        dataset = requested_dataset or datasets.synthetic(identity.tenant_id)
         # Provisional only: the sidebar needs a label before the turn has said
         # anything worth naming. _retitle replaces it once the turn has.
         session = runs.new_session(identity.tenant_id,
                                    title=session_title.fallback_title(payload.message))
     sid = session["id"]
+    # No fallback to the sample dataset. A conversation needs no labelled data,
+    # and binding some anyway told intake this was a document session with its
+    # schema already chosen — so every question arrived pre-shaped as OCR.
     selected_dataset = requested_dataset
     if selected_dataset is None and session.get("dataset_id"):
         selected_dataset = _dataset_or_404(session["dataset_id"], identity)
-    if selected_dataset is None:
-        selected_dataset = datasets.synthetic(identity.tenant_id)
     try:
-        claimed = runs.begin_chat(sid, identity.tenant_id, selected_dataset.id,
+        claimed = runs.begin_chat(sid, identity.tenant_id,
+                                  selected_dataset.id if selected_dataset else None,
                                   RUN_MODE, payload.message)
     except runs.BusyError as exc:
         if created_session:
@@ -1596,11 +1696,29 @@ async def api_chat(request: Request, identity: Identity = Depends(authenticate))
     return {"session_id": sid}
 
 
+def _dataset_title(item: dict) -> str:
+    """A generated dataset's human title, read from its manifest.
+
+    Rows otherwise render as interchangeable "AI-generated dataset" entries and
+    the user is left telling receipts from badges by hex id.
+    """
+    if item.get("kind") != "generated":
+        return ""
+    manifest_path = os.path.join(str(item.get("path") or ""), "manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        return str(loaded.get("title") or "")[:120] if isinstance(loaded, dict) else ""
+    except (OSError, ValueError):
+        return ""
+
+
 @app.get("/api/datasets")
 def api_list_datasets(identity: Identity = Depends(authenticate)):
     return {"datasets": [{"id": item["id"], "dataset_id": item["id"],
                            "kind": item["kind"], "image_count": item["image_count"],
-                           "total_bytes": item["total_bytes"], "created_at": item["created_at"]}
+                           "total_bytes": item["total_bytes"], "created_at": item["created_at"],
+                           "title": _dataset_title(item)}
                           for item in runs.list_datasets(identity.tenant_id)]}
 
 
@@ -1724,6 +1842,193 @@ async def api_datasets(request: Request, images: list[UploadFile] | None = File(
     return {"dataset_id": dataset_id}
 
 
+# How many documents a run builds for itself. Smaller than a dataset a user
+# designs deliberately: this one is built mid-run, and the wait before the
+# benchmark starts is time the user did not ask to spend.
+GENERATED_RUN_DOCS = 10
+
+
+def _spec_field_schema(spec) -> list[dict]:
+    """The measured spec's declared columns, as {"name", "type"} pairs.
+
+    The evaluator matches ground truth to predictions by column name, so
+    examples built for a spec must carry exactly the spec's own schema.
+    """
+    from engine.fields import infer_type
+
+    schema = []
+    for field in spec.fields:
+        if isinstance(field, str):
+            schema.append({"name": field, "type": infer_type(field)})
+        else:
+            schema.append({"name": field.name, "type": field.type})
+    return schema
+
+
+def _dataset_design_prompt(session: dict, spec) -> str:
+    """What to build examples of, in the user's own words plus the spec's.
+
+    The session's opening message says what the user is actually trying to
+    settle; the category and columns say what the run will score. The designer
+    needs both — the words alone under-determine the documents, and the columns
+    alone lose the domain.
+    """
+    said = ""
+    for message in (session.get("messages") or []):
+        if (message or {}).get("role") == "user":
+            said = str(message.get("text") or "").strip()
+            break
+    columns = ", ".join(field["name"] for field in _spec_field_schema(spec))
+    parts = [f"Benchmark category: {spec.category}", f"Fields to be scored: {columns}"]
+    if said:
+        parts.append(f"What the user asked for: {said[:1500]}")
+    return "\n".join(parts)
+
+
+def _generate_dataset(prompt: str, n: int, identity: Identity,
+                      fields: list | None = None) -> str:
+    """Design, render, and register labelled examples. Returns the dataset id.
+
+    Shared by the explicit console action and by a measured run that reached
+    start without data bound: both need exactly the same designed-then-rendered
+    dataset, and having one path means a generated dataset is registered, quota-
+    accounted, and cleaned up on failure the same way however it was asked for.
+    ``fields`` pins the schema when the benchmark spec already declares one.
+    """
+    from engine import dataset_gen
+
+    try:
+        proposal = dataset_gen.propose_dataset(
+            prompt, n, env=provider_environment(identity.tenant_id), fields=fields)
+    except Exception as exc:
+        LOGGER.warning(json.dumps({"event": "dataset_proposal_failed",
+                                   "error_type": type(exc).__name__}))
+        raise HTTPException(
+            status_code=503,
+            detail="the dataset designer could not produce a valid proposal; retry or upload a dataset",
+        ) from exc
+
+    def destination_for(dataset_id: str) -> str:
+        destination = os.path.realpath(os.path.join(UPLOADS_DIR, dataset_id))
+        if os.path.commonpath((os.path.realpath(UPLOADS_DIR), destination)) != os.path.realpath(UPLOADS_DIR):
+            raise ValueError("invalid server upload path")
+        return destination
+
+    estimated_bytes = 40_000 * len(proposal["rows"])
+    try:
+        reservation = runs.reserve_dataset(identity.tenant_id, destination_for,
+                                           estimated_bytes, TENANT_DATASET_QUOTA_BYTES)
+    except runs.QuotaError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "60"}) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="dataset reservation failed") from exc
+    dataset_id = reservation["id"]
+    destination = reservation["path"]
+    created = False
+    try:
+        os.makedirs(destination, exist_ok=False)
+        created = True
+        rendered = dataset_gen.render_dataset(proposal, destination, source_prompt=prompt)
+        total_bytes = sum(f.stat().st_size for f in Path(destination).rglob("*") if f.is_file())
+        runs.activate_dataset(dataset_id, identity.tenant_id,
+                              len(rendered["doc_ids"]), total_bytes, kind="generated")
+    except (OSError, ValueError) as exc:
+        runs.release_dataset_reservation(dataset_id, identity.tenant_id)
+        if created and os.path.isdir(destination):
+            shutil.rmtree(destination)
+        raise HTTPException(status_code=500, detail="generated dataset could not be persisted") from exc
+    except KeyError as exc:
+        runs.release_dataset_reservation(dataset_id, identity.tenant_id)
+        if created and os.path.isdir(destination):
+            shutil.rmtree(destination)
+        raise HTTPException(status_code=503, detail="dataset reservation expired") from exc
+    return dataset_id
+
+
+@app.post("/api/datasets/generate")
+def api_generate_dataset(payload: GenerateDatasetRequest,
+                         identity: Identity = Depends(authenticate)):
+    """AI-design and render labelled examples matched to the user's benchmark.
+
+    The orchestration model proposes document kind, typed schema, and ground
+    truth; a deterministic renderer draws the images (engine/dataset_gen.py).
+    Returns the dataset id plus a preview the console shows for approval. This
+    is the explicit path, for a user who wants to see and approve the data
+    first; a measured run that starts without data builds its own the same way.
+    """
+    dataset_id = _generate_dataset(payload.prompt, payload.n, identity)
+    return {"dataset_id": dataset_id, "preview": _dataset_preview(dataset_id, identity)}
+
+
+def _dataset_preview(dataset_id: str, identity: Identity, rows_limit: int = 6) -> dict:
+    """What a dataset IS: kind, schema, sample rows, and its document ids."""
+    dataset = _dataset_or_404(dataset_id, identity)
+    detail = datasets.describe(dataset_id, identity.tenant_id) or {}
+    root = os.path.realpath(dataset.path)
+
+    manifest = {}
+    manifest_path = os.path.join(root, "manifest.json")
+    if os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                manifest = loaded
+        except (OSError, ValueError):
+            manifest = {}
+
+    schema = _dataset_schema(root) or []
+    rows: list[dict] = []
+    doc_ids: list[str] = []
+    truth = os.path.join(root, "ground_truth.csv")
+    if os.path.isfile(truth):
+        try:
+            with open(truth, encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    doc_id = str(row.get("doc_id") or "")
+                    if doc_id:
+                        doc_ids.append(doc_id)
+                    if len(rows) < rows_limit:
+                        rows.append({key: str(value or "")[:200] for key, value in row.items()})
+        except (OSError, csv.Error):
+            pass
+    return {
+        "dataset_id": dataset_id,
+        "kind": detail.get("kind") or "upload",
+        "title": manifest.get("title") or "",
+        "description": manifest.get("description") or "",
+        "document_kind": manifest.get("document_kind") or "",
+        "schema": schema,
+        "rows": rows,
+        "doc_ids": doc_ids,
+        "image_count": detail.get("image_count", len(doc_ids)),
+    }
+
+
+@app.get("/api/datasets/{dataset_id}/preview")
+def api_dataset_preview(dataset_id: str, identity: Identity = Depends(authenticate)):
+    return _dataset_preview(dataset_id, identity)
+
+
+@app.get("/api/datasets/{dataset_id}/images/{doc_id}")
+def api_dataset_image(dataset_id: str, doc_id: str,
+                      identity: Identity = Depends(authenticate)):
+    """One document image, for the dataset preview. Path-confined to the dataset."""
+    dataset = _dataset_or_404(dataset_id, identity)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", doc_id) or ".." in doc_id:
+        raise HTTPException(status_code=422, detail="invalid document id")
+    image_dir = os.path.realpath(os.path.join(dataset.path, "images"))
+    for suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        candidate_path = os.path.realpath(os.path.join(image_dir, doc_id + suffix))
+        if os.path.commonpath((image_dir, candidate_path)) != image_dir:
+            raise HTTPException(status_code=422, detail="invalid document id")
+        if os.path.isfile(candidate_path):
+            media = {".png": "image/png", ".jpg": "image/jpeg",
+                     ".jpeg": "image/jpeg", ".webp": "image/webp"}[suffix]
+            return FileResponse(candidate_path, media_type=media)
+    raise HTTPException(status_code=404, detail="document image not found")
+
+
 @app.post("/api/sessions/{session_id}/run")
 async def api_run(session_id: str, request: Request,
                   identity: Identity = Depends(authenticate)):
@@ -1735,7 +2040,17 @@ async def api_run(session_id: str, request: Request,
         requested = payload.spec.dataset
         dataset_id = requested.dataset_id if requested and requested.dataset_id else session.get("dataset_id")
         if not dataset_id:
-            raise HTTPException(status_code=422, detail="a server-issued dataset_id is required")
+            # A measured benchmark that reached here without data is not an
+            # error to hand back: intake already decided this question is
+            # settled by running the candidates, and the spec carries the
+            # schema to build examples for. Build them, then run.
+            if not (requested and requested.source == "generate"):
+                raise HTTPException(status_code=422, detail="a server-issued dataset_id is required")
+            dataset_id = _generate_dataset(
+                _dataset_design_prompt(session, payload.spec), GENERATED_RUN_DOCS,
+                identity, fields=_spec_field_schema(payload.spec))
+            generated = _dataset_or_404(dataset_id, identity)
+            runs.bind_dataset(session_id, identity.tenant_id, dataset_id, generated.path)
         dataset = _dataset_or_404(dataset_id, identity)
         if requested and requested.path and os.path.realpath(requested.path) != os.path.realpath(dataset.path):
             raise HTTPException(status_code=422, detail="client-supplied dataset paths are not accepted")

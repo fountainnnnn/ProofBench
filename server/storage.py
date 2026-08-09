@@ -104,9 +104,18 @@ class DatasetRegistry:
 
     def synthetic(self, owner: str) -> Dataset:
         digest = hashlib.sha256(("proofbench-demo:" + owner).encode()).hexdigest()[:12]
+        path = os.path.join(runs.ROOT, "data", "demo")
         existing = self.get(digest, owner)
-        return existing or self.create(owner, os.path.join(runs.ROOT, "data", "demo"), digest,
-                                       allow_synthetic=True)
+        if not existing:
+            return self.create(owner, path, digest, allow_synthetic=True)
+        # Uploaded datasets are immutable, so their counts are recorded once. The
+        # sample dataset is different: its files are (re)generated on disk under
+        # a reused row, so counts recorded at first registration go stale and the
+        # console shows a dataset holding zero images. Re-read them from disk.
+        image_count, total_bytes = _dataset_stats(existing.path)
+        runs.register_dataset(digest, owner, existing.path, kind="synthetic",
+                              image_count=image_count, total_bytes=total_bytes)
+        return existing
 
     def cleanup_unreferenced(self, referenced_ids: set[str], cutoff_timestamp: float) -> list[str]:
         return []
@@ -156,7 +165,18 @@ def validate_image(filename: str, content_type: str | None, data: bytes) -> str:
     return stem
 
 
+FIELD_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
+MAX_GT_COLUMNS = 33  # doc_id + the evaluator's 32-field ceiling
+
+
 def validate_ground_truth(data: bytes, image_ids: set[str]) -> None:
+    """Admit any well-formed labelled CSV, not only the invoice schema.
+
+    The header declares the benchmark's own field columns after doc_id. Columns
+    that carry a typed meaning by name — date, total — keep their strict format
+    checks so the sample schema is validated exactly as before; other columns
+    are bounded, required, and otherwise the benchmark's business.
+    """
     if not data or len(data) > MAX_CSV_BYTES:
         raise ValueError("ground_truth.csv is empty or too large")
     try:
@@ -164,33 +184,40 @@ def validate_ground_truth(data: bytes, image_ids: set[str]) -> None:
     except UnicodeDecodeError as exc:
         raise ValueError("ground_truth.csv must be UTF-8") from exc
     reader = csv.DictReader(io.StringIO(text))
-    if tuple(reader.fieldnames or ()) != GT_FIELDS:
+    header = tuple(reader.fieldnames or ())
+    if len(header) < 2 or header[0] != "doc_id" or len(header) > MAX_GT_COLUMNS:
+        raise ValueError("ground_truth.csv has an invalid header")
+    fields = header[1:]
+    if len(set(fields)) != len(fields) or any(
+            not FIELD_NAME.fullmatch(field) for field in fields):
         raise ValueError("ground_truth.csv has an invalid header")
     seen: set[str] = set()
     for line, row in enumerate(reader, 2):
         doc_id = (row.get("doc_id") or "").strip()
         if not SAFE_STEM.fullmatch(doc_id) or doc_id in seen:
             raise ValueError(f"invalid or duplicate doc_id on CSV line {line}")
-        if any(len((row.get(field) or "")) > 4096 for field in GT_FIELDS):
+        if any(len((row.get(field) or "")) > 4096 for field in header):
             raise ValueError(f"value too long on CSV line {line}")
-        values = {field: (row.get(field) or "").strip() for field in GT_FIELDS}
-        if any(not values[field] for field in GT_FIELDS):
+        values = {field: (row.get(field) or "").strip() for field in header}
+        if any(not values[field] for field in header):
             raise ValueError(f"ground truth values are required on CSV line {line}")
-        date = values["date"]
-        try:
-            date_type.fromisoformat(date)
-        except ValueError as exc:
-            raise ValueError(f"date must be YYYY-MM-DD on CSV line {line}") from exc
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            raise ValueError(f"date must be YYYY-MM-DD on CSV line {line}")
-        if not re.fullmatch(r"\d+(?:\.\d{1,2})?", values["total"]):
-            raise ValueError(f"invalid total on CSV line {line}")
-        try:
-            total = Decimal(values["total"])
-        except InvalidOperation as exc:
-            raise ValueError(f"invalid total on CSV line {line}") from exc
-        if not total.is_finite():
-            raise ValueError(f"invalid total on CSV line {line}")
+        if "date" in values:
+            date = values["date"]
+            try:
+                date_type.fromisoformat(date)
+            except ValueError as exc:
+                raise ValueError(f"date must be YYYY-MM-DD on CSV line {line}") from exc
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                raise ValueError(f"date must be YYYY-MM-DD on CSV line {line}")
+        if "total" in values:
+            if not re.fullmatch(r"\d+(?:\.\d{1,2})?", values["total"]):
+                raise ValueError(f"invalid total on CSV line {line}")
+            try:
+                total = Decimal(values["total"])
+            except InvalidOperation as exc:
+                raise ValueError(f"invalid total on CSV line {line}") from exc
+            if not total.is_finite():
+                raise ValueError(f"invalid total on CSV line {line}")
         seen.add(doc_id)
     if not seen:
         raise ValueError("ground_truth.csv must contain at least one row")

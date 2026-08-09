@@ -78,7 +78,20 @@ def _guess_kind(docs_md: str) -> str:
     return "hosted_api" if any(marker in text for marker in hosted_markers) else "local_tool"
 
 
-def generate_adapter(tool_name: str, docs_md: str, model: str | None = None, env: dict | None = None) -> Candidate:
+def _fields_clause(fields: list | None) -> str:
+    """The schema sentence for a codegen prompt, from the run's declared fields."""
+    from engine.fields import parse_fields
+
+    parsed = parse_fields(fields)
+    described = ", ".join(
+        f"{f.name} ({f.type})" if f.type != "text" else f.name for f in parsed
+    )
+    return (f"return exactly these string fields: {described} — "
+            "using an empty string for missing fields")
+
+
+def generate_adapter(tool_name: str, docs_md: str, model: str | None = None, env: dict | None = None,
+                     fields: list | None = None) -> Candidate:
     """Generate and validate a Candidate with the configured codegen provider."""
     selected_model = model
 
@@ -86,11 +99,15 @@ def generate_adapter(tool_name: str, docs_md: str, model: str | None = None, env
 Return STRICT JSON only with this exact shape:
 {{"display_name":"...","build_commands":["..."],"adapter_code":"...","setup_complexity":N}}
 
-The adapter_code must define extract(image_path: str) -> dict and return exactly the string
-fields invoice_number, date, vendor, and total, using an empty string for missing fields.
+The adapter_code must define extract(image_path: str) -> dict and {_fields_clause(fields)}.
 It must emit no output itself and must end byte-for-byte with this wrapper:
 
 {RESULT_JSON_WRAPPER}
+
+The sandbox is Linux with Python 3.12, four CPUs, and one NVIDIA GPU with CUDA
+available. Use the GPU when this tool can: install the CUDA build of whatever
+runtime it needs and enable device acceleration in its configuration. Fall back
+to CPU only when the tool genuinely has no GPU path.
 
 setup_complexity must be an integer from 1 through 5. Do not include markdown fences.
 
@@ -124,17 +141,17 @@ Documentation:
         build_commands=build_commands,
         adapter_code=adapter_code,
         setup_complexity=setup_complexity,
-        batch_safe=False,
     )
 
 
-def repair_adapter(adapter_code: str, error_output: str, model: str | None = None, env: dict | None = None) -> str:
+def repair_adapter(adapter_code: str, error_output: str, model: str | None = None, env: dict | None = None,
+                   fields: list | None = None) -> str:
     """Repair a generated adapter and return validated source code."""
     selected_model = model
     prompt = f"""Repair the Python adapter below using the runtime error.
 Return STRICT JSON only as {{"adapter_code":"..."}}.
-The code must define extract(image_path: str) -> dict, return exactly the string fields
-invoice_number, date, vendor, and total, and end byte-for-byte with this wrapper:
+The code must define extract(image_path: str) -> dict, {_fields_clause(fields)},
+and end byte-for-byte with this wrapper:
 
 {RESULT_JSON_WRAPPER}
 

@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { getIntegrationAgentStatus, streamIntegrationAgentMessage } from "../api.js";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {
+  getIntegrationAgentStatus,
+  saveProviderKey,
+  streamIntegrationAgentMessage,
+} from "../api.js";
 import { safeVisibleText } from "../displaySafety.js";
 import { safeHttpUrl } from "../linkSafety.js";
-import { PANEL, Skeleton } from "./ui.jsx";
+import SafeMarkdownLink from "./SafeMarkdownLink.jsx";
+import { MARKDOWN_HEADINGS_IN_THREAD, PANEL, Skeleton } from "./ui.jsx";
 import sparkleMark from "../assets/sparkle.png";
 import proposalMark from "../assets/proposal.png";
 
@@ -10,8 +17,8 @@ import proposalMark from "../assets/proposal.png";
    invitation (recognition over recall), so the empty state hands over two
    real questions the agent can act on immediately. */
 const PROMPTS = [
+  "Is Scrape.do implemented?",
   "Add support for Mistral",
-  "Check if Groq is supported",
 ];
 
 function SendIcon() {
@@ -87,8 +94,29 @@ function applyProgress(steps, event) {
   const host = hostOf(url);
   const title = safeVisibleText(event?.title) || host;
 
+  /* The agent decides what a request needs before doing any of it, and that
+     decision is the most useful thing to show: it is why the next steps happen
+     at all, and for a question it can answer outright there are no next steps
+     to explain themselves. */
+  if (phase === "thinking") {
+    return [...steps, { key: "plan", kind: "step", label: "Planning…" }];
+  }
+  if (phase === "plan") {
+    const thought = safeVisibleText(event?.thought);
+    const index = steps.findIndex((step) => step.key === "plan");
+    if (index === -1 || !thought) return steps;
+    const next = [...steps];
+    next[index] = { ...next[index], label: thought };
+    return next;
+  }
   if (phase === "search") {
-    return [...steps, { key: "search", kind: "step", label: "Searching official documentation" }];
+    return [...steps, {
+      key: "search",
+      kind: "step",
+      label: safeVisibleText(event?.query)
+        ? `Searching for ${safeVisibleText(event.query)}`
+        : "Searching official documentation",
+    }];
   }
   if (phase === "found") {
     const n = Number(event?.count) || 0;
@@ -167,58 +195,109 @@ function Sources({ sources }) {
   );
 }
 
-/* The agent answers in markdown and its proposals carry fenced code, so the
-   fences are rendered as code rather than printed as literal backticks. Only
-   fenced blocks are handled: that is the one construct these replies actually
-   use, and a full markdown renderer would be a dependency for nothing. An
-   unterminated fence keeps its remaining text rather than swallowing it. */
-function splitFences(text) {
-  const parts = [];
-  const pattern = /```([\w+-]*)\n?([\s\S]*?)(?:```|$)/g;
-  let cursor = 0;
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > cursor) {
-      parts.push({ type: "text", content: text.slice(cursor, match.index) });
-    }
-    parts.push({ type: "code", lang: match[1] || "", content: match[2].replace(/\n$/, "") });
-    cursor = pattern.lastIndex;
-  }
-  if (cursor < text.length) parts.push({ type: "text", content: text.slice(cursor) });
-  return parts.filter((part) => part.type === "code" || part.content.trim());
+/* The agent answers in markdown, and since it also answers questions rather
+   than only proposing connectors, that markdown now carries headings, lists,
+   and inline code — not just the fenced blocks the old renderer handled. Those
+   printed as literal ### and ** in the thread.
+
+   Rendered the same way the main chat renders a reply: same GFM plugin, same
+   safe-link and code handling, same demoted headings, so a reply reads
+   identically wherever it appears. */
+function AgentMarkdown({ text }) {
+  return (
+    <div className="md pb-contain overflow-x-auto text-[13px] leading-relaxed text-[var(--ink)]">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{ a: SafeMarkdownLink, ...MARKDOWN_HEADINGS_IN_THREAD }}
+      >
+        {safeVisibleText(text)}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
-function AgentTurn({ turn }) {
+/* The point of the agent naming a variable is that the operator does not have
+   to. So the key is collected right here, in the turn that named it, rather
+   than sending someone back to the Services card to retype a name they just
+   read. The value goes straight to the credentials endpoint and is never part
+   of the conversation the agent sees. */
+function CredentialField({ credential, onSaved }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const env = safeVisibleText(credential?.env);
+  const label = safeVisibleText(credential?.label) || env;
+  if (!env) return null;
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (busy || !value) return;
+    setBusy(true);
+    setError("");
+    try {
+      await saveProviderKey(env, value);
+      setValue("");
+      setSaved(true);
+      onSaved?.();
+    } catch (failure) {
+      setError(failure.message || "Could not save that key.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (saved) {
+    return (
+      <p className="mt-2.5 rounded-[12px] bg-[var(--surface-2)] px-3 py-2.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
+        Saved to <code className="pb-mono text-[var(--ink)]">{env}</code>. It shows up under
+        Services, and you can change or remove it there.
+      </p>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="mt-2.5 rounded-[12px] bg-[var(--surface-2)] px-3 py-2.5">
+      <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
+        Paste your {label} key and it is stored as{" "}
+        <code className="pb-mono text-[var(--ink)]">{env}</code>.
+      </p>
+      <div className="mt-2 flex items-start gap-2">
+        <input
+          type="password"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="API key"
+          aria-label={`${label} API key`}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={busy}
+          className="min-w-0 flex-1 rounded-[8px] bg-[var(--surface)] px-2.5 py-1.5 text-[12px] text-[var(--ink)] outline-none ring-1 ring-[var(--line)] focus:ring-[var(--accent)]"
+        />
+        <button
+          type="submit"
+          disabled={busy || !value}
+          className="shrink-0 rounded-[8px] bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--on-accent)] disabled:opacity-50"
+        >
+          {busy ? "Saving" : "Save key"}
+        </button>
+      </div>
+      {error && (
+        <p role="alert" className="mt-1.5 text-[12px] text-[var(--danger)]">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+function AgentTurn({ turn, onCredentialSaved }) {
   return (
     <div className="min-w-0">
-      {turn.text &&
-        splitFences(turn.text).map((part, index) =>
-          part.type === "code" ? (
-            /* Code sets its own width, so it scrolls inside its own box rather
-               than widening the thread. */
-            <div
-              key={index}
-              className="mt-2 overflow-hidden rounded-[10px] bg-[var(--code-bg)]"
-            >
-              {part.lang && (
-                <div className="pb-mono border-b border-[var(--line)] px-3 py-1 text-[10px] uppercase tracking-wide text-[var(--ink-3)]">
-                  {part.lang}
-                </div>
-              )}
-              <pre className="pb-mono overflow-x-auto px-3 py-2.5 text-[11.5px] leading-relaxed text-[var(--code-text)]">
-                {part.content}
-              </pre>
-            </div>
-          ) : (
-            <p
-              key={index}
-              className="pb-contain mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--ink)] first:mt-0"
-            >
-              {part.content.trim()}
-            </p>
-          ),
-        )}
-      {turn.implementation && (
+      {turn.text && <AgentMarkdown text={turn.text} />}
+      {/* A plain answer needs no verdict block: the proposal mark and a status
+          word would dress a direct reply up as an integration outcome. */}
+      {turn.implementation && turn.implementation.status !== "answer" && (
         <div className="mt-2.5 rounded-[12px] bg-[var(--surface-2)] px-3 py-2.5">
           {/* No pill: its left padding inset the icon from the summary beneath
               it, so the block read as misaligned. Flush row, tone on the word. */}
@@ -242,6 +321,9 @@ function AgentTurn({ turn }) {
           )}
         </div>
       )}
+      {turn.credential && (
+        <CredentialField credential={turn.credential} onSaved={onCredentialSaved} />
+      )}
       <Sources sources={turn.sources} />
     </div>
   );
@@ -250,9 +332,17 @@ function AgentTurn({ turn }) {
 /* An operational console for adding a provider, not a general chatbot. It reads
    the same readiness the rest of Settings reads, but through its own endpoint:
    this agent needs a default LLM and a scraping provider specifically, which is
-   a narrower question than "can this deployment run a benchmark". Credentials
-   are never edited here; the Services card above owns that. */
-export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }) {
+   a narrower question than "can this deployment run a benchmark".
+
+   The one credential this panel writes is the one it just resolved a name for,
+   in the turn that resolved it. Everything else about credentials — reading,
+   replacing, removing — stays the Services card's job. */
+export default function IntegrationAgentPanel({
+  className = "",
+  refreshKey = 0,
+  focusRequest = 0,
+  onCredentialSaved,
+}) {
   const [status, setStatus] = useState(null);
   const [statusFailed, setStatusFailed] = useState(false);
   const [turns, setTurns] = useState([]);
@@ -272,6 +362,18 @@ export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }
       .catch(() => { if (alive) setStatusFailed(true); });
     return () => { alive = false; };
   }, [refreshKey]);
+
+  /* Settings' add-a-service form hands anything it cannot offer over to this
+     agent. Landing the caret in the composer is the whole handoff: the panel is
+     a column away on a wide screen and a scroll away on a narrow one, so
+     without this the operator is told to ask and then left to find where. */
+  useEffect(() => {
+    if (!focusRequest) return;
+    const node = inputRef.current;
+    if (!node) return;
+    node.scrollIntoView?.({ block: "center" });
+    node.focus();
+  }, [focusRequest]);
 
   /* The newest turn is the one worth reading, and a reply can be several lines
      long, so the log follows it down rather than leaving the reader at the top. */
@@ -310,6 +412,7 @@ export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }
           text: safeVisibleText(reply?.message),
           sources: Array.isArray(reply?.sources) ? reply.sources : [],
           implementation: reply?.implementation || null,
+          credential: reply?.credential || null,
         },
       ]);
     } catch (failure) {
@@ -364,8 +467,8 @@ export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }
           Integration agent
         </h2>
         <p className="mt-1 max-w-[52ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
-          Point the agent at any LLM provider and get back a working connector proposal, sourced
-          from its own documentation.
+          Ask what this deployment already supports, or point the agent at a provider it does
+          not have yet and get back a connector proposal from that vendor's own documentation.
         </p>
         {/* A gradient hairline rather than a flat border: it separates the
             header from the thread without drawing a hard box around it. */}
@@ -407,12 +510,12 @@ export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }
               <p className="pb-contain text-[15px] font-medium text-[var(--ink)]">
                 {blocked
                   ? "The integration agent needs setup first"
-                  : "Ask about adding an LLM provider"}
+                  : "Ask about a provider"}
               </p>
               <p className="pb-contain mt-1 max-w-[38ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
                 {blocked
                   ? "One default LLM and one web scraping API must be configured first."
-                  : "It reads the provider's own API documentation, proposes a connector, and validates it. Activating one stays your call."}
+                  : "It answers from what ProofBench already implements, and reads the vendor's own documentation when it does not. Activating anything stays your call."}
               </p>
             </div>
 
@@ -467,7 +570,7 @@ export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }
                   </p>
                 ) : (
                   <div className="max-w-[92%]">
-                    <AgentTurn turn={turn} />
+                    <AgentTurn turn={turn} onCredentialSaved={onCredentialSaved} />
                   </div>
                 )}
               </li>
@@ -531,7 +634,7 @@ export default function IntegrationAgentPanel({ className = "", refreshKey = 0 }
               })}
             </ol>
             <p className="mt-2 text-[12px] text-[var(--ink-3)]">
-              {steps.length === 0 ? "Searching provider documentation…" : "Working…"}
+              {steps.length === 0 ? "Thinking…" : "Working…"}
             </p>
           </div>
         )}

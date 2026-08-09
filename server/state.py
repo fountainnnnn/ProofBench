@@ -566,12 +566,14 @@ class SQLiteStore:
         raise RuntimeError("could not allocate a dataset id")
 
     def activate_dataset(self, dataset_id: str, owner: str, *, image_count: int,
-                         total_bytes: int) -> dict:
+                         total_bytes: int, kind: str = "upload") -> dict:
+        if kind not in ("upload", "generated"):
+            raise ValueError("invalid dataset kind")
         with self.transaction(immediate=True) as connection:
             result = connection.execute(
-                "UPDATE datasets SET status='active',kind='upload',image_count=?,total_bytes=?,"
+                "UPDATE datasets SET status='active',kind=?,image_count=?,total_bytes=?,"
                 "reserved_bytes=0 WHERE id=? AND owner=? AND status='reserved'",
-                (max(0, image_count), max(0, total_bytes), dataset_id, owner),
+                (kind, max(0, image_count), max(0, total_bytes), dataset_id, owner),
             )
             if result.rowcount != 1:
                 raise KeyError(dataset_id)
@@ -633,7 +635,7 @@ class SQLiteStore:
     def list_datasets(self, owner: str) -> list[dict]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT id,created_at,kind,image_count,total_bytes FROM datasets "
+                "SELECT id,created_at,kind,image_count,total_bytes,path FROM datasets "
                 "WHERE owner=? AND status='active' "
                 "ORDER BY created_at DESC", (owner,)
             ).fetchall()
@@ -778,9 +780,16 @@ class SQLiteStore:
                 )
             return result.rowcount == 1
 
-    def claim_chat_atomic(self, session_id: str, owner: str, dataset_id: str,
+    def claim_chat_atomic(self, session_id: str, owner: str, dataset_id: str | None,
                           mode: str, message: str, max_concurrent: int,
                           daily_limit: int) -> dict:
+        """Claim the session for one chat turn.
+
+        ``dataset_id`` is optional: a conversation does not need labelled data
+        to happen, and a turn that has none must not acquire any. Binding a
+        fallback dataset here is what made every session look like a document
+        session downstream, because intake reads the session's bound schema.
+        """
         now = utc_now()
         day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0,
                                                        microsecond=0).isoformat().replace("+00:00", "Z")
@@ -794,12 +803,14 @@ class SQLiteStore:
                 raise KeyError(session_id)
             if session["is_running"]:
                 raise BusyError("session already working")
-            dataset = connection.execute(
-                "SELECT path FROM datasets WHERE id=? AND owner=? AND status='active'",
-                (dataset_id, owner),
-            ).fetchone()
-            if not dataset:
-                raise KeyError(dataset_id)
+            dataset = None
+            if dataset_id is not None:
+                dataset = connection.execute(
+                    "SELECT path FROM datasets WHERE id=? AND owner=? AND status='active'",
+                    (dataset_id, owner),
+                ).fetchone()
+                if not dataset:
+                    raise KeyError(dataset_id)
             active = connection.execute(
                 "SELECT COUNT(*) FROM sessions WHERE owner=? AND is_running=1 AND active_kind='chat'",
                 (owner,),
@@ -816,13 +827,24 @@ class SQLiteStore:
                 "VALUES(?,?,?,?,'running',?,?,?)",
                 (job_id, session_id, owner, dataset_id, now, self.worker_id, expires),
             )
-            connection.execute(
-                "UPDATE sessions SET is_running=1,active_kind='chat',active_job_id=?,"
-                "active_worker_id=?,active_lease_expires_at=?,latest_job_id=?,cancel_requested=0,"
-                "dataset_id=?,dataset_path=?,mode=?,updated_at=? WHERE id=?",
-                (job_id, self.worker_id, expires, job_id, dataset_id, dataset["path"], mode,
-                 now, session_id),
-            )
+            # A turn with no dataset leaves the session's binding untouched
+            # rather than clearing it: the user may have attached data on an
+            # earlier turn, and one dataset-less message must not detach it.
+            if dataset is not None:
+                connection.execute(
+                    "UPDATE sessions SET is_running=1,active_kind='chat',active_job_id=?,"
+                    "active_worker_id=?,active_lease_expires_at=?,latest_job_id=?,cancel_requested=0,"
+                    "dataset_id=?,dataset_path=?,mode=?,updated_at=? WHERE id=?",
+                    (job_id, self.worker_id, expires, job_id, dataset_id, dataset["path"], mode,
+                     now, session_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE sessions SET is_running=1,active_kind='chat',active_job_id=?,"
+                    "active_worker_id=?,active_lease_expires_at=?,latest_job_id=?,cancel_requested=0,"
+                    "mode=?,updated_at=? WHERE id=?",
+                    (job_id, self.worker_id, expires, job_id, mode, now, session_id),
+                )
             connection.execute(
                 "INSERT INTO messages(session_id,role,text,created_at) VALUES(?,?,?,?)",
                 (session_id, "user", message, now),

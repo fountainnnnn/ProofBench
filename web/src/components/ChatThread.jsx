@@ -10,6 +10,7 @@ import { safeVisibleText } from "../displaySafety.js";
 import { phaseLabel } from "../phaseLabel.js";
 import StatusIcon from "./StatusIcon.jsx";
 import { safeHttpUrl } from "../linkSafety.js";
+import SafeMarkdownLink from "./SafeMarkdownLink.jsx";
 import {
   canRenderMetrics,
   isHistoricalSynthetic,
@@ -22,11 +23,6 @@ const TERMINAL_PHASES = ["DONE", "FAILED", "STOPPED"];
    run, so a results placeholder there promises the wrong thing: the next card
    to appear is the spec, not a score. */
 const PRE_RUN_PHASES = ["INTAKE", "SPEC_CONFIRM"];
-
-function SafeMarkdownLink({ href, children }) {
-  const safeHref = safeHttpUrl(href);
-  return safeHref ? <a href={safeHref} target="_blank" rel="noreferrer">{children}</a> : <span>{children}</span>;
-}
 
 /* The orchestrator proposes a specification as a fenced JSON block. Printed raw
    it is a wall of braces the reader has to parse by eye, so the shape it always
@@ -255,10 +251,15 @@ function Disclosure({ title, summary, defaultOpen = false, children }) {
   );
 }
 
+/* Three prompts spanning what ProofBench actually does, because the examples
+   teach the product: one measured run over documents, one measured run over a
+   task that has nothing to do with documents, and one comparison that needs no
+   data at all. All three OCR before, which taught every new user that this was
+   an OCR tool and that a benchmark needs a dataset. */
 const EXAMPLE_PROMPTS = [
   "Compare Tesseract, PaddleOCR, and EasyOCR on my invoices",
-  "Which document extraction API should we adopt, given this labelled set",
-  "Rank open source OCR tools by exact match accuracy and latency",
+  "Which speech-to-text API transcribes support calls most accurately",
+  "Which error tracking tools fit a self-hosted Django stack, and what do they cost",
 ];
 
 export default function ChatThread({ statusMessage = "", statusFailed = false, messages, trace, sandboxLogs, phaseState, typing, spec, results, report, runId, onRun, onStop, running, stopping, mode, datasetId, provenance, specProvenance, resultsProvenance, executionMode, interactionDisabled = false, onPickPrompt, conversationLive = false, completedFooter = false }) {
@@ -442,9 +443,13 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
               What should we prove today?
             </h2>
             <p className="mx-auto mt-3 max-w-[52ch] text-[14px] leading-relaxed text-[var(--ink-2)]">
+              {/* Never ask for a dataset here. Some questions are settled by
+                  comparing what the tools are, and the ones that need measuring
+                  build their own examples — so this describes what to say, not
+                  what to bring. */}
               {datasetId
-                ? "Name the tools to compare. Your labelled dataset is attached and ready to score against."
-                : "Name the tools to compare and attach a labelled dataset, or start from the sample labelled dataset."}
+                ? "Name the tools to compare. Your labelled data is attached and ready to score against."
+                : "Name the tools to compare and what you need to know. Bring your own labelled data if you have it."}
             </p>
             <div className="pb-glass mx-auto mt-6 w-full max-w-[560px] divide-y divide-[var(--line)] overflow-hidden rounded-[24px] text-left shadow-[var(--shadow-card)]">
               {EXAMPLE_PROMPTS.map((example, index) => (

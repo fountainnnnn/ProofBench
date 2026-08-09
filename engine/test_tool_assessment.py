@@ -277,21 +277,46 @@ def test_real_intake_extracts_nested_candidate_spec(tmp_path):
     assert spec["candidates"][0]["name"] == "alpha"
 
 
-def test_intake_builds_an_extraction_spec_when_labelled_data_is_bound(tmp_path):
-    """An OCR objective plus ground truth is a scored run, not a docs rating."""
+def test_intake_builds_a_measured_spec_when_labelled_data_is_bound(tmp_path):
+    """A measurable objective plus ground truth is a scored run, not a docs rating."""
     text = ('```json\n{"category":"Invoice OCR",'
             '"fields":["invoice_number","date","vendor","total"],'
             '"candidates":[{"name":"tesseract","kind":"local_tool","use_fallback":true}]}\n```')
 
     spec = _intake(dataset_available=True, run_dir=str(tmp_path))._extract_spec(text)
     assert spec["benchmark_type"] == "extraction"
-    assert spec["fields"] == ["invoice_number", "date", "vendor", "total"]
+    # Bare names normalize to typed fields carrying their legacy typing, so the
+    # evaluator compares dates as dates and totals as amounts, as it always did.
+    assert spec["fields"] == [
+        {"name": "invoice_number", "type": "text"},
+        {"name": "date", "type": "date"},
+        {"name": "vendor", "type": "text"},
+        {"name": "total", "type": "currency"},
+    ]
+    # Bound data needs nothing built.
+    assert "dataset" not in spec
 
-    # Without labelled data there is nothing to score. The old downgrade would
-    # have emitted an assessment missing its mandatory docs URL, which the run
-    # endpoint correctly rejected; intake must now withhold that invalid spec.
-    downgraded = _intake(dataset_available=False, run_dir=str(tmp_path))._extract_spec(text)
-    assert downgraded is None
+
+def test_measured_spec_survives_without_bound_data_and_asks_for_examples(tmp_path):
+    """No attached data is not a reason to answer a different question.
+
+    The spec keeps its measured kind and its declared schema, and records that
+    its labelled examples are still to be built. The old behaviour rewrote it to
+    an assessment, which silently answered "which tools exist" when the user had
+    asked "which one is more accurate".
+    """
+    text = ('```json\n{"benchmark_type":"extraction","category":"Parking ticket reading",'
+            '"fields":[{"name":"plate_number","type":"text"},'
+            '{"name":"fine_amount","type":"currency"}],'
+            '"candidates":[{"name":"tesseract","kind":"local_tool","use_fallback":true}]}\n```')
+
+    spec = _intake(dataset_available=False, run_dir=str(tmp_path))._extract_spec(text)
+    assert spec["benchmark_type"] == "extraction"
+    assert spec["fields"] == [
+        {"name": "plate_number", "type": "text"},
+        {"name": "fine_amount", "type": "currency"},
+    ]
+    assert spec["dataset"] == {"source": "generate"}
 
 
 def test_assessment_intake_normalizes_pricing_placeholders_and_rejects_bad_docs(tmp_path):
@@ -314,18 +339,30 @@ def test_assessment_intake_normalizes_pricing_placeholders_and_rejects_bad_docs(
     assert invalid is None
 
 
-def test_extraction_intake_prompt_appears_only_with_labelled_data():
+def test_both_benchmark_kinds_are_offered_whether_or_not_data_is_bound():
+    """Which benchmark a question deserves is a property of the question.
+
+    Bound data changes only where the labelled examples come from: it pins the
+    spec to columns that already have ground truth, and its absence lets intake
+    declare the schema so the run can build examples for it.
+    """
     from engine.agent import intake_system
 
-    assert "extraction" in intake_system(True)
-    assert '"benchmark_type": "extraction"' in intake_system(True)
-    assert '"benchmark_type": "extraction"' not in intake_system(False)
+    for prompt in (intake_system(True), intake_system(False)):
+        assert '"benchmark_type": "extraction"' in prompt
+        assert '"benchmark_type": "tool_assessment"' in prompt
+
+    bound = intake_system(True, [{"name": "plate_number", "type": "text"},
+                                 {"name": "fine_amount", "type": "currency"}])
+    assert "plate_number" in bound
+    assert "MUST be exactly the labelled columns" in bound
+    assert "ProofBench builds them" in intake_system(False)
 
 
 def test_real_assessments_use_doubleword_autobatcher_and_configured_model(monkeypatch):
     captured = {}
 
-    async def fake_batch(requests, model=None, env=None):
+    async def fake_batch(provider, requests, model=None, env=None):
         captured.update({"requests": requests, "model": model, "env": env})
         content = json.dumps(plan())
         return [
@@ -335,7 +372,7 @@ def test_real_assessments_use_doubleword_autobatcher_and_configured_model(monkey
             for _ in requests
         ]
 
-    monkeypatch.setattr(llm_clients, "batch_chat_completions", fake_batch)
+    monkeypatch.setattr(llm_clients, "_concurrent_chat_completions", fake_batch)
     results = assess_documentation_batch(
         [
             {"name": "alpha", "docs_text": "Alpha SDK docs"},
@@ -362,7 +399,7 @@ def test_advertised_credentials_are_exactly_the_verification_entitlements(monkey
     """A plan may only rely on variables the verification sandbox will supply."""
     captured = {}
 
-    async def fake_batch(requests, model=None, env=None):
+    async def fake_batch(provider, requests, model=None, env=None):
         captured["requests"] = requests
         content = json.dumps(plan())
         return [
@@ -370,7 +407,7 @@ def test_advertised_credentials_are_exactly_the_verification_entitlements(monkey
             for _ in requests
         ]
 
-    monkeypatch.setattr(llm_clients, "batch_chat_completions", fake_batch)
+    monkeypatch.setattr(llm_clients, "_concurrent_chat_completions", fake_batch)
     env = {
         "DOUBLEWORD_API_KEY": "hidden-test-value",
         "OPENAI_API_KEY": "hidden-test-value",
@@ -564,7 +601,7 @@ def test_unavailable_result_withholds_pricing_too():
 def test_pricing_page_reaches_the_prompt_only_when_one_was_scraped(monkeypatch):
     captured = {}
 
-    async def fake_batch(requests, model=None, env=None):
+    async def fake_batch(provider, requests, model=None, env=None):
         captured["requests"] = requests
         content = json.dumps(plan())
         return [
@@ -572,14 +609,15 @@ def test_pricing_page_reaches_the_prompt_only_when_one_was_scraped(monkeypatch):
             for _ in requests
         ]
 
-    monkeypatch.setattr(llm_clients, "batch_chat_completions", fake_batch)
+    monkeypatch.setattr(llm_clients, "_concurrent_chat_completions", fake_batch)
     assess_documentation_batch(
         [
             {"name": "alpha", "docs_text": "Alpha docs", "pricing_text": "Free tier, $9/seat"},
             {"name": "beta", "docs_text": "Beta docs"},
         ],
         "compare integrations",
-        env={"DOUBLEWORD_API_KEY": "hidden-test-value"},
+        env={"DOUBLEWORD_API_KEY": "hidden-test-value",
+             },
         constraints={"stack": ["Python"], "budget": "under $500/month"},
     )
 
@@ -745,3 +783,34 @@ def test_assessment_rows_carry_the_role_the_spec_gave_them(monkeypatch):
         assert metrics["index_library"]["role"] == "build_component"
     finally:
         shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def test_assessments_never_use_a_batch_queue(monkeypatch):
+    """Latency belongs to a person waiting, so the queue is never used.
+
+    Batch endpoints trade latency for throughput: measured 257s through
+    Doubleword's batch queue for a two-candidate assessment against 4.3s through
+    concurrent completions on the same provider and model. There is no size at
+    which a run should wait in a queue, so there is no switch either.
+    """
+    used = []
+
+    async def fake_batch(requests, model=None, env=None):
+        used.append("batch")
+        return []
+
+    async def fake_concurrent(provider, requests, model, env=None):
+        used.append(f"concurrent:{provider}")
+        return [SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=json.dumps(plan())))]) for _ in requests]
+
+    monkeypatch.setattr(llm_clients, "batch_chat_completions", fake_batch, raising=False)
+    monkeypatch.setattr(llm_clients, "_concurrent_chat_completions", fake_concurrent)
+    env = {"DOUBLEWORD_API_KEY": "hidden-test-value"}
+
+    for count in (2, 64):
+        used.clear()
+        assess_documentation_batch(
+            [{"name": f"c{i}", "docs_text": "docs"} for i in range(count)],
+            "compare integrations", env=env)
+        assert used == ["concurrent:doubleword"], f"{count} requests must not be queued"

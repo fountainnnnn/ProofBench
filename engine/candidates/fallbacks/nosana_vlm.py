@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
+from engine.candidates.base import (
+    Candidate,
+    RESULT_JSON_WRAPPER,
+    SCHEMA_LOADER,
+)
 from engine.candidates.fallbacks._http_security import SECURE_OPENAI_TRANSPORT
 
 
-_ADAPTER_BODY = SECURE_OPENAI_TRANSPORT + r'''
+# The extraction schema is read from pb_schema.json (SCHEMA_LOADER), so this one
+# adapter serves any declared field set, not only the invoice columns.
+_ADAPTER_BODY = SCHEMA_LOADER + "\n\n" + SECURE_OPENAI_TRANSPORT + r'''
 import base64
 import json
 import os
@@ -15,7 +21,8 @@ from pathlib import Path
 from openai import OpenAI
 
 
-FIELDS = ("invoice_number", "date", "vendor", "total")
+def _field_names():
+    return [field["name"] for field in _pb_schema()]
 
 
 def _json_object(content: str) -> dict:
@@ -26,7 +33,8 @@ def _json_object(content: str) -> dict:
     value = json.loads(content[start:end + 1])
     if not isinstance(value, dict):
         raise ValueError("model reply JSON was not an object")
-    return {field: "" if value.get(field) is None else str(value.get(field, "")) for field in FIELDS}
+    return {field: "" if value.get(field) is None else str(value.get(field, ""))
+            for field in _field_names()}
 
 
 def extract(image_path: str) -> dict:
@@ -54,12 +62,14 @@ def extract(image_path: str) -> dict:
         messages=[
             {
                 "role": "system",
-                "content": "Extract invoice fields. Return STRICT JSON only with exactly invoice_number, date, vendor, and total as string fields. Use an empty string when missing.",
+                "content": ("Extract document fields. Return STRICT JSON only with exactly "
+                            "these string fields: " + ", ".join(_field_names())
+                            + ". Use an empty string when missing."),
             },
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Extract the four invoice fields from this image."},
+                    {"type": "text", "text": "Extract the fields " + ", ".join(_field_names()) + " from this image."},
                     {"type": "image_url", "image_url": {"url": "data:" + media_type + ";base64," + encoded}},
                 ],
             },

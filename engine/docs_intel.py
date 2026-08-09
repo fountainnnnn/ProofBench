@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from pathlib import Path
 from time import monotonic
@@ -22,6 +23,11 @@ from typing import Any
 from urllib.parse import urljoin
 
 OXYLABS_ENDPOINT = "https://realtime.oxylabs.io/v1/queries"
+
+# Concurrent page fetches. Scraping is pure network wait, but providers meter
+# per account, so this stays low enough that a batch is served rather than
+# throttled.
+SCRAPE_CONCURRENCY = 4
 
 # Sentinel: "caller did not override the resolver", distinct from an explicit
 # None (which network_security reads as "skip DNS validation").
@@ -375,22 +381,34 @@ def gather_tool_docs(
     result: dict[str, dict[str, str | None]] = {"docs": {}, "pricing": {}}
 
     for candidate in candidates:
-        name = str(candidate.get("name") or "").strip()
-        if not name:
+        if not str(candidate.get("name") or "").strip():
             raise ValueError("each candidate must have a name")
+
+    # One entry per page to fetch. Every candidate's docs and pricing pages are
+    # independent network waits, so fetching them serially cost the sum of all
+    # of them; the writes below still happen in candidate order.
+    jobs = []
+    for candidate in candidates:
+        name = str(candidate.get("name") or "").strip()
         filename = _safe_filename(name)
         docs_url = str(candidate.get("docs_url") or "").strip()
-        docs_path = docs_dir / f"{filename}.md"
-        docs_path.write_text(
-            scrape_page(docs_url, env=env) if docs_url else "", encoding="utf-8"
-        )
-        result["docs"][name] = str(docs_path)
-
+        jobs.append((name, "docs", docs_url, docs_dir / f"{filename}.md"))
         pricing_url = str(candidate.get("pricing_url") or "").strip()
         if pricing_url:
-            pricing_path = docs_dir / f"{filename}_pricing.md"
-            pricing_path.write_text(scrape_page(pricing_url, env=env), encoding="utf-8")
-            result["pricing"][name] = str(pricing_path)
+            jobs.append(
+                (name, "pricing", pricing_url, docs_dir / f"{filename}_pricing.md")
+            )
         else:
             result["pricing"][name] = None
+
+    def fetch(job):
+        _, _, url, _ = job
+        return scrape_page(url, env=env) if url else ""
+
+    with ThreadPoolExecutor(max_workers=min(SCRAPE_CONCURRENCY, len(jobs) or 1)) as ex:
+        bodies = list(ex.map(fetch, jobs))
+
+    for (name, kind, _url, path), body in zip(jobs, bodies):
+        path.write_text(body, encoding="utf-8")
+        result[kind][name] = str(path)
     return result

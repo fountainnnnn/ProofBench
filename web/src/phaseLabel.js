@@ -23,6 +23,11 @@ export function phaseLabel(phase) {
    wherever it appears (trace badge, session row, run header, candidate list). */
 const PHASE_TONES = {
   done: "ok",
+  provisioning: "running",
+  "docs intel": "running",
+  "adapter gen": "running",
+  evaluating: "running",
+  reporting: "running",
   failed: "danger",
   stopped: "danger",
   error: "danger",

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from engine.candidates.base import Candidate, RESULT_JSON_WRAPPER
+from engine.candidates.base import (
+    Candidate,
+    RESULT_JSON_WRAPPER,
+    SCHEMA_LOADER,
+    TEXT_FIELDS_EXTRACTOR,
+)
 
-
+# Field parsing lives in the shared, schema-driven TEXT_FIELDS_EXTRACTOR; this
+# body contributes only what is PaddleOCR's own — reading text off the image.
 _ADAPTER_BODY = r'''
 import os
-import re
 from contextlib import redirect_stderr, redirect_stdout
 
 # Avoid a network source probe on every short-lived benchmark invocation. Model
@@ -32,52 +37,6 @@ def _pipeline():
                 use_textline_orientation=False,
             )
     return _PIPELINE
-
-
-def _extract_fields(text: str) -> dict:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    invoice_number = ""
-    invoice_patterns = (
-        r"\b(?:invoice\s*(?:number|no\.?|#)?|inv(?:oice)?\s*(?:number|no\.?|#)?)\s*[:#-]?\s*([A-Z]{0,6}[-/]?\d{3,})\b",
-        r"\b(INV[-/]?\d{3,})\b",
-    )
-    for pattern in invoice_patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            invoice_number = match.group(1).strip()
-            break
-
-    date_value = ""
-    date_patterns = (
-        r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b",
-        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
-        r"\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}\b",
-    )
-    for pattern in date_patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            date_value = match.group(0).strip()
-            break
-
-    total = ""
-    amount_pattern = re.compile(r"(?:SGD\s*|\$\s*)?-?\d[\d,]*(?:\.\d{1,2})?", re.IGNORECASE)
-    total_lines = [
-        line for line in lines
-        if re.search(r"\b(?:grand\s+total|total|amount\s+due)\b", line, re.IGNORECASE)
-        and not re.search(r"\bsubtotal\b", line, re.IGNORECASE)
-    ]
-    for line in reversed(total_lines):
-        amounts = amount_pattern.findall(line)
-        if amounts:
-            total = amounts[-1].strip()
-            break
-
-    return {
-        "invoice_number": invoice_number,
-        "date": date_value,
-        "vendor": lines[0] if lines else "",
-        "total": total,
-    }
 
 
 def extract(image_path: str) -> dict:
@@ -108,8 +67,16 @@ def candidate() -> Candidate:
             "apt-get update && apt-get install -y libgl1 libglib2.0-0 libgomp1",
             "python -m pip install paddlepaddle==3.2.0",
             "python -m pip install paddleocr",
+            # Same reason as EasyOCR: PaddleOCR downloads its pipeline models on
+            # first predict(), so the fetch is done once here rather than inside
+            # the first inference of every run.
+            ("python -c \"from paddleocr import PaddleOCR; "
+             "PaddleOCR(lang='en', use_doc_orientation_classify=False, "
+             "use_doc_unwarping=False, use_textline_orientation=False)\""),
         ],
-        adapter_code=_ADAPTER_BODY.strip() + "\n\n" + RESULT_JSON_WRAPPER,
+        adapter_code="\n\n".join((
+            SCHEMA_LOADER, TEXT_FIELDS_EXTRACTOR,
+            _ADAPTER_BODY.strip(), RESULT_JSON_WRAPPER,
+        )),
         setup_complexity=3,
-        batch_safe=False,
     )

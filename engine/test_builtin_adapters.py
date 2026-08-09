@@ -60,17 +60,29 @@ def test_paddleocr_builtin_installs_runtime_and_uses_supported_pipeline_api():
     assert "PaddleOCR(" in candidate.adapter_code
     assert ".predict(image_path)" in candidate.adapter_code
     assert "rec_texts" in candidate.adapter_code
-    assert candidate.batch_safe is False
+    # Its models are fetched at build time, so the first inference of a run does
+    # not pay for the download.
+    assert any("PaddleOCR(" in command for command in candidate.build_commands)
 
 
-def test_easyocr_installs_cpu_torch_before_its_runtime_dependencies():
+def test_easyocr_installs_pinned_cuda_torch_before_its_runtime_dependencies():
+    """Torch comes from an explicit index, and the adapter uses the GPU it finds.
+
+    The index is pinned either way: PyPI's default resolution is what used to
+    drag the wrong multi-gigabyte wheels into a sandbox. It now points at CUDA
+    because the sandbox carries a GPU, and the adapter detects the device at
+    runtime rather than hardcoding one, so a CPU-only sandbox still works.
+    """
     candidate = load_builtin_candidate("easyocr")
 
-    assert "download.pytorch.org/whl/cpu" in candidate.build_commands[0]
+    assert "download.pytorch.org/whl/cu124" in candidate.build_commands[0]
     assert "torch torchvision" in candidate.build_commands[0]
     assert "easyocr" in candidate.build_commands[1]
-    assert "gpu=False" in candidate.adapter_code
+    assert "torch.cuda.is_available()" in candidate.adapter_code
+    assert "gpu=_use_gpu" in candidate.adapter_code
     assert "_READER" in candidate.adapter_code
+    # Weights are still fetched at build time, never inside a run.
+    assert any("easyocr.Reader" in command for command in candidate.build_commands)
 
 
 def test_missing_required_credential_is_explicit_not_a_silent_fallback():
@@ -176,7 +188,7 @@ def test_overwriting_a_trusted_adapter_revokes_it_and_taints_no_successor(
 
     generated_serial = iter(range(1, 1000))
 
-    def fake_generate(tool_name, _docs, env=None):
+    def fake_generate(tool_name, _docs, env=None, fields=None):
         return Candidate(
             tool_name, f"Generated {next(generated_serial)}", "", "hosted_api", [],
             'import os\nprint(os.environ.get("DOUBLEWORD_API_KEY", ""))',

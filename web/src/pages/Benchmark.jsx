@@ -89,9 +89,10 @@ export default function Benchmark() {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [state, setState] = useState(() => emptyState(0));
-  const [dataset, setDataset] = useState(() => searchParams.get("dataset")
-    ? null
-    : { kind: "synthetic", label: "Sample labelled dataset" });
+  // No phantom default: a dataset chip renders only for a dataset that
+  // actually exists (has a server id). Until then the composer shows its
+  // attach affordances, which is the honest account of the session's state.
+  const [dataset, setDataset] = useState(null);
   const [activeRunId, setActiveRunId] = useState(null);
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -807,6 +808,41 @@ export default function Benchmark() {
     }
   };
 
+  // A dataset picked from the library is already on the server: attach it to
+  // this view and the URL exactly as a fresh upload would be, minus the upload.
+  const onPickExisting = (record) => {
+    if (runningRef.current || !record?.id) return;
+    const value = {
+      id: record.id,
+      dataset_id: record.id,
+      kind: record.kind,
+      title: record.title || "",
+      imageCount: record.image_count ?? null,
+    };
+    datasetRef.current = value;
+    setDataset(value);
+    setDatasetError("");
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("dataset", record.id);
+      return next;
+    });
+  };
+
+  // The cross on the dataset chip: back to "no dataset yet", including the
+  // URL, so the composer offers its attach paths again.
+  const onClearDataset = () => {
+    if (runningRef.current) return;
+    datasetRef.current = null;
+    setDataset(null);
+    setDatasetError("");
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("dataset");
+      return next;
+    });
+  };
+
   const onUpload = async (opts) => {
     if (runningRef.current || !acquireOperation(uploadBusyRef)) return;
     const generation = uploadGenerationRef.current + 1;
@@ -971,11 +1007,6 @@ export default function Benchmark() {
     if (activeId && state.provenance) return;
     if (!requested) {
       if (datasetError) setDatasetError("");
-      if (!dataset) {
-        const fallback = { kind: "synthetic", label: "Sample labelled dataset" };
-        datasetRef.current = fallback;
-        setDataset(fallback);
-      }
       return;
     }
     if (dataset?.id === requested) return;
@@ -1069,9 +1100,18 @@ export default function Benchmark() {
   // Display-only: a restored run reports its own provenance, everything this
   // client can newly write is real. There is no mode the user can change.
   const provenanceMode = state.provenance?.mode || RUN_MODE;
+  // During PROVISIONING no sandbox has logged a line yet, but the run has
+  // already named its candidates; counting them keeps the Execution button
+  // (and its panel) reachable through the slowest, least-informative phase.
+  const liveCandidateNames =
+    running && state.phaseState && !["DONE", "FAILED", "STOPPED"].includes(
+      String(state.phaseState.phase || "").toUpperCase())
+      ? Object.keys(state.phaseState.candidates || {})
+      : [];
   const sandboxCount = new Set([
     ...Object.keys(state.sandboxLogs),
     ...Object.keys(state.sandboxFiles),
+    ...liveCandidateNames,
   ]).size;
   const openSandboxPanel = () => {
     sandboxPanelDismissedRef.current = false;
@@ -1233,6 +1273,7 @@ export default function Benchmark() {
               stopping={stopping}
               mode={provenanceMode}
               datasetId={dataset?.id}
+              datasetLabel={dataset?.title || ""}
               provenance={state.provenance}
               specProvenance={state.specProvenance}
               resultsProvenance={state.resultsProvenance}
@@ -1259,6 +1300,8 @@ export default function Benchmark() {
           <Composer
             onSend={onSend}
             onUpload={onUpload}
+            onPickExisting={onPickExisting}
+            onClearDataset={onClearDataset}
             dataset={dataset}
             provenanceLocked={provenanceLocked || uploadingDataset}
             disabled={uploadingDataset || Boolean(datasetError)}

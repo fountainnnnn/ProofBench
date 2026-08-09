@@ -79,9 +79,11 @@ GET    /api/datasets
 DELETE /api/datasets/{dataset_id}
 GET    /api/runs/{run_id}/results
 GET    /api/runs/{run_id}/report.pdf
-GET    /api/settings/provider-keys       secret-free status + write policy
-POST   /api/settings/provider-keys       insecure-dev dual opt-in only
-DELETE /api/settings/provider-keys/{env} insecure-dev dual opt-in only
+GET    /api/settings/provider-keys       secret-free status listing
+POST   /api/settings/provider-keys       store one tenant-scoped credential
+DELETE /api/settings/provider-keys/{env} remove one tenant-scoped credential
+POST   /api/settings/setting-options     researched values for one non-secret
+                                         provider setting (never a credential)
 GET    /api/settings/scrapers            ordered provider chain + readiness
 PUT    /api/settings/scrapers            persist tenant-scoped provider order
 GET    /api/settings/integration-agent   mandatory LLM + scraper readiness

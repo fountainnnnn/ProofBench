@@ -3,7 +3,7 @@ import { safeHttpUrl } from "../linkSafety.js";
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
 import { BTN_DANGER, BTN_PRIMARY, PANEL } from "./ui.jsx";
 
-export default function SpecCard({ spec, datasetId, onRun, onStop, running, stopping, interactionDisabled = false }) {
+export default function SpecCard({ spec, datasetId, onRun, onStop, running, stopping, interactionDisabled = false , datasetLabel = ""}) {
   const safeSpec = useMemo(() => sanitizeForDisplay(spec || {}), [spec]);
   const [candidates, setCandidates] = useState([]);
 
@@ -15,8 +15,18 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
     setCandidates((current) => current.filter((candidate) => candidate.name !== name));
   };
 
+  /* A measured spec with no data bound is not missing anything: it carries
+     source="generate", and the run builds labelled examples for its own schema
+     before scoring. Saying "None selected" read as an unmet precondition. */
   const dataset = datasetId || safeSpec?.dataset?.dataset_id ||
-    (safeSpec?.dataset?.path ? "Attached dataset" : "None selected");
+    (safeSpec?.dataset?.path ? "Attached dataset" : null) ||
+    (safeSpec?.dataset?.source === "generate" ? "Built at run start" : "None selected");
+  // A field arrives as a bare name or a typed {name, type} object; the card
+  // shows the name (with its type when it carries one), never raw JSON.
+  const fieldEntries = (safeSpec?.fields || []).map((field) =>
+    typeof field === "object" && field !== null
+      ? { name: String(field.name || ""), type: String(field.type || "") }
+      : { name: String(field), type: "" });
   const isAssessment = safeSpec?.benchmark_type === "tool_assessment";
 
   return (
@@ -90,9 +100,12 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
           <div className="mt-4">
             <div className="pb-eyebrow">Fields</div>
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-              {safeSpec.fields.map((field, index) => (
-                <span key={`${safeVisibleText(field)}-${index}`} className="pb-mono pb-contain text-[12px] text-[var(--ink-2)]">
-                  {safeVisibleText(field)}
+              {fieldEntries.map((field, index) => (
+                <span key={`${field.name}-${index}`} className="pb-mono pb-contain text-[12px] text-[var(--ink-2)]">
+                  {safeVisibleText(field.name)}
+                  {field.type && field.type !== "text" && (
+                    <span className="ml-1 text-[10px] text-[var(--ink-3)]">{safeVisibleText(field.type)}</span>
+                  )}
                 </span>
               ))}
             </div>
@@ -101,7 +114,11 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
 
         {!isAssessment && (
           <div className="mt-4 text-[12px] text-[var(--ink-3)]">
-            Dataset <span className="pb-mono pb-contain text-[var(--ink-2)]">{safeVisibleText(dataset)}</span>
+            Dataset{" "}
+            {datasetLabel && (
+              <span className="text-[var(--ink-2)]">{safeVisibleText(datasetLabel)} </span>
+            )}
+            <span className="pb-mono pb-contain text-[var(--ink-2)]">{safeVisibleText(dataset)}</span>
           </div>
         )}
       </div>

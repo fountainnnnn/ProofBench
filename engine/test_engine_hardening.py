@@ -179,6 +179,10 @@ def test_destroy_all_cleans_leased_and_prewarmed_sandboxes(monkeypatch):
             pool._tracked[id(sandbox)] = sandbox
             return sandbox
 
+    # The pool clamps its size to the account's concurrent-memory budget, so
+    # this asserts pool semantics rather than whatever budget the operator's
+    # .env happens to set.
+    monkeypatch.delenv("PROOFBENCH_SANDBOX_MEMORY_BUDGET_GIB", raising=False)
     pool = SandboxPool(size=3)
     monkeypatch.setattr(pool, "_create_one", create)
     pool.start()
@@ -1319,7 +1323,7 @@ def test_clients_and_tools_use_immutable_orchestrator_runtime_snapshot(
     monkeypatch.setattr(
         adapter_gen,
         "generate_adapter",
-        lambda name, _docs, env=None: observed.append(env["SNAPSHOT_MARKER"])
+        lambda name, _docs, env=None, fields=None: observed.append(env["SNAPSHOT_MARKER"])
         or Candidate(name, name, "", "local_tool", [], "pass"),
     )
     monkeypatch.setattr(
@@ -1802,11 +1806,13 @@ def test_upload_sends_only_confined_dataset_files(tmp_path, monkeypatch):
     orchestrator._upload_dataset(SimpleNamespace(id="h", label="cand"))
 
     images = dataset.resolve() / "images"
-    assert uploaded == [
+    # The run's schema travels with the dataset so adapters can read it.
+    assert uploaded[:3] == [
         (str(images / "inv_001.png"), "images/inv_001.png"),
         (str(images / "inv_002.jpg"), "images/inv_002.jpg"),
         (str((dataset / "ground_truth.csv").resolve()), "ground_truth.csv"),
     ]
+    assert [target for _source, target in uploaded[3:]] == ["pb_schema.json"]
 
 
 def test_upload_refuses_a_dataset_other_than_the_prepared_root(tmp_path, monkeypatch):
@@ -1911,7 +1917,7 @@ def test_scripted_extraction_generates_non_builtin_adapter_once_before_execution
     monkeypatch.setattr(docs_intel, "scrape_page",
                         lambda url, env=None: calls.append(("docs", url)) or "official docs")
     monkeypatch.setattr(adapter_gen, "generate_adapter",
-                        lambda name, docs, env=None: calls.append(("adapter", name, docs)) or
+                        lambda name, docs, env=None, fields=None: calls.append(("adapter", name, docs)) or
                         Candidate(name, name, "", "local_tool", [], "def extract(_): return {}"))
 
     orchestrator._prepare_generated_adapters([{
@@ -2350,7 +2356,7 @@ def test_repair_feeds_each_new_error_back_and_stops_once_it_passes(tmp_path, mon
 
     seen_errors: list[str] = []
 
-    def fake_repair_adapter(code, error_output, env=None):
+    def fake_repair_adapter(code, error_output, env=None, fields=None):
         seen_errors.append(error_output)
         return "def extract(image_path):\n    return {}\n" + RESULT_JSON_WRAPPER
 
@@ -2378,7 +2384,7 @@ def test_repair_gives_up_after_the_bounded_number_of_attempts(tmp_path, monkeypa
 
     attempts = {"n": 0}
 
-    def fake_repair_adapter(code, error_output, env=None):
+    def fake_repair_adapter(code, error_output, env=None, fields=None):
         attempts["n"] += 1
         return "def extract(image_path):\n    raise KeyError('still boom')\n" + RESULT_JSON_WRAPPER
 

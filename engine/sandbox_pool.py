@@ -7,6 +7,7 @@ proven clean enough to cross candidate or tenant boundaries.
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import sqlite3
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+LOGGER = logging.getLogger("proofbench.sandbox_pool")
 _LEDGER_LOCK = threading.RLock()
 _PROCESS_WORKER_ID = os.environ.get(
     "PROOFBENCH_WORKER_ID", f"pid-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -146,6 +148,25 @@ def _ledger_timestamp(value) -> float:
         return parsed.timestamp()
 
 
+def resolve_gpu_type(name: str):
+    """The SDK's GpuType member for a configured name, or None to let it pick.
+
+    The SDK rejects a bare string, so a name that does not match a member is
+    dropped rather than passed through as one.
+    """
+    if not name:
+        return None
+    try:
+        from daytona.common.sandbox import GpuType
+    except Exception:
+        return None
+    wanted = str(name).replace("_", "-").upper()
+    for member in GpuType:
+        if str(getattr(member, "value", "")).replace("_", "-").upper() == wanted:
+            return member
+    return None
+
+
 def _text(resp) -> str:
     """Best-effort stdout text out of a Daytona ExecuteResponse."""
     for attr in ("result", "stdout", "output"):
@@ -176,6 +197,7 @@ class SandboxPool:
         orphan_min_age_seconds: float = 300,
         clock=None,
     ):
+        self.max_concurrent = 0  # set below, once the memory shape is known
         self.size = size
         self.owner_key = str(owner_key)
         self.worker_id = str(worker_id or _PROCESS_WORKER_ID)
@@ -198,19 +220,64 @@ class SandboxPool:
         self.image = os.environ.get("DAYTONA_SANDBOX_IMAGE", "python:3.12-slim").strip()
         try:
             configured_memory = int(
-                os.environ.get("PROOFBENCH_SANDBOX_MEMORY_GIB", "4")
+                os.environ.get("PROOFBENCH_SANDBOX_MEMORY_GIB", "8")
             )
         except ValueError:
-            configured_memory = 4
+            configured_memory = 8
         try:
-            configured_cpu = int(os.environ.get("PROOFBENCH_SANDBOX_CPU", "2"))
+            configured_cpu = int(os.environ.get("PROOFBENCH_SANDBOX_CPU", "4"))
         except ValueError:
-            configured_cpu = 2
-        # EasyOCR's CPU runtime is killed by Daytona's smallest memory shape
-        # while loading its detector. Four GiB is the supported baseline; the
-        # bounded override lets an operator choose a larger account shape.
+            configured_cpu = 4
+        # Documents are sharded across processes inside a sandbox, so the shape
+        # decides how much of a dataset runs at once: each worker holds its own
+        # copy of the candidate's model. Four CPUs and 8GiB is the baseline that
+        # lets a local OCR runtime use all of them without being killed.
         self.memory_gib = min(64, max(4, configured_memory))
         self.cpu = min(16, max(2, configured_cpu))
+        # A GPU is supported but off, and the reason is measured, not assumed.
+        #
+        # Daytona's snapshot builders have no GPU runners ("No available runners
+        # with GPU type: RTX-4090", same for H100 and for an unpinned request),
+        # and a sandbox created from a snapshot cannot override its resources.
+        # So an accelerator can only be had by building the candidate's image at
+        # sandbox-creation time, which costs 62s+ per sandbox EVERY run and is
+        # not cached between runs.
+        #
+        # That trade loses. EasyOCR is the candidate a GPU helps most: 12.5s per
+        # document on CPU against 0.60s on an RTX-4090, so 15 documents go from
+        # ~187s to ~14s. But the prebuilt snapshot starts in ~1s while the GPU
+        # path pays a fresh image build first, and for the lighter candidates
+        # (tesseract 13s, openai_vision 15s of total work) the build alone costs
+        # more than the whole candidate.
+        #
+        # Turn this on when the provider offers GPU snapshot runners, or when a
+        # prebuilt image can be pulled from a registry instead of built. The
+        # adapters already detect their device at runtime, so nothing else has
+        # to change.
+        self.gpu = max(0, int(os.environ.get("PROOFBENCH_SANDBOX_GPU", "0") or 0))
+        self.gpu_type = str(
+            os.environ.get("PROOFBENCH_SANDBOX_GPU_TYPE", "RTX-4090") or ""
+        ).strip()
+        # Providers cap total concurrent memory per account, not sandbox count.
+        # Warming more sandboxes than that budget allows fails the excess with
+        # "Total memory limit exceeded" and drops otherwise-runnable candidates
+        # to documentation-only scoring, so the pool never asks for more than
+        # the budget divides into.
+        try:
+            budget_gib = int(os.environ.get("PROOFBENCH_SANDBOX_MEMORY_BUDGET_GIB", "0"))
+        except ValueError:
+            budget_gib = 0
+        self.max_concurrent = (
+            max(1, budget_gib // self.memory_gib) if budget_gib > 0 else 0
+        )
+        # The budget must bound EVERY live sandbox, not just the pre-warm size:
+        # acquire() creates on demand, and a pipeline wider than the budget
+        # would otherwise ask the provider for memory it will refuse. Waiting
+        # here turns that refusal into queueing behind a peer's release.
+        self._capacity = (
+            threading.BoundedSemaphore(self.max_concurrent) if self.max_concurrent else None
+        )
+        self.size = size
         default_ledger = (
             Path(__file__).resolve().parent.parent / "runs" / "sandbox_ledger.sqlite3"
         )
@@ -221,6 +288,21 @@ class SandboxPool:
             or os.environ.get("PROOFBENCH_DEPLOYMENT_ID", "local"),
         )
 
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @size.setter
+    def size(self, value: int) -> None:
+        """Clamp every assignment to the account's concurrent-memory budget.
+
+        Callers size the pool from the candidate count, so clamping only in
+        ``__init__`` would be undone by the next assignment.
+        """
+        requested = max(1, int(value))
+        cap = getattr(self, "max_concurrent", 0)
+        self._size = min(requested, cap) if cap else requested
+
     def _client(self):
         if self._daytona is None:
             from daytona import Daytona
@@ -228,7 +310,60 @@ class SandboxPool:
             self._daytona = Daytona()  # configured from DAYTONA_* env vars
         return self._daytona
 
-    def _create_one(self):
+    # Providers meter total concurrent sandbox memory per account, and their
+    # accounting lags deletion: a run started right after another can be told
+    # "Total memory limit exceeded" while the previous run's sandboxes are
+    # still tearing down. That is congestion, not a configuration fault, so a
+    # bounded retry outlasts the teardown instead of failing the candidate.
+    CAPACITY_RETRY_ATTEMPTS = 5
+    CAPACITY_RETRY_SECONDS = 10.0
+
+    # A GPU is an optimisation, never a requirement. Accelerator capacity is
+    # finite and regional: when the provider cannot give this run one, the run
+    # proceeds on CPU rather than failing, and says so once.
+    _GPU_UNAVAILABLE_MARKERS = (
+        "gpu", "accelerator", "no capacity", "not available", "insufficient",
+    )
+
+    def _is_gpu_capacity_error(self, exc) -> bool:
+        message = str(exc).casefold()
+        return bool(self.gpu) and any(
+            marker in message for marker in self._GPU_UNAVAILABLE_MARKERS)
+
+    def _create_with_capacity_retry(self, create_params, register: bool = False):
+        last_error = None
+        for attempt in range(self.CAPACITY_RETRY_ATTEMPTS):
+            if attempt:
+                time.sleep(self.CAPACITY_RETRY_SECONDS)
+            try:
+                sandbox = self._client().create(create_params, timeout=300)
+                return self._register_created(sandbox) if register else sandbox
+            except Exception as exc:  # provider SDK error taxonomy is theirs
+                message = str(exc).lower()
+                if "memory limit exceeded" not in message and "limit exceeded" not in message:
+                    raise
+                last_error = exc
+        raise last_error
+
+    def _resources(self):
+        """The shape every candidate sandbox is created with, GPU included."""
+        from daytona.common.sandbox import Resources
+
+        if not self.gpu:
+            return Resources(cpu=self.cpu, memory=self.memory_gib)
+        return Resources(cpu=self.cpu, memory=self.memory_gib,
+                         gpu=self.gpu, gpu_type=resolve_gpu_type(self.gpu_type))
+
+    def _create_one(self, snapshot: str | None = None):
+        if snapshot:
+            from daytona import CreateSandboxFromSnapshotParams
+
+            # A snapshot already carries the candidate's dependencies and its own
+            # resource shape, so no image build and no Resources override.
+            return self._create_with_capacity_retry(
+                CreateSandboxFromSnapshotParams(snapshot=snapshot, language="python",
+                                                auto_delete_interval=0),
+                register=True)
         try:
             from daytona import CreateSandboxFromImageParams
             from daytona.common.sandbox import Resources
@@ -236,7 +371,10 @@ class SandboxPool:
             create_params = CreateSandboxFromImageParams(
                 image=self.image,
                 language="python",
-                resources=Resources(cpu=self.cpu, memory=self.memory_gib),
+                resources=self._resources(),
+                # A GPU sandbox must be ephemeral. Harmless without one, and
+                # ProofBench destroys every sandbox after its candidate anyway.
+                auto_delete_interval=0,
             )
         except ModuleNotFoundError as exc:
             # Unit tests and compatible injected clients do not need the
@@ -250,13 +388,29 @@ class SandboxPool:
             create_params = {
                 "image": self.image,
                 "language": "python",
-                "resources": {"cpu": self.cpu, "memory": self.memory_gib},
+                "resources": {"cpu": self.cpu, "memory": self.memory_gib,
+                              "gpu": self.gpu},
             }
 
-        sandbox = self._client().create(
-            create_params,
-            timeout=300,
-        )
+        try:
+            sandbox = self._create_with_capacity_retry(create_params)
+        except Exception as exc:
+            if not self._is_gpu_capacity_error(exc):
+                raise
+            # Drop the accelerator for the rest of this pool's life so every
+            # candidate still runs on identical hardware; a run where some
+            # candidates had a GPU and others did not would make the latency
+            # column incomparable, which is worse than being uniformly slower.
+            LOGGER.info("gpu unavailable, continuing on cpu: %s", type(exc).__name__)
+            self.gpu = 0
+            create_params = CreateSandboxFromImageParams(
+                image=self.image, language="python",
+                resources=self._resources(), auto_delete_interval=0,
+            )
+            sandbox = self._create_with_capacity_retry(create_params)
+        return self._register_created(sandbox)
+
+    def _register_created(self, sandbox):
         remote_id = str(getattr(sandbox, "id", "") or "")
         if not remote_id:
             try:
@@ -384,6 +538,33 @@ class SandboxPool:
                 )
         return {"deleted": deleted, "failures": failures, "skipped": skipped}
 
+    def _create_with_slot(self):
+        """One creation charged against the capacity budget (when one is set)."""
+        if self._capacity is None:
+            return self._create_one()
+        if not self._capacity.acquire(timeout=1200):
+            raise RuntimeError("sandbox capacity wait timed out")
+        try:
+            return self._create_one()
+        except Exception:
+            self._capacity.release()
+            raise
+
+    def preflight(self) -> None:
+        """Create one sandbox eagerly, letting provider errors propagate.
+
+        ``start`` swallows creation failures because ``acquire`` recreates on
+        demand, so an account that cannot create sandboxes at all is only
+        discovered after the caller has already paid for documentation
+        intelligence and adapter generation for every candidate. This surfaces
+        that rejection first. The probe is kept in the available queue and
+        leased by the first candidate, so the check provisions nothing extra.
+        """
+        with self._lock:
+            if self._started or not self._available.empty():
+                return
+        self._available.put(self._create_with_slot())
+
     def start(self) -> None:
         """Pre-warm ``size`` clean sandboxes in parallel."""
         with self._lock:
@@ -393,24 +574,46 @@ class SandboxPool:
 
         def warm():
             try:
-                self._available.put(self._create_one())
+                self._available.put(self._create_with_slot())
             except Exception:
                 # acquire() creates on demand and will surface provider errors.
                 pass
 
-        threads = [threading.Thread(target=warm, daemon=True) for _ in range(self.size)]
+        # A preflight probe already sits in the queue; warm the remainder only.
+        warm_count = max(0, self.size - self._available.qsize())
+        threads = [threading.Thread(target=warm, daemon=True) for _ in range(warm_count)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
         self._start_lease_heartbeat()
 
-    def acquire(self, label: str) -> SandboxHandle:
-        """Lease a clean sandbox and return an opaque, one-use handle."""
+    def acquire(self, label: str, snapshot: str | None = None) -> SandboxHandle:
+        """Lease a clean sandbox and return an opaque, one-use handle.
+
+        ``snapshot`` asks for a sandbox built from a specific prebuilt image, so
+        a pre-warmed generic sandbox cannot satisfy it.
+        """
         try:
+            if snapshot:
+                raise queue.Empty
             sandbox = self._available.get_nowait()
         except queue.Empty:
-            sandbox = self._create_one()
+            if self._capacity is not None:
+                # Wait for a peer to finish rather than ask the provider for
+                # memory beyond the account budget. Bounded: a full pipeline
+                # stage takes minutes, not the 20 the timeout allows.
+                if not self._capacity.acquire(timeout=1200):
+                    raise RuntimeError(
+                        "sandbox capacity wait timed out; the memory budget "
+                        "never freed a slot")
+                try:
+                    sandbox = self._create_one(snapshot) if snapshot else self._create_one()
+                except Exception:
+                    self._capacity.release()
+                    raise
+            else:
+                sandbox = self._create_one(snapshot) if snapshot else self._create_one()
         handle = SandboxHandle(
             id=f"{label}-{uuid.uuid4().hex[:8]}", label=label, sandbox=sandbox
         )
@@ -467,6 +670,11 @@ class SandboxPool:
             with self._lock:
                 self._tracked.pop(id(sandbox), None)
                 self._remote_ids.pop(id(sandbox), None)
+            if self._capacity is not None:
+                try:
+                    self._capacity.release()
+                except ValueError:
+                    pass  # more releases than acquisitions can only mean a reset
 
     def destroy_all(self) -> None:
         """Destroy every leased or pre-warmed sandbox; safe to call repeatedly."""

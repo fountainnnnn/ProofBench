@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   getProviderReadiness: vi.fn(),
   getScraperOrder: vi.fn(),
   saveScraperOrder: vi.fn(),
+  getSettingOptions: vi.fn(),
   getSettingsDefaults: vi.fn(),
   saveSettingsDefaults: vi.fn(),
   listProviderKeys: vi.fn(),
@@ -30,6 +31,10 @@ const READINESS = {
   mode: "real",
   run_ready: false,
   blocked_by: ["openai"],
+  setting_defaults: {
+    OPENROUTER_MODEL: "openai/gpt-4o-mini",
+    OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1",
+  },
   providers: [
     {
       provider: "daytona",
@@ -78,8 +83,6 @@ describe("Settings about disclosure", () => {
     });
     api.listProviderKeys.mockResolvedValue({
       keys: [],
-      runtime_writes_enabled: false,
-      managed_by: "deployment",
     });
     api.getIntegrationAgentStatus.mockResolvedValue({
       ready: false,
@@ -193,43 +196,62 @@ describe("Settings about disclosure", () => {
     expect(partial.textContent).not.toMatch(/required/);
   });
 
-  it("adds a credential for a provider the built-in list does not cover", async () => {
-    api.listProviderKeys.mockResolvedValue({
-      keys: [],
-      runtime_writes_enabled: true,
-      managed_by: "runtime",
-    });
-    api.saveProviderKey.mockResolvedValue({ env: "MISTRAL_API_KEY", source: "settings" });
+  it("adds a credential by picking an implemented setting rather than typing it", async () => {
+    api.listProviderKeys.mockResolvedValue({ keys: [] });
+    api.saveProviderKey.mockResolvedValue({ env: "OPENROUTER_MODEL", source: "settings" });
 
     render(<Settings />);
     const services = (await screen.findByText("Services")).closest("section");
 
     // Collapsed by default so the card stays scannable; the form opens on ask.
     fireEvent.click(within(services).getByRole("button", { name: "Add a service" }));
-    fireEvent.change(within(services).getByLabelText("Environment variable name"), {
-      target: { value: "mistral_api_key" },
-    });
+    const picker = within(services).getByLabelText("Service setting");
+
+    // Every variable a known provider declares is offered, including the
+    // optional ones that are not configured yet — that is the memory test the
+    // free-text box used to impose.
+    const offered = [...picker.querySelectorAll("option")].map((option) => option.value);
+    expect(offered).toContain("OPENAI_API_KEY");
+    expect(offered).toContain("OPENROUTER_MODEL");
+
+    fireEvent.change(picker, { target: { value: "OPENROUTER_MODEL" } });
     fireEvent.change(within(services).getByLabelText("Credential value"), {
-      target: { value: "mistral-secret-value" },
+      target: { value: "some-secret-value" },
     });
     fireEvent.click(within(services).getByRole("button", { name: "Add" }));
 
-    // The name is uppercased for the backend; the value is posted, not echoed.
     await waitFor(() =>
-      expect(api.saveProviderKey).toHaveBeenCalledWith("MISTRAL_API_KEY", "mistral-secret-value"),
+      expect(api.saveProviderKey).toHaveBeenCalledWith("OPENROUTER_MODEL", "some-secret-value"),
     );
-    expect(services.textContent).not.toContain("mistral-secret-value");
+    expect(services.textContent).not.toContain("some-secret-value");
   });
 
-  it("hides the add-a-service control when runtime writes are disabled", async () => {
-    api.listProviderKeys.mockResolvedValue({
-      keys: [],
-      runtime_writes_enabled: false,
-      managed_by: "deployment",
+  it("hands an unlisted service over to the integration agent", async () => {
+    api.listProviderKeys.mockResolvedValue({ keys: [] });
+    api.getIntegrationAgentStatus.mockResolvedValue({
+      ready: true,
+      llm: { configured: true, provider: "deepseek" },
+      scraper: { configured: true, provider: "oxylabs" },
+      missing: [],
     });
+
+    render(<Settings />);
+    const services = (await screen.findByText("Services")).closest("section");
+    fireEvent.click(within(services).getByRole("button", { name: "Add a service" }));
+    fireEvent.click(within(services).getByRole("button", { name: "Tell the integration agent" }));
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Message the integration agent"),
+      ),
+    );
+  });
+
+  it("always offers the add-a-service control", async () => {
+    api.listProviderKeys.mockResolvedValue({ keys: [] });
     render(<Settings />);
     await screen.findByText("Services");
-    expect(screen.queryByRole("button", { name: "Add a service" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add a service" })).toBeTruthy();
   });
 
   it("saves a missing value inline and refreshes readiness without echoing it", async () => {
@@ -431,5 +453,55 @@ describe("Settings about disclosure", () => {
     expect(text).not.toMatch(/\b(Inc|LLC|Ltd|GmbH|Pty|Corp)\b/);
     expect(text).not.toMatch(/[\w.+-]+@[\w-]+\.[a-z]{2,}/i);
     expect(text).not.toMatch(/https?:\/\/(?!localhost)/i);
+  });
+
+  it("keeps API keys blank but researches values for a model setting", async () => {
+    api.listProviderKeys.mockResolvedValue({ keys: [] });
+    api.getSettingOptions.mockResolvedValue({
+      env: "OPENROUTER_MODEL",
+      summary: "Pick by cost.",
+      options: [
+        { value: "openai/gpt-4o-mini", note: "cheapest" },
+        { value: "anthropic/claude-sonnet-4", note: "strongest" },
+      ],
+    });
+
+    render(<Settings />);
+    const services = (await screen.findByText("Services")).closest("section");
+    fireEvent.click(within(services).getByRole("button", { name: "Add a service" }));
+    const picker = within(services).getByLabelText("Service setting");
+
+    // A secret has nothing to look up, so no research is offered and the box
+    // stays a blank password field.
+    fireEvent.change(picker, { target: { value: "OPENROUTER_API_KEY" } });
+    expect(within(services).getByLabelText("Credential value").type).toBe("password");
+    expect(within(services).queryByRole("button", { name: "Ask AI" })).toBeNull();
+
+    // A model id is a published fact, so it is researchable and the engine's
+    // own fallback is named rather than left to memory.
+    fireEvent.change(picker, { target: { value: "OPENROUTER_MODEL" } });
+    expect(within(services).getByLabelText("Credential value").type).toBe("text");
+    expect(services.textContent).toContain("openai/gpt-4o-mini");
+
+    fireEvent.click(within(services).getByRole("button", { name: "Ask AI" }));
+    await waitFor(() =>
+      expect(api.getSettingOptions).toHaveBeenCalledWith("OPENROUTER_MODEL"),
+    );
+    await waitFor(() => expect(services.textContent).toContain("2 documented values"));
+
+    // The researched values are offered as completions, not forced.
+    const listed = [...services.querySelectorAll("datalist option")].map((o) => o.value);
+    expect(listed).toEqual(["openai/gpt-4o-mini", "anthropic/claude-sonnet-4"]);
+
+    fireEvent.change(within(services).getByLabelText("Credential value"), {
+      target: { value: "anthropic/claude-sonnet-4" },
+    });
+    fireEvent.click(within(services).getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(api.saveProviderKey).toHaveBeenCalledWith(
+        "OPENROUTER_MODEL",
+        "anthropic/claude-sonnet-4",
+      ),
+    );
   });
 });

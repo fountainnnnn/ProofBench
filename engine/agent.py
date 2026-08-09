@@ -59,6 +59,44 @@ _HISTORY_PATH = re.compile(
     r"(?:[A-Za-z]:[\\/](?![\\/])[^\s\"']*|file://[^\s\"']*|/(?:Users|home|root|app|tmp|var|etc|private|workspace)(?:[\\/][^\s\"']*)?)",
     re.IGNORECASE,
 )
+# Documentation fetches are IO-bound and independent per candidate. Four at a
+# time matches the sandbox pipeline's width and stays well inside scrape
+# providers' per-account concurrency, where a burst answers 429 rather than
+# faster.
+DOCS_CONCURRENCY = 8
+# How many candidates execute at once. Each holds one sandbox, so the ceiling
+# that matters is the provider's concurrent-memory budget, not this number;
+# PROOFBENCH_SANDBOX_MEMORY_BUDGET_GIB queues anything beyond what the account
+# Documents a hosted candidate processes at once inside its sandbox. Each one is
+# an HTTP round trip, so this is bounded by provider rate limits, not by CPU.
+HOSTED_DOC_CONCURRENCY = 8
+
+
+def _schema_fields(spec_fields: list | None) -> list[dict]:
+    """The run's schema as [{name, type}, ...], defaulting to the invoice set."""
+    from engine.fields import parse_fields
+
+    return [{"name": f.name, "type": f.type} for f in parse_fields(spec_fields)]
+
+
+def _settled(fn):
+    """Wrap ``fn`` so a worker returns ``(result, error)`` instead of raising.
+
+    ``ThreadPoolExecutor.map`` re-raises the first worker exception at the point
+    of iteration and abandons the remaining results. Documentation preparation
+    reports per-candidate failures and must keep the candidates that did
+    succeed, so failures travel back as values.
+    """
+
+    def settled(item):
+        try:
+            return fn(item), None
+        except Exception as exc:  # reported per candidate by the caller
+            return None, exc
+
+    return settled
+
+
 # The protocol phase each orchestrator tool belongs to (RUN_SYSTEM above), used
 # only to report progress while the agent drives the run. Tools that are not
 # tied to one phase (web_search, upload_files, record_result) are absent.
@@ -264,27 +302,63 @@ Your job in this conversation:
    the docs are sufficient; otherwise execution is skipped and the tool receives a rating.
    Never name the sandbox or scraping services by vendor; describe what happened, not who did it."""
 
-EXTRACTION_INTAKE_SYSTEM = INTAKE_SYSTEM + """
+# Both benchmark kinds are always on the table. Which one a question deserves is
+# a property of the QUESTION, never of what the user happened to attach: some
+# questions are settled by measuring candidates on labelled examples, and some
+# are settled by comparing what the candidates are. Intake therefore always sees
+# this block, and %(dataset_clause)s tells it whether the labelled examples
+# already exist or will be built for the spec it writes.
+MEASURED_INTAKE_TEMPLATE = INTAKE_SYSTEM + """
 
-A labelled dataset with ground truth is attached to this session. If the user's objective
-is document extraction or OCR — invoices, receipts, forms, scanned documents, reading
-fields off images — propose an EXTRACTION benchmark instead, as a fenced ```json block
-with EXACTLY this shape:
+TWO KINDS OF BENCHMARK. Choose on the nature of the question, never on whether data
+happens to be attached.
+
+Propose a MEASURED benchmark when answering the question requires observing what the
+candidates actually DO to the same inputs — when the answer is a number that only
+running them can produce (how accurately, how often, how fast, how consistently). Emit
+it as a fenced ```json block with EXACTLY this shape:
    {"benchmark_type": "extraction",
     "category": str,
-    "fields": ["invoice_number", "date", "vendor", "total"],
+    "fields": %(fields_json)s,
     "candidates": [{"name": slug, "docs_url": str, "pricing_url": str,
                     "kind": "local_tool"|"hosted_api", "use_fallback": bool}]}
-An extraction benchmark runs each candidate over every labelled document in an isolated
-sandbox and scores the output against ground truth, so prefer it whenever the objective
-is extraction and the dataset can answer the question. ProofBench ships first-party
-adapters for these candidate names: tesseract, easyocr, paddleocr, doubleword,
-openai_vision, nosana_vlm. Set use_fallback=true to use ProofBench's own adapter for one of those
-names; the server supplies its credentials. For any other candidate set use_fallback
-false and supply real documentation so an adapter can be generated.
+%(dataset_clause)s
+A measured benchmark runs every candidate over every labelled example in an isolated
+sandbox and scores the output against ground truth with a deterministic evaluator, so
+prefer it whenever running the candidates would settle the question better than reading
+about them. The task is whatever the user's is — extracting fields from documents is one
+such task and carries no special status; classification, transcription, parsing,
+translation, tagging, structuring, and any other job with a checkable right answer are
+equally measured benchmarks.
 
-Use tool_assessment only when the objective is not extraction, or when no labelled
-dataset can settle it."""
+Propose a TOOL_ASSESSMENT (the shape given above) when the question is about what the
+candidates ARE rather than how well they perform: which ones exist, what they cost, what
+they integrate with, whether the documentation supports the integration the user needs,
+which to shortlist. A comparison of tools is a complete, first-class answer — it does not
+need labelled data and must never be described or apologised for as a lesser one.
+
+ProofBench ships first-party adapters for these candidate names: tesseract, easyocr,
+paddleocr, doubleword, openai_vision, nosana_vlm. They are OCR tools and are relevant
+only to an OCR question. Set use_fallback=true to use ProofBench's own adapter for one of
+those names; the server supplies its credentials. For every other candidate set
+use_fallback false and supply real documentation so an adapter can be generated."""
+
+# What the measured block says about where its labelled examples come from. The
+# bound form pins the schema to the columns that already exist, because a spec
+# whose fields disagree with the ground truth is unscoreable. The unbound form
+# lets intake declare the schema the question needs, and ProofBench builds
+# examples to match it — so a measured benchmark is never blocked on the user
+# having attached something first.
+DATASET_CLAUSE_BOUND = """fields MUST be exactly the labelled columns shown above — every {"name", "type"} pair,
+in that order, because those columns already have ground truth. The evaluator scores
+those and no others."""
+
+DATASET_CLAUSE_UNBOUND = """fields is the schema the question needs: 2 to 10 {"name", "type"} pairs you choose,
+each a value that would appear on the documents and has one correct answer. No labelled
+examples are attached, so ProofBench builds them to match the fields you declare — you do
+not need to ask the user for data, and you must not withhold a measured benchmark for
+want of it. Declare fields only for what the question is really asking; every column you
+name becomes a column the candidates are scored on."""
 
 
 # One toolless completion, run once per proposed tool_assessment spec, that
@@ -476,13 +550,26 @@ SPEC_RECOVERY_CONTRACT_TOOL_ASSESSMENT = """Return ONLY a single fenced ```json 
                "kind": "violation"|"not_assessed", "violates": str}]}
 Every candidate needs a real docs_url. Include at least one role "build_component". constraints records only what the user actually stated; omit what they did not. excluded is optional. Draw candidates and URLs only from the conversation and gathered findings — invent nothing."""
 
-SPEC_RECOVERY_CONTRACT_EXTRACTION = """Return ONLY a single fenced ```json block, no prose before or after, with EXACTLY this shape:
+SPEC_RECOVERY_CONTRACT_EXTRACTION_TEMPLATE = """Return ONLY a single fenced ```json block, no prose before or after, with EXACTLY this shape:
 {"benchmark_type": "extraction",
  "category": str,
- "fields": ["invoice_number", "date", "vendor", "total"],
+ "fields": %(fields_json)s,
  "candidates": [{"name": slug, "docs_url": str, "pricing_url": str,
                  "kind": "local_tool"|"hosted_api", "use_fallback": bool}]}
-Draw candidates and URLs only from the conversation and gathered findings — invent nothing."""
+fields must be exactly the dataset's labelled columns as listed. Draw candidates and URLs
+only from the conversation and gathered findings — invent nothing."""
+
+
+def _default_fields_json() -> str:
+    from engine.fields import DEFAULT_FIELDS
+
+    return json.dumps([{"name": f.name, "type": f.type} for f in DEFAULT_FIELDS])
+
+
+def spec_recovery_contract_extraction(dataset_fields: list | None = None) -> str:
+    fields_json = (json.dumps(dataset_fields) if dataset_fields
+                   else _default_fields_json())
+    return SPEC_RECOVERY_CONTRACT_EXTRACTION_TEMPLATE % {"fields_json": fields_json}
 
 # Shown when a researched turn owed the user a spec, the primary returned prose,
 # and no distinct supervisor could recover one. It is honest and actionable — it
@@ -1084,8 +1171,12 @@ def _normalize_intake_spec(
     declared = str(spec.get("benchmark_type") or "").strip()
     if declared not in {"extraction", "tool_assessment"}:
         declared = "extraction" if spec.get("fields") else "tool_assessment"
-    if declared == "extraction" and not dataset_available:
-        declared = "tool_assessment"
+    # A measured benchmark is NOT downgraded for want of an attached dataset.
+    # Silently rewriting it to an assessment answered a different question than
+    # the one asked and gave no sign it had happened; the spec instead records
+    # that its labelled examples are still to be built, and the server builds
+    # them from this schema before the run starts.
+    generate_dataset = declared == "extraction" and not dataset_available
 
     category = str(spec.get("category") or "").strip()[:128]
     if not category:
@@ -1144,20 +1235,49 @@ def _normalize_intake_spec(
         return normalized_spec
     fields = []
     for field in spec.get("fields") or []:
-        normalized = _intake_slug(field)
-        if _INTAKE_NAME_RE.fullmatch(normalized) and normalized not in fields:
-            fields.append(normalized)
-    # The deterministic evaluator owns this fixed invoice field set. A model
-    # cannot relabel the task into a different schema and still call it scored.
-    if fields != FIELDS:
+        # A field arrives as a bare name or as {name, type}; both normalize to
+        # {name, type} so the evaluator's typed comparison travels with the spec.
+        if isinstance(field, dict):
+            raw_name, raw_type = field.get("name"), field.get("type")
+        else:
+            raw_name, raw_type = field, None
+        normalized = _intake_slug(raw_name)
+        if not _INTAKE_NAME_RE.fullmatch(normalized):
+            continue
+        if normalized in {f["name"] for f in fields}:
+            continue
+        from engine.fields import FIELD_TYPES, infer_type
+        declared_type = str(raw_type) if raw_type in FIELD_TYPES else infer_type(normalized)
+        fields.append({"name": normalized, "type": declared_type})
+    # The evaluator scores exactly the declared schema; a spec with no scoreable
+    # fields cannot be a measured benchmark.
+    if not fields or len(fields) > 32:
         return None
-    return {"benchmark_type": declared, "category": category, "fields": fields,
-            "candidates": normalized_candidates}
+    normalized_spec = {"benchmark_type": declared, "category": category, "fields": fields,
+                       "candidates": normalized_candidates}
+    if generate_dataset:
+        normalized_spec["dataset"] = {"source": "generate"}
+    return normalized_spec
 
 
-def intake_system(dataset_available: bool) -> str:
-    """Intake instructions, widened to extraction when labelled data is bound."""
-    return EXTRACTION_INTAKE_SYSTEM if dataset_available else INTAKE_SYSTEM
+def intake_system(dataset_available: bool, dataset_fields: list | None = None) -> str:
+    """Intake instructions. Both benchmark kinds are always available.
+
+    A bound dataset does not decide which kind of benchmark the user gets — the
+    question does. What binding changes is only where the labelled examples come
+    from: ``dataset_fields`` pins the spec to columns that already have ground
+    truth, and its absence lets intake declare the schema the question needs so
+    ProofBench can build examples to match.
+    """
+    if dataset_available:
+        fields_json = (json.dumps(dataset_fields) if dataset_fields
+                       else _default_fields_json())
+        clause = DATASET_CLAUSE_BOUND
+    else:
+        fields_json = '[{"name": str, "type": "text"|"date"|"currency"|"number"}, ...]'
+        clause = DATASET_CLAUSE_UNBOUND
+    return MEASURED_INTAKE_TEMPLATE % {"fields_json": fields_json,
+                                       "dataset_clause": clause}
 
 RUN_SYSTEM = """You are ProofBench's orchestrator agent. Execute this protocol strictly,
 one phase at a time, using the provided tools. You manage isolated sandboxes;
@@ -1273,6 +1393,7 @@ class Orchestrator:
         cancel_event=None,
         provider_env=None,
         dataset_available: bool = False,
+        dataset_fields: list | None = None,
         run_summary: str = "",
     ):
         self.run_id = run_id
@@ -1282,6 +1403,14 @@ class Orchestrator:
         # Set by the server when the session has a labelled dataset bound, which
         # is what makes a scored extraction benchmark possible at intake.
         self.dataset_available = bool(dataset_available)
+        # candidate name -> resolved snapshot name ("" means none available).
+        # Per instance, never class level: a shared dict would leak one
+        # deployment's snapshot resolution into another orchestrator.
+        self._snapshot_cache: dict[str, str] = {}
+        # The bound dataset's labelled columns as {name, type} dicts; intake and
+        # spec recovery propose exactly this schema so a spec can never disagree
+        # with the ground truth it will be scored against.
+        self.dataset_fields = list(dataset_fields or []) or None
         # A factual account of this session's finished run, so a follow-up
         # question is answered from measured numbers rather than guesswork.
         self.run_summary = str(run_summary or "")
@@ -1494,6 +1623,7 @@ class Orchestrator:
         self.ctx.result_keys.clear()
         self.ctx.results_initialized = True
         self.ctx.evaluated_metrics = None
+        self.ctx.spec_fields = spec.get("fields") or None
         self.ctx.allowed_candidate_names.clear()
         self.ctx.allowed_doc_ids.clear()
         self._adapter_entitlements.clear()
@@ -1578,6 +1708,7 @@ class Orchestrator:
             raise
         finally:
             try:
+                self._discard_research_future()
                 cleanup_run_context(self.ctx)
             finally:
                 self._handle_to_candidate.clear()
@@ -1665,7 +1796,7 @@ class Orchestrator:
 
     def chat(self, user_message: str) -> None:
         """INTAKE/DISCOVERY conversation; emits deltas and eventually a spec artifact."""
-        system_prompt = intake_system(self.dataset_available)
+        system_prompt = intake_system(self.dataset_available, self.dataset_fields)
         # Without this the agent answers a question about the run the user is
         # looking at with "I don't have the history of your previous run".
         if self.run_summary:
@@ -1961,7 +2092,7 @@ class Orchestrator:
         """
         from engine import supervisor
 
-        contract = (SPEC_RECOVERY_CONTRACT_EXTRACTION if self.dataset_available
+        contract = (spec_recovery_contract_extraction(self.dataset_fields) if self.dataset_available
                     else SPEC_RECOVERY_CONTRACT_TOOL_ASSESSMENT)
         conversation = "\n".join(
             f"{message.get('role')}: {message.get('content')}"
@@ -2449,16 +2580,20 @@ class Orchestrator:
             str(candidate.get("name") or "candidate"): candidate for candidate in candidates
         }
 
-        for candidate_spec in candidates:
+        def gather(candidate_spec: dict):
+            """Fetch one candidate's documentation. Returns (name, entry, error).
+
+            Every candidate's fetch is an independent network wait, so they run
+            concurrently: serially this phase cost the sum of every vendor's
+            page latency and dominated the run (measured 399s of a 445s
+            assessment across seven candidates).
+            """
             self._check_cancelled()
             name = str(candidate_spec.get("name") or "candidate")
             display_name = str(candidate_spec.get("display_name") or name)
             docs_url = str(candidate_spec.get("docs_url") or "").strip()
             if not docs_url:
-                metrics[name] = unavailable_result("No official implementation documentation URL was provided.")
-                statuses[name] = "skipped"
-                self._state("DOCS_INTEL", dict(statuses))
-                continue
+                return name, None, "missing"
 
             try:
                 # One retry before the candidate is written off. The scrape
@@ -2516,25 +2651,48 @@ class Orchestrator:
                         raise
                     except Exception:
                         pass
-                scraped_candidates.append(entry)
                 statuses[name] = "queued"
                 self._state("DOCS_INTEL", dict(statuses))
+                return name, entry, None
             except _RunCancelled:
                 raise
             except Exception as exc:
+                return name, None, type(exc).__name__
+
+        with ThreadPoolExecutor(
+                max_workers=max(1, min(DOCS_CONCURRENCY, len(candidates) or 1))) as ex:
+            gathered = list(ex.map(_settled(gather), candidates))
+
+        # Results are applied in candidate order: added concurrency must not
+        # reorder the assessment batch or the citations that travel with it.
+        for candidate_spec, (result, failure) in zip(candidates, gathered):
+            name = str(candidate_spec.get("name") or "candidate")
+            if failure is not None:
+                if isinstance(failure, _RunCancelled):
+                    raise failure
+                error = type(failure).__name__
+            else:
+                name, entry, error = result
+                if entry is not None:
+                    scraped_candidates.append(entry)
+                    continue
+            if error == "missing":
                 metrics[name] = unavailable_result(
-                    f"Documentation scrape failed: {type(exc).__name__}"
-                )
+                    "No official implementation documentation URL was provided.")
                 statuses[name] = "skipped"
-                self.emit("artifact", {
-                    "kind": "trace",
-                    "tool": "scrape_docs",
-                    "args_summary": name,
-                    "status": "error",
-                    "detail": f"{type(exc).__name__}: documentation scrape failed",
-                })
                 self._state("DOCS_INTEL", dict(statuses))
                 continue
+            metrics[name] = unavailable_result(
+                f"Documentation scrape failed: {error}")
+            statuses[name] = "skipped"
+            self.emit("artifact", {
+                "kind": "trace",
+                "tool": "scrape_docs",
+                "args_summary": name,
+                "status": "error",
+                "detail": f"{error}: documentation scrape failed",
+            })
+            self._state("DOCS_INTEL", dict(statuses))
 
         assessments: dict[str, dict] = {}
         if scraped_candidates:
@@ -2785,14 +2943,28 @@ class Orchestrator:
         if not images:
             raise RuntimeError("dataset contains no usable images")
         self._state("PROVISIONING", {c["name"]: "pending" for c in spec["candidates"]})
+        # Every candidate at once. The account's concurrent-memory budget is the
+        # real ceiling and the pool already queues behind it, so a second, lower
+        # limit here only made wide comparisons run single file for no reason.
+        self.pool.size = max(1, len(spec["candidates"]))
+        # Prove a sandbox can be created before paying for docs intelligence and
+        # adapter generation across every candidate. A provider that refuses
+        # outright (no region entitlement, bad credentials) otherwise fails only
+        # after that spend, once per candidate.
+        self.pool.preflight()
         self._prepare_generated_adapters(spec["candidates"])
-        self.pool.size = min(4, max(1, len(spec["candidates"])))
         self.pool.start()
+        # Documentation scoring reads only the spec, so it runs beside execution
+        # instead of after it. It starts only once the pool is warm: its scraping
+        # turns ~170KB pages into text, which is CPU-bound and holds the GIL, and
+        # starting it earlier measurably starved sandbox provisioning (4s -> 43s)
+        # for a saving that was smaller than the loss.
+        self._begin_research_scores(spec)
         self._run_candidates_scripted(spec["candidates"], images)
         return self._evaluate_and_report(ground_truth)
 
     def _run_candidates_scripted(self, candidates: list[dict], images: list[str]) -> None:
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        with ThreadPoolExecutor(max_workers=max(1, len(candidates))) as ex:
             list(ex.map(self._candidate_pipeline, candidates))
 
     def _prepare_generated_adapters(self, candidates: list[dict]) -> None:
@@ -2806,33 +2978,97 @@ class Orchestrator:
         from engine.builtin_adapters import is_builtin_adapter
         from engine.docs_intel import scrape_page
 
-        for candidate_spec in candidates:
+        pending = [
+            spec for spec in candidates
+            if not (spec.get("use_fallback", True)
+                    and is_builtin_adapter(str(spec.get("name") or "")))
+        ]
+        if not pending:
+            return
+
+        def prepare(candidate_spec: dict) -> tuple[str, str, object | None]:
+            """Scrape and generate one adapter. Returns (name, docs_url, adapter).
+
+            Runs on a worker thread and touches no shared engine state: every
+            mutation of ``ctx`` is applied by the caller in candidate order, so
+            added concurrency cannot reorder citations or generated adapters.
+            """
             name = str(candidate_spec.get("name") or "")
-            uses_builtin = candidate_spec.get("use_fallback", True) and is_builtin_adapter(name)
-            if uses_builtin:
-                continue
             docs_url = str(candidate_spec.get("docs_url") or "")
             self._state("DOCS_INTEL", {name: "fetching"})
-            try:
-                if not docs_url:
-                    raise ValueError("documentation URL is required for generated adapters")
-                docs = scrape_page(docs_url, env=self.runtime_env)
-                self.ctx.citations.append({"title": f"{name} documentation", "url": docs_url})
-                self._state("ADAPTER_GEN", {name: "generating"})
-                generated = generate_adapter(name, docs, env=self.runtime_env)
-                generated.name = name
-                generated.docs_url = docs_url
-                generated.pricing_url = str(candidate_spec.get("pricing_url") or "")
-                generated.kind = str(candidate_spec.get("kind") or generated.kind)
-                self.ctx.candidates[name] = generated
-                self.emit("artifact", {"kind": "trace", "tool": "generate_adapter",
-                                       "args_summary": name, "status": "ok"})
-            except Exception as exc:
+            if not docs_url:
+                raise ValueError("documentation URL is required for generated adapters")
+            docs = scrape_page(docs_url, env=self.runtime_env)
+            self._state("ADAPTER_GEN", {name: "generating"})
+            generated = generate_adapter(name, docs, env=self.runtime_env,
+                                         fields=self.ctx.spec_fields)
+            generated.name = name
+            generated.docs_url = docs_url
+            generated.pricing_url = str(candidate_spec.get("pricing_url") or "")
+            generated.kind = str(candidate_spec.get("kind") or generated.kind)
+            return name, docs_url, generated
+
+        # Each candidate's scrape and codegen are independent and almost entirely
+        # spent waiting on HTTP, so running them serially made preparation cost
+        # the sum of every vendor's page latency rather than the slowest one.
+        with ThreadPoolExecutor(max_workers=min(DOCS_CONCURRENCY, len(pending))) as ex:
+            outcomes = list(ex.map(_settled(prepare), pending))
+
+        for candidate_spec, (result, error) in zip(pending, outcomes):
+            name = str(candidate_spec.get("name") or "")
+            if error is not None:
                 self.emit("artifact", {"kind": "trace", "tool": "generate_adapter",
                                        "args_summary": name, "status": "error",
-                                       "detail": f"{type(exc).__name__}: adapter preparation failed"})
+                                       "detail": f"{type(error).__name__}: adapter preparation failed"})
+                continue
+            _, docs_url, generated = result
+            self.ctx.citations.append({"title": f"{name} documentation", "url": docs_url})
+            self.ctx.candidates[name] = generated
+            self.emit("artifact", {"kind": "trace", "tool": "generate_adapter",
+                                   "args_summary": name, "status": "ok"})
 
     # ------------------------------------------------------------- pipeline blocks
+    def _candidate_snapshot(self, name: str, candidate) -> str | None:
+        """A prebuilt snapshot for this candidate's exact build, if available.
+
+        Only first-party adapters qualify: their build commands are ProofBench's
+        own source, so a snapshot of them is reproducible and safe to reuse. A
+        model-generated adapter's commands change per run, which would mean
+        building a snapshot that is used exactly once.
+        """
+        from engine.builtin_adapters import is_builtin_adapter
+
+        if not str(self.runtime_env.get("DAYTONA_API_KEY") or "").strip():
+            return None
+        # A first-party candidate has reproducible build commands, so it gets a
+        # snapshot of its exact build. Everything else — a generated adapter for
+        # a tool ProofBench has never seen — starts from the shared base, whose
+        # toolchain and CUDA runtime are the slowest part of most installations
+        # and are identical whatever the tool turns out to be.
+        specific = (getattr(candidate, "build_commands", None)
+                    and is_builtin_adapter(name))
+        key = name if specific else "__base__"
+        cached = self._snapshot_cache.get(key)
+        if cached is not None:
+            return cached or None
+        try:
+            from engine.snapshots import ensure_base_snapshot, ensure_snapshot
+
+            client = self.pool._client()
+            if specific:
+                resolved = ensure_snapshot(
+                    client, name, candidate.build_commands,
+                    cpu=self.pool.cpu, memory_gib=self.pool.memory_gib,
+                    gpu=self.pool.gpu, gpu_type=self.pool.gpu_type)
+            else:
+                resolved = ensure_base_snapshot(
+                    client, cpu=self.pool.cpu, memory_gib=self.pool.memory_gib,
+                    gpu=self.pool.gpu, gpu_type=self.pool.gpu_type)
+        except Exception:
+            resolved = None
+        self._snapshot_cache[key] = resolved or ""
+        return resolved
+
     def _candidate_pipeline(self, cand_spec: dict) -> None:
         """Build → validate (repair up to MAX_ADAPTER_REPAIR_ATTEMPTS → fallback) → run, per candidate."""
         name = cand_spec["name"]
@@ -2841,14 +3077,25 @@ class Orchestrator:
             if candidate is None:
                 self._fail_candidate(name, "no adapter available for this candidate")
                 return
-            handle = self.pool.acquire(name)
+            # A first-party candidate's dependencies are the same on every run,
+            # so they are baked into a snapshot once and the per-run install is
+            # skipped entirely. Falls back to installing in-sandbox when no
+            # snapshot could be produced.
+            snapshot = self._candidate_snapshot(name, candidate)
+            handle = self.pool.acquire(name, snapshot=snapshot) if snapshot \
+                else self.pool.acquire(name)
             self._handle_to_candidate[handle.id] = name
             try:
                 self._log(handle.label, "sandbox created", "provisioning")
                 self._sandbox_file(handle.label, candidate.adapter_code, revision=1)
                 self._upload_dataset(handle)
                 self._state("BUILDING", {name: "building"})
-                self._build(handle, candidate)
+                if snapshot:
+                    self._log(handle.label,
+                              "dependencies preinstalled from snapshot; build skipped",
+                              "building")
+                else:
+                    self._build(handle, candidate)
                 self._state("VALIDATING", {name: "validating"})
                 if not self._validate(handle, candidate):
                     # A trusted built-in already IS the first-party adapter, and
@@ -2866,6 +3113,8 @@ class Orchestrator:
                         revision=1,
                         path="fallback_adapter.py",
                     )
+                    # A fallback is a different adapter than the snapshot was
+                    # built for, so its dependencies are installed for real.
                     self._build(handle, candidate)
                     if not self._validate(handle, candidate):
                         self._fail_candidate(name, self._validation_reason(candidate.name))
@@ -2938,6 +3187,16 @@ class Orchestrator:
             if resolved_gt.parent != dataset_path or not resolved_gt.is_file():
                 raise ValueError("ground truth is outside the dataset root")
             self.pool.upload(handle, str(resolved_gt), "ground_truth.csv")
+        # The run's extraction schema, as data. Adapters read it to know which
+        # fields to produce, so one adapter source serves every schema instead
+        # of baking the invoice columns into each candidate.
+        schema = _schema_fields(self.ctx.spec_fields)
+        schema_path = Path(self.run_dir) / f"pb_schema_{handle.id}.json"
+        schema_path.write_text(json.dumps(schema), encoding="utf-8")
+        try:
+            self.pool.upload(handle, str(schema_path), "pb_schema.json")
+        finally:
+            schema_path.unlink(missing_ok=True)
         self._log(handle.label, f"uploaded {len(images)} images + ground truth", "building")
 
     def _resolve_candidate(self, cand_spec: dict) -> Candidate | None:
@@ -3021,7 +3280,8 @@ class Orchestrator:
             from engine.adapter_gen import repair_adapter
 
             repaired = repair_adapter(
-                candidate.adapter_code, error_output[-2000:], env=self.runtime_env
+                candidate.adapter_code, error_output[-2000:], env=self.runtime_env,
+                fields=self.ctx.spec_fields,
             )
             # Repaired code is model-authored and no longer the reviewed adapter
             # the credentials were granted to.
@@ -3034,23 +3294,20 @@ class Orchestrator:
 
     def _run_dataset(self, handle, candidate: Candidate) -> None:
         images = self._list_images(self._dataset_path)
-        if not candidate.batch_safe:
-            for image in images:
-                self._check_cancelled()
-                relative = f"images/{image}"
-                self._log(handle.label, f"$ python adapter.py {relative}", "running")
-                out = self.pool.run_python(
-                    handle, self._adapter_code(candidate, relative), timeout=180,
-                )
-                self._collate(out, candidate.name, doc_id=os.path.splitext(image)[0])
-                self._log(handle.label, f"ran {relative}", "running")
-            return
+        # One process for the whole dataset, always. Running a process per image
+        # reloaded the candidate's runtime every time — for EasyOCR that was a
+        # full model load per document (measured 12s of work behind a 23s cost).
         self._check_cancelled()
         self._log(
             handle.label,
             f"$ python adapter.py --batch {len(images)} images",
             "running",
         )
+        # One process for the whole dataset. Splitting a local candidate across
+        # worker processes was measured and rejected: an OCR runtime already
+        # parallelises internally across the sandbox's CPUs, so four processes
+        # each starting their own thread pool oversubscribed the same cores and
+        # tripled the wall clock (220s -> 764s on 15 documents).
         out = self.pool.run_python(
             handle, self._adapter_batch_code(candidate, images),
             timeout=max(180, 180 * len(images)),
@@ -3163,7 +3420,10 @@ class Orchestrator:
                 pricing = json.load(f)
         metrics = {}
         if os.path.exists(self.results_path):
-            metrics = evaluate_results(self.results_path, ground_truth, pricing=pricing)
+            metrics = evaluate_results(
+                self.results_path, ground_truth, pricing=pricing,
+                fields=(self._active_spec or {}).get("fields"),
+            )
         if not metrics:
             raise RuntimeError(
                 "real benchmark produced no valid result records; no metrics were generated"
@@ -3206,6 +3466,53 @@ class Orchestrator:
         self._state("DONE")
         return metrics
 
+    # Background documentation scoring, started beside execution.
+    _research_future = None
+    _research_executor = None
+
+
+    def _discard_research_future(self) -> None:
+        """Release the background scorer, whichever way scoring ended."""
+        executor, self._research_executor = self._research_executor, None
+        self._research_future = None
+        if executor is not None:
+            executor.shutdown(wait=False)
+
+    def _begin_research_scores(self, spec: dict) -> None:
+        """Kick off documentation scoring in the background, if it applies.
+
+        Best effort and never fatal: a failure here is collected at join time and
+        reported exactly as the synchronous path reported it. When nothing is
+        started, ``_attach_research_scores`` falls back to computing inline, so
+        callers that never begin one (assessment runs, tests) are unaffected.
+        """
+        candidates = self._research_candidates(spec)
+        if not candidates:
+            return
+        objective, constraints = self._research_arguments(spec)
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pb-research")
+        self._research_executor = executor
+        self._research_future = executor.submit(
+            self._compute_research_scores, candidates, objective, constraints)
+
+    def _research_candidates(self, spec: dict) -> list[dict]:
+        """Spec candidates eligible for documentation scoring."""
+        return [candidate for candidate in (spec.get("candidates") or [])
+                if str(candidate.get("name") or "")]
+
+    def _research_arguments(self, spec: dict):
+        from engine.research_scores import extraction_objective
+
+        constraints = (spec.get("constraints")
+                       if isinstance(spec.get("constraints"), dict) else None)
+        return extraction_objective(spec), constraints
+
+    def _compute_research_scores(self, candidates, objective, constraints):
+        from engine.research_scores import research_scores
+
+        return research_scores(candidates, objective, env=self.runtime_env,
+                               constraints=constraints)
+
     def _attach_research_scores(self, metrics: dict) -> None:
         """Score every candidate from its documentation, alongside the measurements.
 
@@ -3230,18 +3537,24 @@ class Orchestrator:
         candidates = [candidate for candidate in (spec.get("candidates") or [])
                       if str(candidate.get("name") or "") in metrics]
         if not candidates:
+            self._discard_research_future()
             return
         self._check_cancelled()
         summary = f"{len(candidates)} documentation assessments"
         self.emit("artifact", {"kind": "trace", "tool": "research_scores",
                                "args_summary": summary, "status": "start"})
+        pending = self._research_future
         try:
-            scored = research_scores(
-                candidates,
-                extraction_objective(spec),
-                env=self.runtime_env,
-                constraints=spec.get("constraints") if isinstance(spec.get("constraints"), dict) else None,
-            )
+            if pending is not None:
+                # Started alongside execution; by now it is usually already done.
+                scored = pending.result()
+            else:
+                scored = research_scores(
+                    candidates,
+                    extraction_objective(spec),
+                    env=self.runtime_env,
+                    constraints=spec.get("constraints") if isinstance(spec.get("constraints"), dict) else None,
+                )
         except _RunCancelled:
             raise
         except Exception as exc:
@@ -3249,6 +3562,12 @@ class Orchestrator:
                                    "args_summary": summary, "status": "error",
                                    "detail": f"{type(exc).__name__}: research scoring unavailable"})
             return
+        finally:
+            self._discard_research_future()
+        # Scoring covers every spec candidate; only the ones this run measured
+        # are merged, so a background start can never widen the metrics table.
+        scored = {name: value for name, value in (scored or {}).items()
+                  if name in metrics}
         merge_research_scores(metrics, scored, curated_setup=SETUP_COMPLEXITY)
         self.emit("artifact", {"kind": "trace", "tool": "research_scores",
                                "args_summary": summary,
@@ -3285,9 +3604,21 @@ class Orchestrator:
         else:
             raise ValueError("candidate adapter does not end with the required result wrapper")
         documents = [(os.path.splitext(name)[0], f"images/{name}") for name in images]
+        # A hosted candidate spends every document waiting on an HTTP response,
+        # so its documents run concurrently. A local runtime is CPU-bound and
+        # its model is usually not thread-safe (EasyOCR's Reader is not), so it
+        # stays sequential and gains its speed from loading the model once.
+        workers = HOSTED_DOC_CONCURRENCY if candidate.kind == "hosted_api" else 1
         runner = f'''
 import json as _pb_json, time as _pb_time
-for _pb_doc_id, _pb_image in {documents!r}:
+from concurrent.futures import ThreadPoolExecutor as _PbPool
+import threading as _pb_threading
+
+_pb_print_lock = _pb_threading.Lock()
+
+
+def _pb_one(_pb_entry):
+    _pb_doc_id, _pb_image = _pb_entry
     _pb_started = _pb_time.time()
     try:
         _pb_fields = extract(_pb_image)
@@ -3299,7 +3630,19 @@ for _pb_doc_id, _pb_image in {documents!r}:
                       "error": f"{{type(_pb_exc).__name__}}: {{_pb_exc}}",
                       "latency_s": round(_pb_time.time() - _pb_started, 3),
                       "doc_id": _pb_doc_id}}
-    print("RESULT_JSON:" + _pb_json.dumps(_pb_result))
+    # One line per document, never interleaved: the collator parses by line.
+    with _pb_print_lock:
+        print("RESULT_JSON:" + _pb_json.dumps(_pb_result), flush=True)
+
+
+_pb_documents = {documents!r}
+_pb_workers = min({workers}, len(_pb_documents)) or 1
+if _pb_workers > 1:
+    with _PbPool(max_workers=_pb_workers) as _pb_ex:
+        list(_pb_ex.map(_pb_one, _pb_documents))
+else:
+    for _pb_entry in _pb_documents:
+        _pb_one(_pb_entry)
 '''
         return env_prelude(
             code + "\n" + runner,

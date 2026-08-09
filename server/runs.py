@@ -377,7 +377,8 @@ def begin_run(session_id: str) -> bool:
     return STORE.claim_chat(session_id)
 
 
-def begin_chat(session_id: str, owner: str, dataset_id: str, mode: str, message: str) -> dict:
+def begin_chat(session_id: str, owner: str, dataset_id: str | None, mode: str,
+               message: str) -> dict:
     clean = redact_event_data({"text": str(message)}, owner)["text"][:MAX_MESSAGE_CHARS]
     return STORE.claim_chat_atomic(session_id, owner, dataset_id, mode, clean,
                                    MAX_CONCURRENT_CHATS, CHATS_PER_DAY)
@@ -549,9 +550,10 @@ def reserve_dataset(owner: str, path_for_id, total_bytes: int, quota_bytes: int)
     return STORE.reserve_dataset(owner, path_for_id, total_bytes, quota_bytes)
 
 
-def activate_dataset(dataset_id: str, owner: str, image_count: int, total_bytes: int) -> dict:
+def activate_dataset(dataset_id: str, owner: str, image_count: int, total_bytes: int,
+                     kind: str = "upload") -> dict:
     return STORE.activate_dataset(dataset_id, owner, image_count=image_count,
-                                  total_bytes=total_bytes)
+                                  total_bytes=total_bytes, kind=kind)
 
 
 def release_dataset_reservation(dataset_id: str, owner: str) -> None:

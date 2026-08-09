@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { deleteDataset, listDatasets, uploadDataset } from "../api.js";
+import { deleteDataset, generateDataset, listDatasets, uploadDataset } from "../api.js";
 import { safeVisibleText } from "../displaySafety.js";
 import { relativeTime } from "../relativeTime.js";
 import {
@@ -15,6 +15,7 @@ import {
   Skeleton,
 } from "../components/ui.jsx";
 import HeaderActions from "../components/HeaderActions.jsx";
+import DatasetPreview from "../components/DatasetPreview.jsx";
 
 const IMAGE_RE = /\.(png|jpe?g|webp|tiff?|bmp|gif)$/i;
 const isImage = (f) => f.type.startsWith("image/") || IMAGE_RE.test(f.name);
@@ -42,14 +43,17 @@ function DatasetTime({ value }) {
   );
 }
 
-function DatasetRow({ record, highlighted, onUse, confirming, onAskDelete, onCancelDelete, onDelete, deleting }) {
+const ROW_KIND_TITLES = {
+  synthetic: "Sample labelled dataset",
+  generated: "AI-generated dataset",
+  upload: "Uploaded dataset",
+};
+
+function DatasetRow({ record, highlighted, onUse, confirming, onAskDelete, onCancelDelete, onDelete, deleting, previewing, onTogglePreview }) {
   const synthetic = record.kind === "synthetic";
   return (
-    <li
-      className={`group flex min-h-14 flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-4 ${
-        highlighted ? "bg-[var(--surface-2)]" : ""
-      }`}
-    >
+    <li className={`group px-4 py-3 ${highlighted ? "bg-[var(--surface-2)]" : ""}`}>
+      <div className="flex min-h-14 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
       {/* A dataset is an object: icon tile, human name first, machine id second.
           The tile is the brand accent, not a status colour — green here read as
           a success signal a dataset row does not carry. Sample vs uploaded is
@@ -68,8 +72,13 @@ function DatasetRow({ record, highlighted, onUse, confirming, onAskDelete, onCan
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <h3 className="text-[13px] font-medium text-[var(--ink)]">
-            {synthetic ? "Sample labelled dataset" : "Uploaded dataset"}
+            {record.title ? safeVisibleText(record.title) : ROW_KIND_TITLES[record.kind] || ROW_KIND_TITLES.upload}
           </h3>
+          {record.title && (
+            <span className="text-[12px] text-[var(--ink-3)]">
+              {ROW_KIND_TITLES[record.kind]}
+            </span>
+          )}
           {record.image_count ? (
             <span className="text-[12px] text-[var(--ink-2)]">{record.image_count} images</span>
           ) : null}
@@ -88,6 +97,14 @@ function DatasetRow({ record, highlighted, onUse, confirming, onAskDelete, onCan
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onTogglePreview(record)}
+          aria-expanded={previewing}
+          className={USE_BTN}
+        >
+          {previewing ? "Hide preview" : "Preview"}
+        </button>
         <button type="button" onClick={() => onUse(record)} className={USE_BTN}>
           Use in benchmark
         </button>
@@ -120,7 +137,13 @@ function DatasetRow({ record, highlighted, onUse, confirming, onAskDelete, onCan
               Delete
             </button>
           ))}
+        </div>
       </div>
+      {previewing && (
+        <div className="pt-3">
+          <DatasetPreview datasetId={record.id} compact />
+        </div>
+      )}
     </li>
   );
 }
@@ -135,6 +158,9 @@ export default function Datasets() {
   const [csv, setCsv] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(null);
+  const [previewingId, setPreviewingId] = useState(null);
+  const [designPrompt, setDesignPrompt] = useState("");
+  const [design, setDesign] = useState({ busy: false, result: null, error: null });
   const imgInputRef = useRef(null);
   const csvInputRef = useRef(null);
 
@@ -219,7 +245,25 @@ export default function Datasets() {
     onCancelDelete: () => setConfirmingDelete(null),
     onDelete: removeRecord,
     deleting: library.deleting === record.id,
+    previewing: previewingId === record.id,
+    onTogglePreview: (item) => setPreviewingId(previewingId === item.id ? null : item.id),
   });
+
+  const onDesign = async () => {
+    const prompt = designPrompt.trim();
+    if (prompt.length < 3) {
+      setDesign({ busy: false, result: null, error: "Describe what the benchmark should test." });
+      return;
+    }
+    setDesign({ busy: true, result: null, error: null });
+    try {
+      const result = await generateDataset(prompt);
+      setDesign({ busy: false, result, error: null });
+      await refreshRecords();
+    } catch (exc) {
+      setDesign({ busy: false, result: null, error: exc.message });
+    }
+  };
 
   return (
     <div className="flex min-h-full flex-col">
@@ -242,9 +286,72 @@ export default function Datasets() {
             carries no heading of its own: an "Add data" label outside the cards
             put one column's title outside its container and the other's inside. */}
         <section className="lg:contents" aria-label="Add data">
-          {/* Fastest path first: a new operator can have scoreable data in one
-              click before ever preparing an upload. */}
-          <div className={`${PANEL} flex h-full flex-col p-5 lg:col-span-5 lg:col-start-1 lg:row-start-1`}>
+          {/* The most capable path first: describe the benchmark and the AI
+              designs a labelled dataset to match — schema, documents, and
+              ground truth — previewed below before anything runs against it. */}
+          <div className={`${PANEL} flex flex-col p-5 lg:col-span-5 lg:col-start-1 lg:row-start-1`}>
+            <div className="mb-3 flex items-center gap-3">
+              <span
+                aria-hidden="true"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[var(--accent-tint)] text-[var(--accent)]"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z" />
+                  <path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" />
+                </svg>
+              </span>
+              <h3 className="text-[14px] font-semibold text-[var(--ink)]">Design one for your benchmark</h3>
+            </div>
+            <p className="max-w-[52ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
+              Describe what you want to test and the AI designs a labelled dataset to match:
+              document type, fields, and ground truth. You see exactly what it made before any run
+              uses it.
+            </p>
+            <label className="sr-only" htmlFor="design-dataset-prompt">What should the dataset test?</label>
+            <textarea
+              id="design-dataset-prompt"
+              value={designPrompt}
+              onChange={(event) => setDesignPrompt(event.target.value)}
+              rows={2}
+              placeholder="e.g. tools that read purchase orders: PO number, order date, supplier, total"
+              className={`mt-3 w-full resize-none rounded-[12px] px-3 py-2 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-3)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${UPLOAD_BOX}`}
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button onClick={onDesign} disabled={design.busy} className={BTN_PRIMARY}>
+                {design.busy ? "Designing…" : "Design dataset"}
+              </button>
+              {design.busy && (
+                <span className="text-[12px] text-[var(--ink-3)]">
+                  Proposing a schema and rendering documents…
+                </span>
+              )}
+            </div>
+            {design.error && (
+              <p className="mt-3 text-[12px] text-[var(--danger)]" role="alert">
+                {design.error}
+              </p>
+            )}
+            {design.result && (
+              <div className="mt-4 flex flex-col gap-3 rounded-[12px] border border-[var(--line)] p-3">
+                <DatasetPreview preview={design.result.preview} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => useRecord({ id: design.result.dataset_id })}
+                    className={BTN_PRIMARY}
+                  >
+                    Looks right, use it
+                  </button>
+                  <button type="button" onClick={onDesign} disabled={design.busy} className={BTN_SECONDARY}>
+                    Regenerate
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* One-click fallback: scoreable data with zero preparation. */}
+          <div className={`${PANEL} flex h-full flex-col p-5 lg:col-span-5 lg:col-start-1 lg:row-start-2`}>
             <div className="mb-3 flex items-center gap-3">
               <span
                 aria-hidden="true"
@@ -290,7 +397,7 @@ export default function Datasets() {
             )}
           </div>
 
-          <div className={`${PANEL} p-5 lg:col-span-5 lg:col-start-1 lg:row-start-2`}>
+          <div className={`${PANEL} p-5 lg:col-span-5 lg:col-start-1 lg:row-start-3`}>
             <div className="mb-3 flex items-center gap-3">
               <span
                 aria-hidden="true"
@@ -463,7 +570,7 @@ export default function Datasets() {
         </section>
 
         <section className="lg:contents" aria-labelledby="library-heading">
-          <div className="flex h-full flex-col lg:col-span-7 lg:col-start-6 lg:row-start-1">
+          <div className="flex h-full flex-col lg:col-span-7 lg:col-start-6 lg:row-span-2 lg:row-start-1">
             {library.error && (
               <div className="mb-3">
                 <InlineError onRetry={refreshRecords}>{library.error}</InlineError>
@@ -535,13 +642,14 @@ export default function Datasets() {
 
           {/* Quiet explainer so the column does not end abruptly below the
               library card. Plain text, not a second panel. */}
-          <p className="max-w-[62ch] px-1 text-[12px] leading-relaxed text-[var(--ink-3)] lg:col-span-7 lg:col-start-6 lg:row-start-2">
-            A dataset is a folder of invoice images plus a{" "}
+          <p className="max-w-[62ch] px-1 text-[12px] leading-relaxed text-[var(--ink-3)] lg:col-span-7 lg:col-start-6 lg:row-start-3">
+            A dataset is a folder of document images plus a{" "}
             <span className="pb-mono">ground_truth.csv</span> holding the correct answer for each
-            one. That CSV needs the columns{" "}
-            <span className="pb-mono">doc_id</span>, <span className="pb-mono">invoice_number</span>,{" "}
-            <span className="pb-mono">date</span>, <span className="pb-mono">vendor</span>, and{" "}
-            <span className="pb-mono">total</span>.
+            one. The CSV needs a <span className="pb-mono">doc_id</span> column plus one column per
+            field you want scored. The sample uses{" "}
+            <span className="pb-mono">invoice_number</span>, <span className="pb-mono">date</span>,{" "}
+            <span className="pb-mono">vendor</span>, <span className="pb-mono">total</span>, but any
+            schema works.
           </p>
         </section>
       </div>

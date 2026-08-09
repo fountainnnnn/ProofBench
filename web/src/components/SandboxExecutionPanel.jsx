@@ -129,12 +129,18 @@ export default function SandboxExecutionPanel({
   const closeRef = useRef(null);
   const sandboxes = useMemo(() => {
     const names = new Set([...Object.keys(sandboxLogs), ...Object.keys(sandboxFiles)]);
+    // A live run's candidates get a card from the moment they are named, so
+    // provisioning shows per-candidate progress instead of an empty panel.
+    if (running && phaseState && !TERMINAL_PHASES.has(
+        String(phaseState.phase || "").toUpperCase())) {
+      Object.keys(phaseState.candidates || {}).forEach((name) => names.add(name));
+    }
     return [...names].map((name) => ({
       name,
       lines: sandboxLogs[name] || [],
       files: sandboxFiles[name] || [],
     }));
-  }, [sandboxLogs, sandboxFiles]);
+  }, [sandboxLogs, sandboxFiles, phaseState, running]);
 
   useEffect(() => {
     if (!open) return undefined;

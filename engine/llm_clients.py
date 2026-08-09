@@ -23,10 +23,10 @@ MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Bounded fan-out for providers without a native batch API. Assessment batches
-# are small (one request per candidate) and this keeps a wide candidate list
-# from opening an unbounded number of concurrent provider connections.
-MAX_CONCURRENT_COMPLETIONS = 8
+# Bounded fan-out per provider. Wide enough that a full candidate list clears in
+# one wave, bounded so a run cannot open unlimited provider connections.
+MAX_CONCURRENT_COMPLETIONS = 16
+
 
 
 @dataclass(frozen=True)
@@ -441,12 +441,12 @@ async def provider_chat_completions(
 ) -> list[Any]:
     """Run one assessment workload on a named provider.
 
-    Doubleword gets its native autobatcher; every other OpenAI-compatible
-    provider gets bounded concurrent completions. Both return one entry per
-    request, either a response or the exception that request raised.
+    Always bounded concurrent completions. Batch endpoints queue a workload for
+    throughput at the cost of latency, which a benchmark run pays in full while
+    a person waits: measured 257s through Doubleword's batch queue against 4.3s
+    through this path, same provider and model. Returns one entry per request,
+    either a response or the exception that request raised.
     """
     env = dict(env or {})
     selected_model = model or provider_model(provider, env)
-    if provider == "doubleword":
-        return await batch_chat_completions(requests, model=selected_model, env=env)
     return await _concurrent_chat_completions(provider, requests, selected_model, env)

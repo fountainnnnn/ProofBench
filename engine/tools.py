@@ -44,6 +44,10 @@ class RunContext:
     ground_truth_path: str = ""
     allowed_candidate_names: set[str] = field(default_factory=set)
     allowed_doc_ids: set[str] = field(default_factory=set)
+    # The run's declared extraction schema (names or {name, type} dicts). None
+    # means the legacy invoice schema; evaluation and adapter generation both
+    # read it so scoring and the adapter contract stay the same schema.
+    spec_fields: list | None = None
     evaluated_metrics: dict | None = field(default=None, repr=False)
     sandbox_handles: dict[str, SandboxHandle] = field(default_factory=dict, repr=False)
     result_keys: set[tuple[str, str]] = field(default_factory=set, repr=False)
@@ -269,7 +273,12 @@ def validate_result_record(ctx: RunContext, record: dict) -> None:
         raise ValueError("invalid result latency")
     if record["ok"]:
         prediction = record.get("prediction")
-        required = {"invoice_number", "date", "vendor", "total"}
+        # A result must carry exactly the run's declared schema — no extra keys
+        # (a sandbox cannot smuggle payload fields into the durable record) and
+        # no missing ones (the evaluator scores every declared column).
+        from engine.fields import field_names, parse_fields
+
+        required = set(field_names(parse_fields(ctx.spec_fields)))
         if not isinstance(prediction, dict) or set(prediction) != required:
             raise ValueError("invalid result prediction schema")
         if any(
@@ -327,7 +336,7 @@ def _tool_generate_adapter(args: dict, ctx: RunContext) -> str:
     if tool_name not in ctx.allowed_candidate_names:
         raise ValueError("tool_name is not a candidate in the current run")
     candidate = adapter_gen.generate_adapter(
-        tool_name, args["docs_md"], env=ctx.runtime_env
+        tool_name, args["docs_md"], env=ctx.runtime_env, fields=ctx.spec_fields
     )
     replace_candidate(ctx, tool_name, candidate)
     return json.dumps(asdict(candidate))
@@ -419,7 +428,7 @@ def _tool_evaluate(args: dict, ctx: RunContext) -> str:
         ground_truth.relative_to(dataset_root)
     except ValueError as exc:
         raise ValueError("ground truth is outside the current dataset") from exc
-    metrics = evaluate_results(ctx.results_path, str(ground_truth))
+    metrics = evaluate_results(ctx.results_path, str(ground_truth), fields=ctx.spec_fields)
     ctx.evaluated_metrics = metrics
     return json.dumps(metrics)
 
