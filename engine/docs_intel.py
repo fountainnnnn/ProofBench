@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from pathlib import Path
@@ -28,6 +29,9 @@ OXYLABS_ENDPOINT = "https://realtime.oxylabs.io/v1/queries"
 # per account, so this stays low enough that a batch is served rather than
 # throttled.
 SCRAPE_CONCURRENCY = 4
+
+# Pause before a provider's second attempt, long enough to clear a burst limit.
+SEARCH_RETRY_SECONDS = 1.5
 
 # Sentinel: "caller did not override the resolver", distinct from an explicit
 # None (which network_security reads as "skip DNS validation").
@@ -175,20 +179,39 @@ def web_search(query: str, n: int = 5, env: dict[str, str] | None = None) -> lis
         # credentials is misconfigured, and "no tools found" would read as an
         # answer about the internet rather than about this install.
         raise RuntimeError("no search provider is configured")
+    # One retry per provider before moving on. A rate limit or a lost race is
+    # the common failure here, not a broken deployment, and losing the whole
+    # intake turn to a transient means the user is told nothing was found on the
+    # internet when the truth is one HTTP call went wrong.
     failure: Exception | None = None
+    reasons: list[str] = []
     for name in providers:
-        try:
-            if name == "oxylabs":
-                results = oxylabs_search(query, n=n, env=settings)
-            else:
-                results = scrapers._module(name).web_search(query, n=n, env=settings)
-            if results:
-                return results
-        except Exception as exc:
-            failure = exc
+        # Retry only a raised failure, which is the transient case. An empty
+        # answer is a real answer from a working provider, so asking it the same
+        # question again just spends another call to be told the same thing.
+        for attempt in (1, 2):
+            try:
+                if name == "oxylabs":
+                    results = oxylabs_search(query, n=n, env=settings)
+                else:
+                    results = scrapers._module(name).web_search(query, n=n, env=settings)
+                if results:
+                    return results
+                reasons.append(f"{name}: no results")
+                break
+            except Exception as exc:
+                failure = exc
+                if attempt == 2:
+                    reasons.append(f"{name}: {type(exc).__name__}")
+                    break
+                time.sleep(SEARCH_RETRY_SECONDS)
     if failure is not None:
+        # Name what each provider actually did. "failed across every configured
+        # provider: oxylabs, selfhosted" says which doors were tried and nothing
+        # about why any of them was shut.
         raise RuntimeError(
-            "web search failed across every configured provider: " + ", ".join(providers)
+            "web search failed across every configured provider (" +
+            "; ".join(reasons) + ")"
         ) from failure
     # Every provider answered, none had anything. That is a real empty result.
     return []

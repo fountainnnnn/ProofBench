@@ -210,3 +210,39 @@ def test_scrape_falls_through_to_the_bounded_direct_fetch(monkeypatch, offline_d
     monkeypatch.setattr(docs_intel, "fetch_documentation", lambda url: "direct text")
 
     assert docs_intel.scrape_page("https://docs.example.com/a", dict(ALL)) == "direct text"
+
+
+def test_a_transient_failure_is_retried_before_the_chain_moves_on(monkeypatch):
+    """A rate limit is not a verdict about the internet.
+
+    Losing a whole intake turn to one unlucky HTTP call told the user nothing
+    was found when the truth was that one request failed, so each provider gets
+    a second attempt before the chain gives up on it.
+    """
+    monkeypatch.setattr(docs_intel, "SEARCH_RETRY_SECONDS", 0)
+    attempts = []
+
+    def flaky(query, n=5, env=None):
+        attempts.append("oxylabs")
+        if len(attempts) == 1:
+            raise RuntimeError("429 rate limited")
+        return [{"title": "found", "url": "u", "snippet": ""}]
+
+    monkeypatch.setattr(docs_intel, "oxylabs_search", flaky)
+    rows = docs_intel.web_search("q", n=5, env={"OXYLABS_USERNAME": "u",
+                                                "OXYLABS_PASSWORD": "p",
+                                                "PROOFBENCH_SCRAPER_ORDER": "oxylabs"})
+    assert attempts == ["oxylabs", "oxylabs"]
+    assert rows[0]["title"] == "found"
+
+
+def test_the_failure_says_what_each_provider_did(monkeypatch):
+    """Naming the doors that were tried says nothing about why they were shut."""
+    monkeypatch.setattr(docs_intel, "SEARCH_RETRY_SECONDS", 0)
+    monkeypatch.setattr(docs_intel, "oxylabs_search",
+                        lambda q, n=5, env=None: (_ for _ in ()).throw(TimeoutError("slow")))
+    with pytest.raises(RuntimeError) as raised:
+        docs_intel.web_search("q", n=5, env={"OXYLABS_USERNAME": "u",
+                                             "OXYLABS_PASSWORD": "p",
+                                             "PROOFBENCH_SCRAPER_ORDER": "oxylabs"})
+    assert "oxylabs: TimeoutError" in str(raised.value)

@@ -130,7 +130,7 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
           disabled={running || interactionDisabled || candidates.length === 0}
           className={BTN_PRIMARY}
         >
-          {running ? "Running..." : "Run benchmark"}
+          {running ? "Running..." : "Run again"}
         </button>
         {running && (
           <button type="button" onClick={onStop} disabled={stopping} className={BTN_DANGER}>

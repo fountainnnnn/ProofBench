@@ -500,7 +500,7 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
               ))}
             </div>
             <p className="mt-4 text-[12px] text-[var(--ink-3)]">
-              Nothing runs until you confirm the proposed specification.
+              You confirm the direction first; the benchmark then runs on its own.
             </p>
           </div>
         )}
