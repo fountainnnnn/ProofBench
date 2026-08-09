@@ -143,8 +143,6 @@ export default function Benchmark() {
   const uploadBusyRef = useRef(false);
   const chatBusyRef = useRef(false);
   const runBusyRef = useRef(false);
-  // Set when a spec artifact arrives; consumed by the effect that starts it.
-  const autoRunSpecRef = useRef(null);
   const sandboxPanelDismissedRef = useRef(false);
 
   useEffect(() => { datasetRef.current = dataset; }, [dataset]);
@@ -340,15 +338,13 @@ export default function Benchmark() {
           : (s.provenance || provenanceFor());
         switch (data.kind) {
           case "spec":
-            /* A settled spec starts its run. Benchmarking is the product, and a
-               spec that sits waiting for a click is a session that produced a
-               plan instead of evidence. The confirmation gate that used to live
-               here has already been passed: intake asks for confirmation with a
-               direction card BEFORE it searches, so by the time a spec exists
-               the user has already said yes to this direction. Editing a
-               candidate list still re-runs explicitly from the spec card. */
+            /* The spec settles into a card and WAITS. Auto-starting the run
+               here was tried (75e7a00) and reverted by operator decision: the
+               direction card consents to a search direction, not to spending
+               sandboxes, and a run the operator did not visibly start reads as
+               the console acting on its own. Starting the run is the operator's
+               click on the spec card, every time. */
             setTyping(false);
-            autoRunSpecRef.current = data.spec;
             return { ...s, spec: data.spec, provenance, specProvenance: artifactProvenance };
           case "direction":
             /* A chat-side card, not a trace row: it is a question put to the
@@ -912,18 +908,6 @@ export default function Benchmark() {
       }
     }
   };
-
-  /* Benchmarking is the product: a settled spec runs itself rather than waiting
-     to be clicked. Guarded on the same conditions the button is, so a spec that
-     arrives while a run is already streaming, or before its dataset resolves,
-     waits instead of racing. */
-  useEffect(() => {
-    const pending = autoRunSpecRef.current;
-    if (!pending || !activeId || running || uploadingDataset || datasetError) return;
-    if (pending.benchmark_type !== "tool_assessment" && !dataset?.id) return;
-    autoRunSpecRef.current = null;
-    onRun(pending);
-  }, [state.spec, activeId, running, uploadingDataset, datasetError, dataset?.id]);
 
   const onRun = async (spec) => {
     if (!activeId || runningRef.current || uploadBusyRef.current || datasetError || !acquireOperation(runBusyRef)) return;

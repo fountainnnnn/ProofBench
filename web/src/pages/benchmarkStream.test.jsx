@@ -122,6 +122,25 @@ describe("benchmark stream lifecycle", () => {
     await waitFor(() => expect(api.openEvents).toHaveBeenCalledTimes(1));
   });
 
+  it("a settled spec waits for the operator; it never starts its own run", async () => {
+    // Auto-run on spec settle shipped once (75e7a00) and was reverted by
+    // operator decision: the direction card consents to a search direction,
+    // not to spending sandboxes. This pins the revert.
+    renderAt("/app/benchmark");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(streams).toHaveLength(1));
+
+    streams[0].emit("artifact", {
+      kind: "spec",
+      spec: { benchmark_type: "tool_assessment", objective: "compare error trackers",
+              candidates: [{ name: "sentry" }] },
+    });
+    streams[0].emit("done", {});
+
+    await waitFor(() => expect(screen.getByTestId("running").textContent).toBe("false"));
+    expect(api.startRun).not.toHaveBeenCalled();
+  });
+
   it("auto-opens the sandbox execution panel when live output begins", async () => {
     renderAt("/app/benchmark");
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
