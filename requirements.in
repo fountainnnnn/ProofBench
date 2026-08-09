@@ -4,7 +4,7 @@ daytona==0.199.0
 openai==2.46.0
 autobatcher==0.10.0
 fastapi==0.139.2
-uvicorn==0.51.0
+uvicorn==0.52.1
 requests==2.34.2
 pillow==12.3.0
 python-dotenv==1.2.2
