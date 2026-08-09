@@ -140,6 +140,71 @@ def test_an_unparseable_or_failed_reply_never_raises():
     assert build_plan.generate("q", {}, COMPONENTS, complete=boom) is None
 
 
+def _complete_sequence(*replies):
+    """One reply per call, so a repaired second attempt can differ from the first."""
+    def call(env=None, **kwargs):
+        call.calls.append(kwargs)
+        reply = replies[min(len(call.calls) - 1, len(replies) - 1)]
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=reply))])
+    call.calls = []
+    return call
+
+
+def test_a_malformed_reply_is_repaired_once_with_the_reason():
+    """The retry sees the bad reply and why it failed, so it can correct rather
+    than repeat — the same feedback shape the assessment retry uses."""
+    call = _complete_sequence("not json", PLAN_JSON)
+    plan = build_plan.generate("q", {}, COMPONENTS, complete=call)
+
+    assert plan is not None and len(plan["steps"]) == 3
+    assert len(call.calls) == 2
+    repair = call.calls[1]["messages"]
+    assert repair[-2] == {"role": "assistant", "content": "not json"}
+    assert "failed validation" in repair[-1]["content"]
+    assert "not valid JSON" in repair[-1]["content"]
+
+
+def test_an_empty_first_reply_is_not_replayed_as_an_assistant_turn():
+    """Anthropic-style backends reject an assistant turn with empty content, so
+    replaying a blank reply would doom the repair round against every provider.
+    The retry gets only the reason; the plan is still recovered."""
+    for blank in (None, "", "   "):
+        call = _complete_sequence(blank, PLAN_JSON)
+        plan = build_plan.generate("q", {}, COMPONENTS, complete=call)
+
+        assert plan is not None and len(plan["steps"]) == 3
+        assert len(call.calls) == 2
+        repair = call.calls[1]["messages"]
+        assert all(turn["role"] != "assistant" for turn in repair)
+        assert "failed validation" in repair[-1]["content"]
+
+
+def test_repair_is_one_round_and_the_contract_stays_fail_open():
+    """A plan that retries until it parses is not the optional stage it claims
+    to be. Two attempts, then None."""
+    call = _complete_sequence("not json")
+    assert build_plan.generate("q", {}, COMPONENTS, complete=call) is None
+    assert len(call.calls) == 2
+
+
+def test_the_failure_detail_tells_a_dead_provider_from_a_bad_reply():
+    """The trace should say WHICH failure swallowed the plan: a provider that
+    never answered is a different problem from a model that cannot make the shape."""
+    def boom(env=None, **kwargs):
+        raise RuntimeError("provider down")
+
+    failure = {}
+    assert build_plan.generate("q", {}, COMPONENTS, complete=boom, failure=failure) is None
+    assert failure["detail"] == "provider call failed"
+
+    failure = {}
+    assert build_plan.generate("q", {}, COMPONENTS,
+                               complete=_complete("not json"), failure=failure) is None
+    assert failure["detail"].startswith("reply unparseable after repair")
+    assert "not valid JSON" in failure["detail"]
+
+
 def test_no_components_means_no_completion_is_spent():
     call = _complete(PLAN_JSON)
     assert build_plan.generate("q", {}, [], complete=call) is None

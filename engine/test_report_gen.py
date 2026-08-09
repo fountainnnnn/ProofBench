@@ -104,3 +104,76 @@ def test_the_deterministic_table_is_used_only_when_every_provider_fails(monkeypa
 
     assert "# ProofBench Report" in markdown
     assert "**tesseract** ranks first" in markdown
+
+
+class _QueuedChatClient:
+    """Fake chat client that pops one canned reply per completion call."""
+
+    def __init__(self, replies: list[str | None]):
+        self.replies = list(replies)
+        self.requests: list[dict] = []
+        completions = self
+
+        class _Chat:
+            pass
+
+        self.chat = _Chat()
+        self.chat.completions = completions
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        content = self.replies.pop(0)
+        message = type("Message", (), {"content": content})()
+        choice = type("Choice", (), {"message": message})()
+        return type("Response", (), {"choices": [choice]})()
+
+
+def test_an_empty_reply_gets_one_fed_back_retry(monkeypatch) -> None:
+    """A transient blank at the last stage must not fail an otherwise healthy provider."""
+    import engine.llm_clients as llm_clients
+    from engine.report_gen import _compose
+
+    client = _QueuedChatClient(["", "# Report on the second try\n"])
+    monkeypatch.setattr(llm_clients, "chat_client", lambda provider, env=None: client)
+    monkeypatch.setattr(llm_clients, "provider_model", lambda provider, env=None: "m")
+
+    markdown = _compose("deepseek", {"tesseract": MEASURED}, [], {})
+
+    assert markdown == "# Report on the second try\n"
+    assert len(client.requests) == 2
+    # The retry carries the failure back to the model, house style, not a bare re-ask.
+    assert "returned an empty" in client.requests[1]["messages"][-1]["content"]
+    assert "returned an empty" not in client.requests[0]["messages"][-1]["content"]
+
+
+def test_a_provider_that_stays_empty_fails_after_exactly_two_attempts(monkeypatch) -> None:
+    """The empty-reply retry is bounded at ONE extra attempt, then the provider fails."""
+    import pytest
+
+    import engine.llm_clients as llm_clients
+    from engine.report_gen import _compose
+
+    client = _QueuedChatClient([None, "   "])
+    monkeypatch.setattr(llm_clients, "chat_client", lambda provider, env=None: client)
+    monkeypatch.setattr(llm_clients, "provider_model", lambda provider, env=None: "m")
+
+    with pytest.raises(ValueError, match="empty completion twice"):
+        _compose("deepseek", {"tesseract": MEASURED}, [], {})
+
+    assert len(client.requests) == 2
+
+
+def test_the_fallback_message_names_every_provider_that_was_tried(monkeypatch, tmp_path, capsys) -> None:
+    """The operator must see which providers failed, not just that the table was used."""
+    import engine.llm_clients as llm_clients
+    import engine.report_gen as report_gen
+
+    monkeypatch.setattr(llm_clients, "capability_providers",
+                        lambda capability, env=None: ("openai", "deepseek"))
+    monkeypatch.setattr(report_gen, "_compose",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down")))
+
+    report_gen.write_report({"tesseract": MEASURED}, [], str(tmp_path / "r.md"))
+
+    err = capsys.readouterr().err
+    assert "openai, deepseek" in err

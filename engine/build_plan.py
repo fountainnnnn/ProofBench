@@ -63,12 +63,13 @@ def _clean_list(value: Any, limit: int, size: int = 300) -> list[str]:
     return out
 
 
-def parse_plan(content: str, known_components: dict[str, dict]) -> dict | None:
-    """Validate a model-authored plan, or return nothing.
+def parse_plan(content: str, known_components: dict[str, dict]) -> tuple[dict | None, str | None]:
+    """Validate a model-authored plan, or say tersely what was wrong with it.
 
     Nothing here is repaired. A plan with no summary and no steps says nothing a
     reader could act on, and printing an empty scaffold under a confident
-    heading would be worse than printing no section at all.
+    heading would be worse than printing no section at all. The reason travels
+    back with the None so a retry can correct rather than repeat.
 
     ``known_components`` maps each assessed component's display name to the
     facts the run measured about it. Those facts are attached to the roles here
@@ -87,9 +88,9 @@ def parse_plan(content: str, known_components: dict[str, dict]) -> dict | None:
     try:
         value = json.loads(text)
     except (ValueError, json.JSONDecodeError):
-        return None
+        return None, "the reply was not valid JSON"
     if not isinstance(value, dict):
-        return None
+        return None, "the JSON was not an object"
 
     components = []
     for raw in (value.get("components") or [])[:MAX_COMPONENTS]:
@@ -116,9 +117,10 @@ def parse_plan(content: str, known_components: dict[str, dict]) -> dict | None:
         "integration": str(value.get("integration") or "").strip()[:600],
         "risks": _clean_list(value.get("risks"), 5, 300),
     }
-    if not plan["summary"] or not plan["steps"]:
-        return None
-    return plan
+    empty = [key for key in ("summary", "steps") if not plan[key]]
+    if empty:
+        return None, f"required key(s) missing or empty: {', '.join(empty)}"
+    return plan, None
 
 
 def _component_brief(name: str, values: dict) -> dict:
@@ -132,13 +134,22 @@ def _component_brief(name: str, values: dict) -> dict:
 
 
 def generate(objective: str, constraints: dict | None, components: list[tuple[str, dict]],
-             *, env: dict[str, str] | None = None, complete=None) -> dict | None:
+             *, env: dict[str, str] | None = None, complete=None,
+             failure: dict | None = None) -> dict | None:
     """Design an implementation over the assessed components, or return nothing.
 
     Failure is always None rather than an exception: the plan is the most useful
     part of a no-product verdict, and also the most optional. A run that cannot
     produce one still reports the verdict, the ranking and the evidence.
+
+    A malformed reply gets ONE repair round before that None: the reply and the
+    reason it failed validation go back to the model so the retry can correct
+    rather than repeat. ``failure``, when given, receives a ``detail`` string
+    saying which kind of failure was final — the trace should be able to tell a
+    dead provider from a model that could not produce the shape.
     """
+    if failure is None:
+        failure = {}
     if not components:
         return None
     if complete is None:
@@ -150,17 +161,40 @@ def generate(objective: str, constraints: dict | None, components: list[tuple[st
         "environment": constraints or {},
         "assessed_components": [_component_brief(name, values) for name, values in components],
     }, indent=2)
+    known = {str(v.get("display_name") or n): v for n, v in components}
+    messages = [{"role": "system", "content": BUILD_PLAN_SYSTEM},
+                {"role": "user", "content": request}]
+    try:
+        response = complete(env, messages=messages, temperature=0.2)
+        reply = response.choices[0].message.content
+    except Exception:
+        failure["detail"] = "provider call failed"
+        return None
+    plan, reason = parse_plan(reply, known)
+    if plan is not None:
+        return plan
+    # An empty reply has nothing worth showing back, and Anthropic-style
+    # backends reject an assistant turn with empty content — so the retry
+    # gets only the reason, not a replay that would fail every provider.
+    replay = ([{"role": "assistant", "content": reply}]
+              if isinstance(reply, str) and reply.strip() else [])
     try:
         response = complete(
             env,
-            messages=[{"role": "system", "content": BUILD_PLAN_SYSTEM},
-                      {"role": "user", "content": request}],
+            messages=messages + replay + [
+                {"role": "user", "content":
+                    f"IMPORTANT: that reply failed validation ({reason}). Return ONLY "
+                    "the JSON object described in the system message, with every "
+                    "required key present and non-empty."}],
             temperature=0.2,
         )
-        return parse_plan(response.choices[0].message.content,
-                          {str(v.get("display_name") or n): v for n, v in components})
+        plan, reason = parse_plan(response.choices[0].message.content, known)
     except Exception:
+        failure["detail"] = "provider call failed"
         return None
+    if plan is None:
+        failure["detail"] = f"reply unparseable after repair ({reason})"
+    return plan
 
 
 def _part_line(item: dict) -> str:

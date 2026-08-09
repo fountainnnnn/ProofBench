@@ -125,16 +125,6 @@ def test_both_gate_queries_run_even_when_the_sweep_ran_a_channel_shape(monkeypat
                               "diagram practice question app iphone"]
 
 
-@pytest.mark.parametrize("query", [
-    "diagram question app iphone",
-    "practice app android",
-    "homework helper app app store",
-    "diagram question bank app google play",
-])
-def test_channel_shapes_are_recognised(query):
-    assert agent_mod._is_channel_query(query)
-
-
 def test_the_turn_query_list_resets_between_chat_calls(monkeypatch, tmp_path):
     """Per turn, because the gate asks what THIS turn's sweep covered."""
     a = agent_mod.Orchestrator("run-1", str(tmp_path), emit=lambda kind, payload: None)
@@ -258,10 +248,33 @@ def test_an_unparseable_query_reply_leaves_the_spec_alone(monkeypatch, tmp_path)
     assert _trace(a)[0]["status"] == "error"
 
 
-def test_an_empty_query_string_is_a_parse_failure():
+def test_one_malformed_query_never_discards_the_other():
+    """Each query buys its own pool; losing one must not forfeit both."""
+    assert agent_mod._parse_discovery_queries(json.dumps(
+        {"ladder_query": "", "channel_query": "x app iphone"}
+    )) == ("", "x app iphone")
+    assert agent_mod._parse_discovery_queries(json.dumps(
+        {"ladder_query": "stem platform", "channel_query": 7}
+    )) == ("stem platform", "")
+
+
+def test_a_reply_with_no_usable_query_is_a_parse_failure():
     with pytest.raises(ValueError):
         agent_mod._parse_discovery_queries(json.dumps(
-            {"ladder_query": "", "channel_query": "x app iphone"}))
+            {"ladder_query": "", "channel_query": "  "}))
+
+
+def test_the_surviving_query_still_runs_its_search(monkeypatch, tmp_path):
+    """The salvage has to reach the wire: one bad field, one search, not zero."""
+    queries = json.dumps({"ladder_query": "",
+                          "channel_query": "diagram practice question app iphone"})
+    model, search = _Model(queries, HARVEST), _Search()
+    a = _agent(monkeypatch, tmp_path, model, search)
+
+    spec = a._ensure_discovery_reach(dict(PRODUCTS))
+
+    assert search.queries == ["diagram practice question app iphone"]
+    assert [c["name"] for c in spec["candidates"]] == ["alpha_tool", "bravo"]
 
 
 def test_a_failed_search_skips_rather_than_raising(monkeypatch, tmp_path):

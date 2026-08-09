@@ -288,7 +288,10 @@ Your job in this conversation:
    to the overall product, platform, service, solution, system, tool, or deployment.
 5. Every candidate must have a real docs_url. A URL returned by web_search is enough on
    its own — scrape_docs only enriches it, and is never required to propose the spec.
-   Do not use the built-in OCR candidates unless the user explicitly asks for OCR.
+   pricing_url is the public pricing page's URL; when a candidate has no such page —
+   open source, contact-sales-only, free, whatever the reason — declare that with "",
+   never with prose. Do not use the built-in OCR candidates unless the user explicitly
+   asks for OCR.
 5a. Scraping fails often: vendors block automated fetches, and that is expected, not a
    problem to solve. If scrape_docs returns an error, DO NOT retry it, do not try a
    different page for the same candidate, and do not search again for a replacement —
@@ -559,7 +562,7 @@ SPEC_RECOVERY_CONTRACT_TOOL_ASSESSMENT = """Return ONLY a single fenced ```json 
                  "role": "product"|"build_component"}],
  "excluded": [{"name": slug, "display_name": str,
                "kind": "violation"|"not_assessed", "violates": str}]}
-Every candidate needs a real docs_url. Include at least one role "build_component". constraints records only what the user actually stated; omit what they did not. excluded is optional. Draw candidates and URLs only from the conversation and gathered findings — invent nothing."""
+Every candidate needs a real docs_url. pricing_url is a URL or "" when there is no public pricing page — never prose. Include at least one role "build_component". constraints records only what the user actually stated; omit what they did not. excluded is optional. Draw candidates and URLs only from the conversation and gathered findings — invent nothing."""
 
 SPEC_RECOVERY_CONTRACT_EXTRACTION_TEMPLATE = """Return ONLY a single fenced ```json block, no prose before or after, with EXACTLY this shape:
 {"benchmark_type": "extraction",
@@ -605,7 +608,6 @@ def _compact(text: str) -> str:
 
 
 _INTAKE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_PRICING_PLACEHOLDERS = {"open source", "open-source", "opensource", "n/a", "na", "none", "free"}
 
 
 _PROVIDER_MESSAGE_RE = re.compile(r"""['"]message['"]\s*:\s*['"](.+?)['"]\s*[,}]""", re.S)
@@ -864,28 +866,15 @@ def _parse_build_components(content: str, taken_names: set[str]) -> list[dict]:
     return components
 
 
-_CHANNEL_STORE_TOKENS = ("iphone", "ios", "android", "app store", "play store", "google play")
-
-
-def _is_channel_query(query: object) -> bool:
-    """True when a query already reaches the app-store pool.
-
-    Shape, not wording: " app " next to a store or platform token. The gate only
-    needs to know whether that pool was already drawn from this turn, and a
-    stricter match would re-run the search the model did get right.
-    """
-    text = f" {' '.join(str(query or '').casefold().split())} "
-    if " app " not in text and not text.rstrip().endswith(" app"):
-        return False
-    return any(token in text for token in _CHANNEL_STORE_TOKENS)
-
-
 def _parse_discovery_queries(content: str) -> tuple[str, str]:
-    """The two supplementary queries, or a raise the caller fails open on.
+    """The two supplementary queries, either of which may be "".
 
     Model-authored, so neither string is repaired: a missing, empty, or
-    non-string query is a parse failure rather than something to patch. Bounded
-    at 200 characters because a query long enough to matter is already wrong.
+    non-string query is dropped rather than patched. Each query is judged on
+    its own — one malformed field must not cost the pool the other query still
+    reaches — and the raise the caller fails open on is reserved for a reply
+    with nothing usable in it at all. Bounded at 200 characters because a query
+    long enough to matter is already wrong.
     """
     value = json.loads(_unfenced_json_text(content))
     if not isinstance(value, dict):
@@ -894,8 +883,11 @@ def _parse_discovery_queries(content: str) -> tuple[str, str]:
     for key in ("ladder_query", "channel_query"):
         raw = value.get(key)
         if not isinstance(raw, str) or not raw.strip():
-            raise ValueError(f"discovery reach reply is missing {key}")
+            queries.append("")
+            continue
         queries.append(" ".join(raw.split())[:200])
+    if not any(queries):
+        raise ValueError("discovery reach reply carries no usable query")
     return queries[0], queries[1]
 
 
@@ -1075,26 +1067,28 @@ _BRIEF_KEYS = ("category", "objective", "constraints", "inferred_context",
                "unknowns", "search_angles", "improved_prompt", "complete")
 
 
-def _build_prompt_brief(content: str, request_text: str = "") -> dict | None:
-    """Validate and bound one model-authored research brief, or return None.
+def _build_prompt_brief(content: str, request_text: str = "") -> dict:
+    """Validate and bound one model-authored research brief, or raise.
 
     The brief is prepended to the intake system prompt, so anything it says
     reads to the next model as though the user had said it. That makes a
-    half-parsed brief worse than none at all: None is the honest answer to a
-    malformed reply, and the turn proceeds on the request as written.
+    half-parsed brief worse than none at all: a malformed reply raises with the
+    reason, so the one repair round can feed back what was actually wrong.
     """
     try:
         value = json.loads(_unfenced_json_text(content))
     except (TypeError, ValueError):
-        return None
+        raise ValueError("the reply is not valid JSON")
     if not isinstance(value, dict) or any(key not in value for key in _BRIEF_KEYS):
-        return None
+        raise ValueError(
+            "the reply must be a JSON object carrying every documented key: "
+            + ", ".join(_BRIEF_KEYS))
     category = str(value.get("category") or "").strip()[:128]
     objective = str(value.get("objective") or "").strip()[:1000]
     if not category and not objective:
         # A brief that names neither restates nothing; there is no amplification
         # to be had from it, and rendering it would just add noise to the prompt.
-        return None
+        raise ValueError("the brief names neither a category nor an objective")
     unknowns = [
         str(item or "").strip()[:80]
         for item in (value.get("unknowns") or [])[:6]
@@ -1203,7 +1197,12 @@ def _normalize_intake_spec(
             continue
         docs_url = str(raw.get("docs_url") or "").strip()[:2048]
         pricing_url = str(raw.get("pricing_url") or "").strip()[:2048]
-        if pricing_url.casefold() in _PRICING_PLACEHOLDERS or not _valid_intake_url(pricing_url):
+        # The contract asks for a URL or "", but models still write prose here
+        # ("Open-source", "contact us", a localized "free"). Whatever the
+        # wording, prose in this field is the same declaration of no public
+        # pricing page, so URL validity is the whole gate — no keyword list
+        # deciding which phrasings count.
+        if not _valid_intake_url(pricing_url):
             pricing_url = ""
         if declared == "tool_assessment" and not _valid_intake_url(docs_url):
             continue
@@ -1982,26 +1981,50 @@ class Orchestrator:
         block says as much in its first line, so the model treats the user's own
         words as authoritative wherever the two differ.
         """
-        try:
-            resp = _orchestrator_complete(
-                self.runtime_env,
-                messages=[{"role": "system", "content": PROMPT_BRIEF_SYSTEM},
-                          {"role": "user", "content": user_message}],
-                temperature=0,
-            )
-            brief = _build_prompt_brief(resp.choices[0].message.content, user_message)
-            if brief is None:
-                raise ValueError("brief could not be parsed")
-        except _RunCancelled:
-            raise
-        except Exception:
+        def _fail_open(detail: str) -> None:
             self.emit("artifact", {
                 "kind": "trace", "tool": "prompt_brief",
                 "args_summary": "opening request",
                 "status": "error",
-                "detail": "brief unavailable; proceeding with the request as written",
+                "detail": f"{detail}; proceeding with the request as written",
             })
-            return "", None
+
+        messages = [{"role": "system", "content": PROMPT_BRIEF_SYSTEM},
+                    {"role": "user", "content": user_message}]
+        brief = None
+        # One repair round, mirroring the assessment retry: the parse failure
+        # travels back verbatim so the second attempt can correct rather than
+        # repeat. A dead provider gets no retry — repair fixes replies, not
+        # outages — and the trace says which of the two actually happened.
+        for repairing in (False, True):
+            try:
+                resp = _orchestrator_complete(
+                    self.runtime_env, messages=messages, temperature=0,
+                )
+                content = str(resp.choices[0].message.content or "")
+            except _RunCancelled:
+                raise
+            except Exception:
+                _fail_open("model call failed")
+                return "", None
+            try:
+                brief = _build_prompt_brief(content, user_message)
+                break
+            except Exception as exc:
+                if repairing:
+                    _fail_open("reply unparseable after repair")
+                    return "", None
+                # An empty reply has nothing to show back, and Anthropic-style
+                # backends reject an assistant turn with empty content — the
+                # repair would then die on transport, not on the model.
+                replay = ([{"role": "assistant", "content": content}]
+                          if content.strip() else [])
+                messages = messages + replay + [
+                    {"role": "user", "content":
+                        "IMPORTANT: that reply failed validation "
+                        f"({exc}). Return ONLY the JSON object, with every "
+                        "documented key present."},
+                ]
         constraints = brief["constraints"]
         must_have = constraints.get("must_have") or []
         self.emit("artifact", {
@@ -2186,18 +2209,21 @@ class Orchestrator:
         components = build_path_is_the_answer(metrics)
         if not components:
             return None
+        failure: dict = {}
         plan = build_plan.generate(
             spec.get("objective") or spec.get("category") or "",
             spec.get("constraints") or {},
             components,
             env=self.runtime_env,
+            failure=failure,
         )
         self.emit("artifact", {
             "kind": "trace", "tool": "build_plan",
             "args_summary": f"{len(components)} components",
             "status": "ok" if plan else "error",
             "detail": (f"planned over {', '.join(n for n, _ in components)}"
-                       if plan else "no implementation plan produced"),
+                       if plan else "no implementation plan produced: "
+                       + failure.get("detail", "unknown failure")),
         })
         return plan
 
@@ -2216,10 +2242,10 @@ class Orchestrator:
 
         Instructions are honoured probabilistically; this is enforced instead.
         Two extra completions, offered no tools, and up to two searches this code
-        dispatches itself. A channel-shaped query the model already ran is not
-        run again; the ladder shape cannot be recognised mechanically, so it is
-        always run. Every failure path returns the spec as drafted, because a
-        gate that could lose a shortlist would cost more than it earns.
+        dispatches itself. Every failure path returns the spec as drafted,
+        because a gate that could lose a shortlist would cost more than it
+        earns — and that holds per query: one query the reach reply got wrong
+        never cancels the search the other one still buys.
         """
         if spec.get("benchmark_type") != "tool_assessment":
             return spec
@@ -2272,6 +2298,10 @@ class Orchestrator:
         seen_urls: set[str] = set()
         ran = 0
         for source, query in (("ladder", ladder_query), ("channel", channel_query)):
+            if not query:
+                # The parse salvaged the other query; an empty one has no pool
+                # to reach and is skipped the way a failed search is.
+                continue
             self._check_cancelled()
             try:
                 results = docs_intel.web_search(

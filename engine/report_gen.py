@@ -164,23 +164,36 @@ def _build_prompt(metrics: dict, citations: list[dict]) -> str:
 
 def _compose(provider: str, metrics: dict, citations: list[dict],
              runtime_env: dict[str, str]) -> str:
-    """Ask one provider for the narrative report. Raises if it does not answer."""
+    """Ask one provider for the narrative report. Raises if it does not answer.
+
+    An empty reply gets ONE retry with the failure fed back, the way assessment
+    validation failures are. Failing the provider on the first blank meant a
+    transient hiccup at the very last stage discarded a provider that was
+    otherwise healthy — and this stage runs after the sandbox spend is sunk.
+    """
     from engine.llm_clients import chat_client, provider_model
 
     model = provider_model(provider, runtime_env)
     if provider == "openai":
         model = runtime_env.get("OPENAI_REPORT_MODEL", "").strip() or model
-    resp = chat_client(provider, runtime_env).chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You are a precise report writer. Never invent numbers."},
-            {"role": "user", "content": _build_prompt(metrics, citations)},
-        ],
-    )
-    markdown = resp.choices[0].message.content
-    if not markdown or not markdown.strip():
-        raise ValueError("empty completion")
-    return markdown
+    client = chat_client(provider, runtime_env)
+    prompt = _build_prompt(metrics, citations)
+    for _attempt in range(2):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a precise report writer. Never invent numbers."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        markdown = resp.choices[0].message.content
+        if markdown and markdown.strip():
+            return markdown
+        prompt += (
+            "\n\nIMPORTANT: a previous attempt at this report returned an empty "
+            "reply. Return the full markdown report, never an empty message."
+        )
+    raise ValueError("empty completion twice")
 
 
 def write_report(
@@ -210,8 +223,9 @@ def write_report(
             print(f"[report_gen] report provider {provider} failed: {type(exc).__name__}",
                   file=sys.stderr)
     if not markdown:
-        print("[report_gen] no report provider succeeded, using the deterministic table",
-              file=sys.stderr)
+        tried = ", ".join(providers) if providers else "none configured"
+        print(f"[report_gen] every report provider failed ({tried}), "
+              "using the deterministic table", file=sys.stderr)
         markdown = _fallback_report(metrics, citations)
 
     out_dir = os.path.dirname(out_path)

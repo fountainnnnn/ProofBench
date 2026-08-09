@@ -349,14 +349,231 @@ def test_a_surviving_contradiction_is_reported_not_hidden(monkeypatch):
     assert [flag["code"] for flag in outcome["flags"]] == ["impl_true_reason_negative"]
 
 
-def test_a_clean_set_of_rows_never_calls_the_provider(monkeypatch):
+def test_a_clean_set_of_rows_never_calls_the_reassessment(monkeypatch):
+    """The judge may read a clean row, but only a contradiction buys a re-assessment."""
     def unexpected(*_a, **_k):
         raise AssertionError("a clean run must not spend a second assessment")
 
     monkeypatch.setattr(self_check, "_supervised_reassessment", unexpected)
+    monkeypatch.setattr(self_check, "_judged_contradictions", lambda *_a, **_k: [])
 
     assert run_self_check({"alpha": row()}, "objective", SCRAPED, env=SUP_ENV) == {
         "flags": [], "repaired": []}
+
+
+# ------------------------------------------------------------------- the judge
+
+JUDGED_FLAG = {"name": "alpha", "code": "verdict_reason_judged_contradictory",
+               "detail": ("Rated implementable, but a distinct reviewer judged the "
+                          "reason to argue the opposite: “Rendering is nowhere in "
+                          "the documentation.”")}
+
+
+def _judge(monkeypatch, flags):
+    seen = {}
+
+    def fake(rows, objective, identity, env):
+        seen["rows"] = rows
+        seen["identity"] = identity
+        return flags
+
+    monkeypatch.setattr(self_check, "_judged_contradictions", fake)
+    return seen
+
+
+def test_a_rephrased_contradiction_the_regexes_missed_is_judged_and_repaired(monkeypatch):
+    """"is nowhere in the documentation" asserts the same absence as "does not
+    show" and matches no regex; only the judge catches the rephrasing."""
+    _judge(monkeypatch, [dict(JUDGED_FLAG)])
+    _serve(monkeypatch, {"alpha": {"plan": validate_plan(_plan())}})
+    metrics = {"alpha": row(rating=91, reason=(
+        "Rendering of the required diagram output is nowhere in the documentation."))}
+
+    assert find_contradictions(metrics) == []
+    outcome = run_self_check(metrics, "objective", SCRAPED, env=SUP_ENV)
+
+    assert outcome["repaired"] == ["alpha"]
+    assert metrics["alpha"]["implementable"] is False
+    # The replacement came from the distinct supervisor with the contradiction
+    # quoted back; re-judging it would be a retry loop, so the flag retires.
+    assert outcome["flags"] == []
+
+
+def test_the_judge_only_sees_rows_the_regexes_cleared(monkeypatch):
+    """A row the cheap pass already caught is repaired, not judged twice; a row
+    with no verdict or no reason has no pair of claims to contradict."""
+    seen = _judge(monkeypatch, [])
+    _serve(monkeypatch, {})
+    metrics = {
+        "alpha": row(rating=91, reason=(
+            "The documentation does not show rendering, which is a hard requirement.")),
+        "beta": row(reason="Documented client and clear auth."),
+        "gamma": row(rating=None),
+        "delta": row(implementable=None),
+        "epsilon": row(reason=""),
+    }
+
+    run_self_check(metrics, "objective", SCRAPED, env=SUP_ENV)
+
+    assert [item["name"] for item in seen["rows"]] == ["beta"]
+    assert seen["identity"].provider == "moonshot"
+
+
+def test_no_distinct_supervisor_skips_the_judge_entirely(monkeypatch):
+    """The judge holds the repair's line: no distinct model means no review,
+    never the producer reading its own prose back."""
+    def unexpected(*_a, **_k):
+        raise AssertionError("a lone provider must not judge its own rows")
+
+    monkeypatch.setattr(self_check, "_judged_contradictions", unexpected)
+
+    outcome = run_self_check({"alpha": row()}, "objective", SCRAPED,
+                             env={"DEEPSEEK_API_KEY": "sk-assessment"})
+
+    assert outcome == {"flags": [], "repaired": []}
+
+
+def test_a_judge_outage_leaves_the_cleared_rows_unflagged(monkeypatch):
+    """Fail-open: the check must never break the run, and a judge that fails
+    only returns the run to the regex-clean state it already earned."""
+    def dead(*_a, **_k):
+        raise RuntimeError("every configured supervisor provider failed")
+
+    monkeypatch.setattr(self_check, "_judged_contradictions", dead)
+
+    assert run_self_check({"alpha": row()}, "objective", SCRAPED, env=SUP_ENV) == {
+        "flags": [], "repaired": []}
+
+
+def test_a_judged_flag_survives_when_the_reassessment_fails(monkeypatch):
+    """An unrepaired row still carries the contradiction the judge found; the
+    reader gets the argument rather than the number alone."""
+    _judge(monkeypatch, [dict(JUDGED_FLAG)])
+    _serve(monkeypatch, {"alpha": {"error": "ValueError: invalid response"}})
+    metrics = {"alpha": row(rating=91, reason=(
+        "Rendering of the required diagram output is nowhere in the documentation."))}
+
+    outcome = run_self_check(metrics, "objective", SCRAPED, env=SUP_ENV)
+
+    assert outcome["repaired"] == []
+    assert [flag["code"] for flag in outcome["flags"]] == [
+        "verdict_reason_judged_contradictory"]
+
+
+def _judge_provider(monkeypatch, batches):
+    """Serve one canned reply batch per judge call, recording every request batch."""
+    from types import SimpleNamespace
+
+    from engine import llm_clients
+
+    calls = []
+
+    async def fake(provider, requests, model=None, env=None):
+        calls.append(requests)
+        return [item if isinstance(item, BaseException) else SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=item))])
+            for item in batches[len(calls) - 1]]
+
+    monkeypatch.setattr(llm_clients, "provider_chat_completions", fake)
+    return calls
+
+
+def _judge_rows(*names):
+    return [{"name": name, "implementable": True, "reason": "reason text"}
+            for name in names]
+
+
+def _run_judge(rows):
+    from engine.llm_clients import ModelIdentity
+
+    return self_check._judged_contradictions(
+        rows, "objective", ModelIdentity("moonshot", "kimi"), {})
+
+
+def test_a_well_formed_verdict_stands_on_the_first_reply(monkeypatch):
+    """Contradictory flags, consistent clears — and neither buys a second call:
+    a second opinion is one opinion, never a retry hunting for a flag."""
+    calls = _judge_provider(monkeypatch, [[
+        json.dumps({"verdict": "contradictory",
+                    "sentence": "Rendering is nowhere in the documentation."}),
+        json.dumps({"verdict": "consistent", "sentence": ""}),
+    ]])
+
+    flags = _run_judge(_judge_rows("alpha", "beta"))
+
+    assert [flag["name"] for flag in flags] == ["alpha"]
+    assert "Rendering is nowhere in the documentation." in flags[0]["detail"]
+    assert len(calls) == 1
+
+
+def test_a_malformed_contradictory_reply_is_repaired_once_and_the_flag_lands(monkeypatch):
+    """The judge decided; only the envelope failed. A noun-form verdict, a
+    prose-wrapped JSON object, and a trailing period all vanished silently
+    before — a broken-but-willing judge read as a clean bill of health."""
+    well_formed = json.dumps({"verdict": "contradictory",
+                              "sentence": "Rendering is nowhere shown."})
+    calls = _judge_provider(monkeypatch, [
+        [json.dumps({"verdict": "contradiction", "sentence": "Rendering is nowhere shown."}),
+         "Here is my analysis:\n" + json.dumps(
+             {"verdict": "contradictory", "sentence": "Rendering is nowhere shown."}),
+         json.dumps({"verdict": "contradictory.", "sentence": "Rendering is nowhere shown."})],
+        [well_formed, well_formed, well_formed],
+    ])
+
+    flags = _run_judge(_judge_rows("alpha", "beta", "gamma"))
+
+    assert [flag["name"] for flag in flags] == ["alpha", "beta", "gamma"]
+    assert len(calls) == 2
+    # The retry quotes the failure and the malformed reply back, the same shape
+    # as the assessment retry — a blind re-ask would just repeat the mistake.
+    retry = calls[1][0]["messages"][-1]["content"]
+    assert "failed validation" in retry
+    assert "'contradiction'" in retry
+    assert "keeping the judgement you already reached" in retry
+
+
+def test_the_judge_repair_is_bounded_to_a_single_round(monkeypatch):
+    """A reply still malformed after the failure was quoted back is dropped:
+    one bounded repair, never a loop that asks until something parses."""
+    calls = _judge_provider(monkeypatch, [["not json at all"], ["still not json"]])
+
+    assert _run_judge(_judge_rows("alpha")) == []
+    assert len(calls) == 2
+
+
+def test_an_errored_request_gets_no_repair_round(monkeypatch):
+    """An exception carries no reply to quote back, so its row is dropped
+    without a retry — the judge pass stays fail-open, never a gate."""
+    calls = _judge_provider(monkeypatch, [[RuntimeError("request failed")]])
+
+    assert _run_judge(_judge_rows("alpha")) == []
+    assert len(calls) == 1
+
+
+def test_a_repaired_consistent_verdict_is_not_re_asked_for_a_flag(monkeypatch):
+    """The repair fixes the envelope, not the verdict: a retry that validates
+    to consistent clears its row exactly as a first-attempt consistent does."""
+    calls = _judge_provider(monkeypatch, [
+        ["The row looks fine to me."],
+        [json.dumps({"verdict": "consistent", "sentence": ""})],
+    ])
+
+    assert _run_judge(_judge_rows("alpha")) == []
+    assert len(calls) == 2
+
+
+def test_the_judge_request_shows_the_row_and_demands_strict_json():
+    """The judge sees exactly what a reader of the row sees — verdict and reason —
+    and is pinned to deterministic strict-JSON output like the assessment is."""
+    request = self_check._judge_request(
+        "alpha", True, "Rendering is nowhere in the documentation.", "the objective")
+
+    assert request["temperature"] == 0
+    assert request["response_format"] == {"type": "json_object"}
+    content = request["messages"][-1]["content"]
+    assert "implementable" in content
+    assert "Rendering is nowhere in the documentation." in content
+    assert '"contradictory" or "consistent"' in content
 
 
 # ------------------------------------------------------------------ the report
@@ -392,6 +609,10 @@ def _run(monkeypatch, plan_value=None):
     run_dir = Path("runs") / f"test_self_check_{uuid.uuid4().hex[:8]}"
     monkeypatch.setattr(agent, "dispatch_tool",
                         lambda name, args, ctx: json.dumps("official docs"))
+    # The judge resolves a supervisor from the runtime env — on a developer
+    # machine with real keys that would be a live call. These tests are about
+    # the agent wiring, not the judge, so it clears every row it is shown.
+    monkeypatch.setattr(self_check, "_judged_contradictions", lambda *_a, **_k: [])
     monkeypatch.setattr(
         tool_assessment, "assess_documentation_batch",
         lambda candidates, *_a, **_k: {

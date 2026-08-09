@@ -86,15 +86,17 @@ def test_a_fenced_reply_is_accepted():
     json.dumps({k: v for k, v in BRIEF.items() if k != "complete"}),
 ])
 def test_anything_malformed_is_dropped_rather_than_half_used(content):
-    """None is the honest answer; the turn proceeds on the request as written."""
-    assert _build_prompt_brief(content) is None
+    """A raise with the reason, so the repair round can say what was wrong."""
+    with pytest.raises(ValueError):
+        _build_prompt_brief(content)
 
 
 def test_a_brief_naming_neither_category_nor_objective_is_nothing_at_all():
     empty = {"category": "  ", "objective": "", "constraints": {},
              "inferred_context": [], "unknowns": ["budget"], "search_angles": [],
              "improved_prompt": "", "complete": False}
-    assert _build_prompt_brief(json.dumps(empty)) is None
+    with pytest.raises(ValueError):
+        _build_prompt_brief(json.dumps(empty))
 
 
 def test_completeness_must_be_an_actual_boolean():
@@ -316,13 +318,101 @@ def test_a_failed_brief_leaves_the_turn_running_on_the_request_as_written(monkey
 
     a.chat("something for RAG over our internal docs")
 
-    system_prompt = recorder.calls[1]["messages"][0]["content"]
+    # One repair round was spent (call 2) before the turn fell open to intake.
+    repair = recorder.calls[1]["messages"]
+    assert repair[0]["content"] == PROMPT_BRIEF_SYSTEM
+    assert repair[-2]["content"] == "sorry, I could not do that"
+    assert "failed validation" in repair[-1]["content"]
+    system_prompt = recorder.calls[2]["messages"][0]["content"]
     assert "restated as a research brief" not in system_prompt
     # The turn still happened and still answered.
     assert "cost or latency" in " ".join(a.deltas)
     trace = _traces(a)[0]
     assert trace["status"] == "error"
-    assert trace["detail"] == "brief unavailable; proceeding with the request as written"
+    assert trace["detail"] == ("reply unparseable after repair; "
+                               "proceeding with the request as written")
+
+
+def test_one_repair_round_recovers_a_malformed_brief(monkeypatch, tmp_path):
+    """The parse failure travels back, mirroring the assessment retry.
+
+    A reply that failed validation once is usually one nudge away from valid;
+    losing the brief over it costs the turn its organisation for nothing. The
+    reason is fed back verbatim so the retry can correct rather than repeat.
+    """
+    calls = []
+
+    def _bad_then_good(env=None, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _response("I think you want a RAG platform.")
+        if len(calls) == 2:
+            return _response(json.dumps(BRIEF))
+        return _response("Which matters more to you: cost or latency?")
+
+    a = _agent(monkeypatch, _bad_then_good, tmp_path)
+
+    a.chat("something for RAG over our internal docs")
+
+    repair = calls[1]["messages"]
+    assert repair[0]["content"] == PROMPT_BRIEF_SYSTEM
+    assert repair[-2] == {"role": "assistant",
+                          "content": "I think you want a RAG platform."}
+    assert "failed validation" in repair[-1]["content"]
+    assert "not valid JSON" in repair[-1]["content"]
+    # The repaired brief is the brief: it reaches the intake prompt as usual.
+    assert "Category: RAG platforms" in calls[2]["messages"][0]["content"]
+    assert _traces(a)[0]["status"] == "ok"
+
+
+def test_an_empty_brief_reply_is_not_replayed_to_the_repair_round(monkeypatch, tmp_path):
+    """The repair prompt carries no empty assistant turn.
+
+    Anthropic-style backends reject an assistant message with empty content, so
+    replaying one would kill the repair on transport before the model ever saw
+    the failure reason. An empty reply has nothing worth showing back anyway;
+    the retry gets the reason alone.
+    """
+    calls = []
+
+    def _empty_then_good(env=None, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _response("")
+        if len(calls) == 2:
+            return _response(json.dumps(BRIEF))
+        return _response("Which matters more to you: cost or latency?")
+
+    a = _agent(monkeypatch, _empty_then_good, tmp_path)
+
+    a.chat("something for RAG over our internal docs")
+
+    repair = calls[1]["messages"]
+    assert all(m["role"] != "assistant" for m in repair)
+    assert "failed validation" in repair[-1]["content"]
+    assert _traces(a)[0]["status"] == "ok"
+
+
+def test_a_dead_provider_gets_no_repair_round(monkeypatch, tmp_path):
+    """Repair fixes replies, not outages, and the trace says which happened."""
+    calls = []
+
+    def _explode_then_intake(env=None, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("provider unreachable")
+        return _response("Which matters more to you: cost or latency?")
+
+    a = _agent(monkeypatch, _explode_then_intake, tmp_path)
+
+    a.chat("something for RAG over our internal docs")
+
+    # Call 2 is already the intake loop: no second brief attempt was spent.
+    assert calls[1]["messages"][0]["content"] != PROMPT_BRIEF_SYSTEM
+    trace = _traces(a)[0]
+    assert trace["status"] == "error"
+    assert trace["detail"] == ("model call failed; "
+                               "proceeding with the request as written")
 
 
 def test_a_provider_outage_on_the_brief_is_not_fatal(monkeypatch, tmp_path):

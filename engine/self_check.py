@@ -15,10 +15,12 @@ all caught by a human and not by the pipeline:
   false.
 
 Every one of those is visible in the row itself. So this is a last pass over the
-finished metrics: deterministic checks find self-contradictions, the
-contradicting candidates are re-assessed ONCE with the contradiction quoted back
-at the model, and whatever still contradicts itself is published as a caveat
-rather than quietly shipped as a number.
+finished metrics: deterministic checks find self-contradictions, the rows those
+checks cleared get one read by a DISTINCT judge model (a regex is precise when
+it hits and blind to every rephrasing), the contradicting candidates are
+re-assessed ONCE with the contradiction quoted back at the model, and whatever
+still contradicts itself is published as a caveat rather than quietly shipped
+as a number.
 
 Code never edits a rating or a verdict. It detects, it asks the model to look
 again, and it reports what survived. A number this file rewrote would be a
@@ -102,6 +104,7 @@ REPAIRABLE_CODES = frozenset({
     "impl_true_reason_negative",
     "impl_false_reason_positive",
     "component_failed_specific",
+    "verdict_reason_judged_contradictory",
 })
 
 
@@ -195,6 +198,172 @@ def find_contradictions(metrics: dict) -> list[dict]:
                 ),
             })
     return flags
+
+
+def _judge_request(name: str, implementable: bool, reason: str, objective: str) -> dict:
+    """One consistency question about one finished row, strict JSON back.
+
+    The judge sees only what a reader of the row sees — the verdict and the
+    reason under it — because that is exactly the pair a self-contradiction
+    lives in. Hedges are called out as non-contradictions so the judge holds
+    the same line the regexes do: "supports most of" is an honest half-answer,
+    not an argument with the verdict.
+    """
+    stance = "implementable" if implementable else "not implementable"
+    return {
+        "messages": [
+            {"role": "system", "content": (
+                "You review finished assessment rows for self-contradiction. "
+                "Return strict JSON only.")},
+            {"role": "user", "content": (
+                f"Objective: {objective}\n\n"
+                f"A candidate named {name} received the verdict: {stance}.\n"
+                f"The reason given for that verdict reads:\n\n{reason}\n\n"
+                "Does the reason argue the OPPOSITE of the verdict — a passing "
+                "verdict whose reason asserts a required capability is absent, "
+                "or a failing verdict whose reason asserts the requirements are "
+                "satisfied? Hedged or partial claims (\"supports most of\") are "
+                "not contradictions, and neither is praise for an absent burden "
+                "(\"does not require an API key\").\n\n"
+                "Return JSON: {\"verdict\": \"contradictory\" or \"consistent\", "
+                "\"sentence\": \"<the single offending sentence, or empty>\"}")},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def _parse_judge_reply(content: str) -> tuple[dict[str, str] | None, str]:
+    """Validate one judge reply; the failure text is what gets quoted back."""
+    from engine.tool_assessment import _extract_json_object
+
+    try:
+        value = _extract_json_object(content)
+    except Exception:
+        return None, "the reply was not a parseable JSON object"
+    verdict = str(value.get("verdict") or "").strip().casefold()
+    if verdict not in ("contradictory", "consistent"):
+        return None, (
+            'verdict must be exactly "contradictory" or "consistent", '
+            f"got {value.get('verdict')!r}")
+    return {"verdict": verdict, "sentence": str(value.get("sentence") or "")}, ""
+
+
+def _judged_contradictions(rows, objective, identity, env) -> list[dict]:
+    """One batched read of the cleared rows on the DISTINCT judge identity.
+
+    One request per row, one verdict per request. A well-formed verdict stands
+    as given — a second opinion is one opinion, and a "consistent" is never
+    re-asked in the hope of a flag. A MALFORMED reply is not an opinion at
+    all: a judge answering {"verdict": "contradiction"} or wrapping its JSON
+    in prose has decided and only failed to say so parseably, and dropping
+    that row makes a broken-but-willing judge indistinguishable from a clean
+    bill of health. So a reply that fails validation is fed back ONCE with the
+    failure quoted — the assessment retry's shape — and whatever the second
+    reply validates to stands. A reply still malformed after that leaves its
+    row unflagged, because a flag no model raised legibly is noise dressed as
+    vigilance; an errored request has no reply to correct and stays dropped.
+    """
+    import asyncio
+    import json
+
+    from engine.llm_clients import provider_chat_completions
+
+    requests = [
+        _judge_request(item["name"], item["implementable"], item["reason"], objective)
+        for item in rows
+    ]
+    responses = asyncio.run(provider_chat_completions(
+        identity.provider, requests, model=identity.model, env=env))
+    verdict_by_name: dict[str, dict[str, str]] = {}
+    retry_rows: list[dict] = []
+    retry_requests: list[dict] = []
+    for item, request, response in zip(rows, requests, responses):
+        if isinstance(response, BaseException):
+            continue
+        content = response.choices[0].message.content or ""
+        value, failure = _parse_judge_reply(content)
+        if value is not None:
+            verdict_by_name[item["name"]] = value
+            continue
+        retried = json.loads(json.dumps(request))
+        retried["messages"][-1]["content"] += (
+            "\n\nIMPORTANT: a previous attempt at this review failed validation "
+            f"({failure}). It read:\n\n{content[:500]}\n\n"
+            "Return ONLY the JSON object, keeping the judgement you already "
+            "reached: {\"verdict\": \"contradictory\" or \"consistent\", "
+            "\"sentence\": \"<the single offending sentence, or empty>\"}")
+        retry_rows.append(item)
+        retry_requests.append(retried)
+    if retry_requests:
+        retry_responses = asyncio.run(provider_chat_completions(
+            identity.provider, retry_requests, model=identity.model, env=env))
+        for item, response in zip(retry_rows, retry_responses):
+            if isinstance(response, BaseException):
+                continue
+            value, _failure = _parse_judge_reply(
+                response.choices[0].message.content or "")
+            if value is not None:
+                verdict_by_name[item["name"]] = value
+    flags: list[dict] = []
+    for item in rows:
+        value = verdict_by_name.get(item["name"])
+        if value is None or value["verdict"] != "contradictory":
+            continue
+        stance = "implementable" if item["implementable"] else "not implementable"
+        sentence = value["sentence"].strip()[:200]
+        flags.append({
+            "name": item["name"],
+            "code": "verdict_reason_judged_contradictory",
+            "detail": (
+                f"Rated {stance}, but a distinct reviewer judged the reason to "
+                f"argue the opposite: “{sentence}”"),
+        })
+    return flags
+
+
+def _judge_cleared_rows(metrics: dict, flagged: list[dict], objective: str,
+                        env: dict[str, str]) -> list[dict]:
+    """Model-judge the rows the regexes cleared, never the rows they caught.
+
+    The deterministic pass is precise when it hits and blind to rephrasings:
+    "the required rendering is nowhere in the documentation" asserts the same
+    absence as "does not show" and matches nothing. So the rows it cleared get
+    one read on the SAME distinct supervisor identity the repair uses — never
+    the producer, whose re-read waves through the mistake it already made once.
+    No distinct supervisor means no judge, exactly as it means no repair: skip
+    honestly rather than fake independence. A judge failure leaves every
+    cleared row as the cheap pass left it — the check must never break the run.
+    """
+    from engine.llm_clients import capability_providers, supervisor_identity
+
+    caught = {flag["name"] for flag in flagged if flag.get("code") in REPAIRABLE_CODES}
+    rows = []
+    for name, values in (metrics or {}).items():
+        if not isinstance(values, dict) or name in caught:
+            continue
+        # The same rows find_contradictions argues over: a verdict, a number,
+        # and reason text. Anything less has no pair of claims to contradict.
+        if values.get("rating") is None or not isinstance(values.get("implementable"), bool):
+            continue
+        reason = str(values.get("reason") or "")
+        if not reason.strip():
+            continue
+        rows.append({"name": name, "implementable": values["implementable"],
+                     "reason": reason})
+    if not rows:
+        return []
+    identity = supervisor_identity(
+        "assessment", env,
+        exclude_providers=capability_providers("assessment", env))
+    if identity is None:
+        return []
+    try:
+        return _judged_contradictions(rows, objective, identity, env)
+    except Exception:
+        # A second opinion, never a gate: a provider outage during the judge
+        # pass must leave the run exactly as it was.
+        return []
 
 
 def _repair_note(details: list[str]) -> str:
@@ -352,7 +521,7 @@ def run_self_check(
     env: dict[str, str] | None = None,
     constraints: dict | None = None,
 ) -> dict:
-    """Check, repair once, report what survived.
+    """Check, judge the cleared rows once, repair once, report what survived.
 
     ``metrics`` is updated in place with any repaired rows so callers keep the
     dict they already hold. Returns ``{"flags": [...], "repaired": [names]}``;
@@ -360,6 +529,8 @@ def run_self_check(
     caveats on the rows above them.
     """
     flags = find_contradictions(metrics)
+    judged = _judge_cleared_rows(metrics, flags, objective, dict(env or {}))
+    flags += judged
     if not flags:
         return {"flags": [], "repaired": []}
     outcome = repair(
@@ -367,5 +538,11 @@ def run_self_check(
     )
     if outcome["repaired"]:
         metrics.update(outcome["metrics"])
-    return {"flags": find_contradictions(metrics), "repaired": outcome["repaired"],
+    surviving = find_contradictions(metrics)
+    # A judged flag survives with the row it flagged: an unrepaired row still
+    # carries the contradiction, and a repaired row was rewritten by the
+    # distinct supervisor with the contradiction quoted back — re-judging the
+    # replacement would be the retry loop a single second opinion must not be.
+    surviving += [flag for flag in judged if flag["name"] not in outcome["repaired"]]
+    return {"flags": surviving, "repaired": outcome["repaired"],
             "supervisor": outcome.get("supervisor")}

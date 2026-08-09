@@ -466,6 +466,35 @@ def test_an_unrecognised_role_is_a_product():
         assert normalized["candidates"][0]["role"] == "product"
 
 
+def test_any_prose_in_pricing_url_means_no_public_pricing_page():
+    """URL validity is the whole gate, not a keyword list of known phrasings.
+
+    The contract asks for a URL or "", but models still declare the absence in
+    prose — and not only in the handful of English spellings a literal set could
+    enumerate. Whatever the wording, prose here is the same declaration, so
+    everything that is not a fetchable URL normalizes to the empty string.
+    """
+    from engine.agent import _normalize_intake_spec
+
+    for prose in ("Open-source", "contact us", "custom", "TBD", "gratuit", "無料"):
+        normalized = _normalize_intake_spec(
+            _assessment_spec(candidates=[
+                {"name": "alpha", "display_name": "Alpha",
+                 "docs_url": "https://example.com/a", "kind": "saas",
+                 "pricing_url": prose}]),
+            dataset_available=False,
+        )
+        assert normalized["candidates"][0]["pricing_url"] == ""
+    kept = _normalize_intake_spec(
+        _assessment_spec(candidates=[
+            {"name": "alpha", "display_name": "Alpha",
+             "docs_url": "https://example.com/a", "kind": "saas",
+             "pricing_url": "https://example.com/pricing"}]),
+        dataset_available=False,
+    )
+    assert kept["candidates"][0]["pricing_url"] == "https://example.com/pricing"
+
+
 def test_intake_offers_a_build_path_without_deciding_it_is_the_answer():
     """Intake may propose components; only measured scores may recommend building."""
     # Collapsed, because the guidance is wrapped across indented lines.
