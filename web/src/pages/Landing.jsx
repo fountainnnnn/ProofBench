@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { bootstrapAuthSession } from "../api.js";
 import Logo from "../components/Logo.jsx";
 import StatusIcon from "../components/StatusIcon.jsx";
 import { AmbientOrb, GlowCard, Reveal, SectionHeader, useStuckNav } from "../components/glow.jsx";
@@ -180,6 +182,18 @@ function SampleVerdictCard() {
 
 export default function Landing() {
   const stuck = useStuckNav(48);
+  // What the visitor is about to meet depends on the deployment, so ask it
+  // rather than asserting. Null until the probe answers: a wrong promise about
+  // sign-in is worse than a beat of silence.
+  const [authMode, setAuthMode] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    bootstrapAuthSession()
+      .then((context) => { if (active) setAuthMode(context.authMode); })
+      .catch(() => { if (active) setAuthMode(null); });
+    return () => { active = false; };
+  }, []);
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-[var(--paper)] text-[var(--ink)]">
@@ -228,10 +242,13 @@ export default function Landing() {
                 </a>
               </div>
 
-              <p className="mt-5 max-w-[48ch] text-[12px] leading-5 text-[var(--ink-3)]">
-                This deployment runs locally. In the local profile there is no sign-in and no
-                password to enter.
-              </p>
+              {authMode && (
+                <p className="mt-5 max-w-[48ch] text-[12px] leading-5 text-[var(--ink-3)]">
+                  {authMode === "local"
+                    ? "This deployment runs locally. In the local profile there is no sign-in and no password to enter."
+                    : "This deployment is password protected. Opening the console will ask you to sign in."}
+                </p>
+              )}
             </div>
 
             <div className="lg:col-span-7">
