@@ -690,10 +690,9 @@ export default function Benchmark() {
       }
       sessionIsRunning = Boolean(full.is_running);
       setRunning(sessionIsRunning);
-      if (sessionIsRunning &&
-          (Object.keys(restored.sandboxLogs).length > 0 || Object.keys(restored.sandboxFiles).length > 0)) {
-        setSandboxPanelOpen(true);
-      }
+      // A session restored mid-run shows its execution too. Waiting for logs to
+      // already exist meant reopening a tab during provisioning hid the panel.
+      if (sessionIsRunning) setSandboxPanelOpen(true);
       setStreamStatus({ state: sessionIsRunning ? "connecting" : "idle", message: sessionIsRunning ? "Reconnecting to run updates" : "" });
       localStorage.setItem("proofbench.activeSessionId", id);
       setLoadingSession(false);
@@ -944,8 +943,12 @@ export default function Benchmark() {
       rememberFollowUp(activeId, false);
       setActiveRunId(null);
       activeRunIdRef.current = null;
+      // Execution is the thing the user is waiting on, so the panel opens with
+      // the run instead of after the first sandbox happens to log a line: that
+      // was several minutes of provisioning and docs work with nothing to look
+      // at unless they knew to click. Dismissing it still sticks for the run.
       sandboxPanelDismissedRef.current = false;
-      setSandboxPanelOpen(false);
+      setSandboxPanelOpen(true);
       setState((s) => ({
         ...s,
         sandboxLogs: {},
@@ -1305,6 +1308,44 @@ export default function Benchmark() {
               conversationLive={followUpOpen}
               completedFooter={!showComposer}
             />
+            {/* The composer belongs to the thread column, not to the page: the
+                execution panel opens beside BOTH, so the conversation narrows
+                and the panel runs the full height next to it rather than
+                overlapping the thread and stopping short of the input. */}
+            {showComposer && state.direction && (
+              <DirectionCard direction={state.direction} onSend={onSend} />
+            )}
+            {showComposer ? (
+              <Composer
+                onSend={onSend}
+                onUpload={onUpload}
+                onPickExisting={onPickExisting}
+                onClearDataset={onClearDataset}
+                dataset={dataset}
+                provenanceLocked={provenanceLocked || uploadingDataset}
+                disabled={uploadingDataset || Boolean(datasetError)}
+                injectText={promptDraft}
+              />
+            ) : (
+              <div
+                className="pb-chat-footer pointer-events-none absolute inset-x-0 bottom-0 z-20 px-4 pb-4 pt-10 sm:px-8"
+                data-completed-run-bar
+              >
+                <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--thread-w)] flex-wrap items-center gap-2">
+                  <span className="mr-auto text-[12px] text-[var(--ink-2)]">
+                    {runPhase === "DONE"
+                      ? "This run is finished. The ranking above is the result."
+                      : `This run ended as ${runPhase.toLowerCase()}.`}
+                  </span>
+                  <button type="button" onClick={() => openFollowUp(activeId)} className={BTN_SECONDARY}>
+                    Ask a follow-up
+                  </button>
+                  <button type="button" onClick={onNew} disabled={uploadingDataset} className={BTN_PRIMARY}>
+                    Start a new benchmark
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           <SandboxExecutionPanel
             open={sandboxPanelOpen}
@@ -1315,40 +1356,6 @@ export default function Benchmark() {
             running={running}
           />
         </div>
-        {showComposer && state.direction && (
-          <DirectionCard direction={state.direction} onSend={onSend} />
-        )}
-        {showComposer ? (
-          <Composer
-            onSend={onSend}
-            onUpload={onUpload}
-            onPickExisting={onPickExisting}
-            onClearDataset={onClearDataset}
-            dataset={dataset}
-            provenanceLocked={provenanceLocked || uploadingDataset}
-            disabled={uploadingDataset || Boolean(datasetError)}
-            injectText={promptDraft}
-          />
-        ) : (
-          <div
-            className="pb-chat-footer pointer-events-none absolute inset-x-0 bottom-0 z-20 px-4 pb-4 pt-10 sm:px-8"
-            data-completed-run-bar
-          >
-            <div className="pointer-events-auto mx-auto flex w-full max-w-[var(--thread-w)] flex-wrap items-center gap-2">
-              <span className="mr-auto text-[12px] text-[var(--ink-2)]">
-                {runPhase === "DONE"
-                  ? "This run is finished. The ranking above is the result."
-                  : `This run ended as ${runPhase.toLowerCase()}.`}
-              </span>
-              <button type="button" onClick={() => openFollowUp(activeId)} className={BTN_SECONDARY}>
-                Ask a follow-up
-              </button>
-              <button type="button" onClick={onNew} disabled={uploadingDataset} className={BTN_PRIMARY}>
-                Start a new benchmark
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

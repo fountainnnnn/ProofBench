@@ -1280,6 +1280,69 @@ def api_scraper_order(identity: Identity = Depends(authenticate)):
     return _scraper_payload(identity.tenant_id)
 
 
+def _integration_actions(tenant_id: str):
+    """The writes the integration agent may perform, bound to one tenant.
+
+    Every one of these is something the operator can already do in the tab the
+    agent runs in, and each goes through the same name check and value
+    validation as the endpoint behind that UI. The agent therefore gains no
+    authority its caller lacks, and a mistake it makes is refused by the same
+    code that would refuse the operator.
+
+    Rejections come back as ValueError rather than HTTPException on purpose: the
+    agent is mid-turn and reads the reason, so a wrong variable name becomes a
+    correction rather than a 422 that ends the conversation.
+    """
+    from engine import integration_tools
+
+    def check(env: str, value: str | None = None) -> None:
+        if not _is_provider_env_name(env):
+            raise ValueError(
+                f"{env} is not a provider setting this deployment accepts; it must name "
+                "an API key, base URL, model, or one of the documented scraper variables")
+        if value is not None:
+            try:
+                _validate_provider_setting(env, value)
+            except HTTPException as exc:
+                raise ValueError(str(exc.detail)) from exc
+
+    class SettingsActions(integration_tools.Actions):
+        def save_credential(self, env: str, value: str) -> str:
+            check(env, value)
+            if not is_secret_env(env):
+                raise ValueError(f"{env} is not a credential; use save_setting for it")
+            provider_credentials.set(tenant_id, env, value)
+            LOGGER.warning(json.dumps({"event": "integration_agent_wrote_credential",
+                                       "env": env}))
+            return f"Stored the operator's key as {env}."
+
+        def save_setting(self, env: str, value: str) -> str:
+            check(env, value)
+            # A secret must arrive through save_credential and the vault. If it
+            # reached this call the model was holding the value itself, which is
+            # the exact condition the vault exists to prevent.
+            if is_secret_env(env):
+                raise ValueError(
+                    f"{env} holds a secret and cannot be set this way; ask the operator "
+                    "to paste it, then use save_credential")
+            provider_credentials.set(tenant_id, env, value)
+            return f"Set {env} to {value}."
+
+        def remove_setting(self, env: str) -> str:
+            check(env)
+            provider_credentials.delete(tenant_id, env)
+            return f"Cleared {env}."
+
+        def set_scraper_order(self, order: list[str]) -> str:
+            stored = runs.set_scraper_order(tenant_id, order)
+            return "Scraper order is now " + " ".join(stored) + "."
+
+        def environment(self) -> dict[str, str]:
+            return provider_environment(tenant_id)
+
+    return SettingsActions()
+
+
 @app.get("/api/settings/integration-agent")
 def api_integration_agent_status(identity: Identity = Depends(authenticate)):
     """Report the mandatory agent prerequisites without contacting providers."""
@@ -1309,6 +1372,7 @@ def api_integration_agent_message(
             payload.message,
             env,
             [item.model_dump() for item in payload.history],
+            actions=_integration_actions(identity.tenant_id),
         )
     except ValueError as exc:
         LOGGER.warning(json.dumps({
@@ -1364,6 +1428,7 @@ def api_integration_agent_stream(
                 env,
                 history,
                 on_progress=lambda event: updates.put(("progress", event)),
+                actions=_integration_actions(identity.tenant_id),
             )
             updates.put(("result", answer))
         except ValueError as exc:

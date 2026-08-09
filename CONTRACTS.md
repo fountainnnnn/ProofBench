@@ -225,13 +225,26 @@ Provider error text is never echoed to the caller.
 The Settings integration agent is available only when one adapter-generation
 LLM and one documentation provider capable of both search and scraping are
 configured. The bounded direct-fetch fallback does not satisfy this gate. Each
-turn may carry at most twelve bounded browser-held conversation entries, search
-and scrape public HTTPS documentation, and ask the selected code-generation
-provider for a connector proposal. It does not edit provider
-credentials, install dependencies, write application source, activate a
-connector, or execute generated code. Sources returned to the browser are the
-server-collected HTTPS sources, never model-invented citations. Provider and
-scraper secrets are excluded from prompts and responses.
+turn may carry at most twelve bounded browser-held conversation entries and runs
+a tool loop of at most eight assistant turns, in which the agent may read its
+own deployment state, search and scrape public HTTPS documentation, and apply
+provider settings.
+
+Its writes are limited to the settings the Settings UI already exposes — a
+provider credential, a model, a base URL, the scraper chain order — and each is
+re-validated by the server against the same name and value rules as the
+corresponding endpoint before it is stored. Rejections return to the agent as
+readable reasons rather than terminating the turn. It does not install
+dependencies, write application source, activate a connector, or execute
+generated code.
+
+A credential value never enters a prompt. Keys pasted into the conversation are
+replaced server-side with opaque references before the turn is composed, and
+only the server resolves a reference back to a value, at the moment of the
+write. A setting that holds a secret cannot be written by value at all. Sources
+returned to the browser are the server-collected HTTPS sources, never
+model-invented citations. Provider and scraper secrets are excluded from
+prompts and responses.
 
 ## 6. Deterministic evaluator
 

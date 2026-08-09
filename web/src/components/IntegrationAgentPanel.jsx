@@ -25,7 +25,7 @@ const COMPOSER_MIN_MEASURABLE_WIDTH = 120;
 
 const PROMPTS = [
   "What are the model options for Doubleword?",
-  "Add support for Mistral",
+  "Try Oxylabs before Scrape.do",
 ];
 
 function SendIcon() {
@@ -71,7 +71,9 @@ function SparkleIcon({ size = 20 }) {
 function implementationTone(status) {
   const word = String(status || "").toLowerCase();
   if (/fail|error|reject|invalid|unsupported/.test(word)) return "text-[var(--danger)]";
-  if (/valid|pass|ready|complete|success/.test(word)) return "text-[var(--ok)]";
+  /* "applied" is the one status that reports work already done rather than
+     work proposed, so it reads as a pass. */
+  if (/valid|pass|ready|complete|success|applied|saved/.test(word)) return "text-[var(--ok)]";
   return "text-[var(--ink)]";
 }
 
@@ -101,20 +103,31 @@ function applyProgress(steps, event) {
   const host = hostOf(url);
   const title = safeVisibleText(event?.title) || host;
 
-  /* The agent decides what a request needs before doing any of it, and that
-     decision is the most useful thing to show: it is why the next steps happen
-     at all, and for a question it can answer outright there are no next steps
-     to explain themselves. */
+  /* The agent chooses its own tools now, so the log is a record of what it
+     actually did rather than a plan it announced up front. Each phase below is
+     one step it took; a tool with nothing worth narrating (the generic "tool"
+     event) is left out so the list stays readable. */
   if (phase === "thinking") {
-    return [...steps, { key: "plan", kind: "step", label: "Planning…" }];
+    return [...steps, { key: "plan", kind: "step", label: "Working out what to do…" }];
   }
-  if (phase === "plan") {
-    const thought = safeVisibleText(event?.thought);
-    const index = steps.findIndex((step) => step.key === "plan");
-    if (index === -1 || !thought) return steps;
-    const next = [...steps];
-    next[index] = { ...next[index], label: thought };
-    return next;
+  if (phase === "state") {
+    return [...steps, {
+      key: "state",
+      kind: "step",
+      label: "Checking how this deployment is configured",
+    }];
+  }
+  /* A write is the one step an operator must not miss, so it is named by the
+     setting it changed and keyed by it, rather than folded into a count. */
+  if (phase === "wrote") {
+    const env = safeVisibleText(event?.env);
+    if (!env) return steps;
+    return [...steps, { key: `wrote:${env}`, kind: "step", label: `Updated ${env}` }];
+  }
+  if (phase === "asking") {
+    const env = safeVisibleText(event?.env);
+    if (!env) return steps;
+    return [...steps, { key: `asking:${env}`, kind: "step", label: `Asking you for ${env}` }];
   }
   if (phase === "search") {
     return [...steps, {
@@ -138,7 +151,7 @@ function applyProgress(steps, event) {
       {
         key: "compose",
         kind: "step",
-        label: `Drafting the proposal with ${safeVisibleText(event?.provider)}`,
+        label: `Writing up the result with ${safeVisibleText(event?.provider)}`,
       },
     ];
   }
@@ -422,6 +435,11 @@ export default function IntegrationAgentPanel({
           credential: reply?.credential || null,
         },
       ]);
+      /* The agent can now change settings itself, so the rest of the page can
+         be stale the moment a turn ends. The same refresh the paste-a-key
+         field triggers covers it: Services, readiness, and the chain order all
+         re-read from the server. */
+      if (reply?.implementation?.status === "applied") onCredentialSaved?.();
     } catch (failure) {
       setError(failure.message || "The integration agent could not answer that. Try again.");
     } finally {
@@ -498,8 +516,9 @@ export default function IntegrationAgentPanel({
           Integration agent
         </h2>
         <p className="mt-1 max-w-[52ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
-          Ask what this deployment already supports, or point the agent at a provider it does
-          not have yet and get back a connector proposal from that vendor's own documentation.
+          Ask what this deployment already supports, or tell it what to configure. It reads
+          its own settings, reads a vendor's documentation when it has to, and applies the
+          change itself.
         </p>
         {/* A gradient hairline rather than a flat border: it separates the
             header from the thread without drawing a hard box around it. */}
@@ -541,12 +560,12 @@ export default function IntegrationAgentPanel({
               <p className="pb-contain text-[15px] font-medium text-[var(--ink)]">
                 {blocked
                   ? "The integration agent needs setup first"
-                  : "Ask about a provider"}
+                  : "Ask about a provider, or set one up"}
               </p>
               <p className="pb-contain mt-1 max-w-[38ch] text-[13px] leading-relaxed text-[var(--ink-2)]">
                 {blocked
                   ? "One default LLM and one web scraping API must be configured first."
-                  : "It answers from what ProofBench already implements, and reads the vendor's own documentation when it does not. Activating anything stays your call."}
+                  : "It can set a key, a model, or the scraper order for you. Writing connector code and activating it stays your call."}
               </p>
             </div>
 

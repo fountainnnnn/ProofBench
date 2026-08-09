@@ -84,11 +84,24 @@ ledger live on named volumes.
 
 The Settings integration agent is a separate request/response path. It does not
 join a benchmark run or receive run capabilities. The server checks its two
-mandatory prerequisites, performs bounded documentation research through the
-configured scraper chain, and requests one structured proposal from the
-selected code-generation LLM. It can explain or generate connector code in its
-response, but it cannot change credentials, the source tree, dependencies, or
-runtime activation state.
+mandatory prerequisites and then runs a bounded tool loop on the selected
+code-generation LLM: the agent reads its own deployment state, searches and
+reads vendor documentation through the configured scraper chain, and applies
+provider settings.
+
+Its write tools are exactly the settings the operator can already change in the
+Settings UI — a credential, a model, a base URL, the scraper chain order — and
+each one is delegated back to the server, which re-validates it on the same code
+path as the corresponding endpoint. The agent therefore holds no authority its
+caller lacks. It can explain or generate connector code in its response, but it
+cannot change the source tree, dependencies, or runtime activation state.
+
+Credential *values* never enter the model's context. A key the operator pastes
+into the conversation is lifted out server-side and replaced with an opaque
+reference; the agent asks for that reference to be stored under a variable name
+and the server resolves it at the write. When no key has been pasted, the agent
+names the variable instead and the client renders a field that posts straight to
+the credentials endpoint.
 
 ## Stable seams
 

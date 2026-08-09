@@ -64,16 +64,18 @@ describe("Integration agent panel", () => {
 
     render(<IntegrationAgentPanel />);
 
-    // The panel covers every kind of provider, and says it answers from what
-    // ProofBench implements before it reaches for anyone's documentation.
+    // The panel says what the agent will do on its own and what it will not,
+    // because "set it for me" is now a real offer and the limit has to be as
+    // legible as the capability.
     expect(
-      await screen.findByText(/answers from what ProofBench already implements/i),
+      await screen.findByText(/can set a key, a model, or the scraper order for you/i),
     ).toBeTruthy();
-    expect(screen.getByText(/Ask about a provider/i)).toBeTruthy();
-    // Prompt starters give the empty state something to act on immediately,
-    // and one of them is a question rather than a build request.
+    expect(screen.getByText(/activating it stays your call/i)).toBeTruthy();
+    expect(screen.getByText(/Ask about a provider, or set one up/i)).toBeTruthy();
+    // Prompt starters give the empty state something to act on immediately:
+    // one question, and one instruction that the agent carries out itself.
     expect(screen.getByRole("button", { name: "What are the model options for Doubleword?" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add support for Mistral" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try Oxylabs before Scrape.do" })).toBeTruthy();
     // Credentials are the Services card's job, not this panel's.
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
   });
@@ -285,7 +287,7 @@ describe("Integration agent panel", () => {
     expect(screen.queryByRole("button", { name: "Save key" })).toBeNull();
   });
 
-  it("shows what the agent decided before it shows what it did", async () => {
+  it("logs each step the agent took, naming any setting it changed", async () => {
     api.getIntegrationAgentStatus.mockResolvedValue(READY);
     let emit;
     api.streamIntegrationAgentMessage.mockImplementation((message, history, onEvent) => {
@@ -295,23 +297,47 @@ describe("Integration agent panel", () => {
 
     render(<IntegrationAgentPanel />);
     const composer = await screen.findByLabelText("Message the integration agent");
-    fireEvent.change(composer, { target: { value: "is scrape.do implemented" } });
+    fireEvent.change(composer, { target: { value: "add this key to scrape.do" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(emit).toBeTruthy());
 
     emit({ phase: "thinking" });
-    expect(await screen.findByText("Planning…")).toBeTruthy();
+    expect(await screen.findByText("Working out what to do\u2026")).toBeTruthy();
 
-    // The reasoning replaces the placeholder in place rather than stacking a
-    // second line: it is the same step, now settled.
-    emit({ phase: "plan", thought: "Scrape.do already ships as a scraper.", action: "answer" });
-    expect(await screen.findByText("Scrape.do already ships as a scraper.")).toBeTruthy();
-    expect(screen.queryByText("Planning…")).toBeNull();
+    // Reading its own configuration is a step worth showing: it is why the
+    // agent can answer without searching at all.
+    emit({ phase: "state" });
+    expect(await screen.findByText("Checking how this deployment is configured")).toBeTruthy();
 
     // A search names what it is actually looking for.
     emit({ phase: "search", query: "Mistral API documentation" });
     expect(await screen.findByText("Searching for Mistral API documentation")).toBeTruthy();
+
+    // A write is the step an operator must not miss, so it names the setting.
+    emit({ phase: "wrote", env: "SCRAPEDO_API_TOKEN" });
+    expect(await screen.findByText("Updated SCRAPEDO_API_TOKEN")).toBeTruthy();
+  });
+
+  it("refreshes the rest of settings once the agent has changed something", async () => {
+    api.getIntegrationAgentStatus.mockResolvedValue(READY);
+    api.streamIntegrationAgentMessage.mockResolvedValue({
+      message: "Saved your Scrape.do key.",
+      sources: [],
+      implementation: { status: "applied", summary: "Saved SCRAPEDO_API_TOKEN" },
+    });
+    const onCredentialSaved = vi.fn();
+
+    render(<IntegrationAgentPanel onCredentialSaved={onCredentialSaved} />);
+    const composer = await screen.findByLabelText("Message the integration agent");
+    fireEvent.change(composer, { target: { value: "add this key to scrape.do" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await screen.findByText("Saved your Scrape.do key.");
+    // Services and readiness go stale the moment the agent writes, so the panel
+    // triggers the same refresh the paste-a-key field does.
+    await waitFor(() => expect(onCredentialSaved).toHaveBeenCalled());
+    expect(screen.getByText("Applied")).toBeTruthy();
   });
 
   it("renders a markdown answer as markup rather than literal syntax", async () => {

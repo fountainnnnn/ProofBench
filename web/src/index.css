@@ -670,9 +670,19 @@ body {
 }
 
 .pb-benchmark-thread {
+  /* Conversation above, composer below, in one column. The execution panel is
+     this column's sibling, so opening it narrows the conversation AND the
+     composer together and the panel runs the full height beside both.
+
+     Positioned, because the completed-run footer is absolutely placed: without
+     a positioning context here it resolved against the page, spanned the full
+     width, and slid underneath the panel, which then swallowed its clicks. */
+  position: relative;
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex: 1;
+  flex-direction: column;
 }
 
 .pb-sandbox-panel {
@@ -696,9 +706,7 @@ body {
   animation: pb-sandbox-panel-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.pb-benchmark-body--completed .pb-sandbox-panel {
-  margin-bottom: 6rem;
-}
+
 
 @keyframes pb-sandbox-panel-in {
   from {
@@ -850,9 +858,7 @@ body {
     margin-left: 0.5rem;
   }
 
-  .pb-benchmark-body--completed .pb-sandbox-panel {
-    margin-bottom: 7.75rem;
-  }
+
 
   .pb-sandbox-grid--split {
     grid-template-columns: minmax(0, 1fr);

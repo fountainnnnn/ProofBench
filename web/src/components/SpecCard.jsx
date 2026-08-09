@@ -3,7 +3,7 @@ import { safeHttpUrl } from "../linkSafety.js";
 import { safeVisibleText, sanitizeForDisplay } from "../displaySafety.js";
 import { BTN_DANGER, BTN_PRIMARY, PANEL } from "./ui.jsx";
 
-export default function SpecCard({ spec, datasetId, onRun, onStop, running, stopping, interactionDisabled = false , datasetLabel = ""}) {
+export default function SpecCard({ spec, datasetId, onRun, onStop, running, stopping, interactionDisabled = false, datasetLabel = "", hasRun = false }) {
   const safeSpec = useMemo(() => sanitizeForDisplay(spec || {}), [spec]);
   const [candidates, setCandidates] = useState([]);
 
@@ -130,7 +130,7 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
           disabled={running || interactionDisabled || candidates.length === 0}
           className={BTN_PRIMARY}
         >
-          {running ? "Running..." : "Run again"}
+          {running ? "Running..." : hasRun ? "Run again" : "Run benchmark"}
         </button>
         {running && (
           <button type="button" onClick={onStop} disabled={stopping} className={BTN_DANGER}>
@@ -139,7 +139,9 @@ export default function SpecCard({ spec, datasetId, onRun, onStop, running, stop
         )}
         {!running && (
           <p className="text-[12px] text-[var(--ink-3)]">
-            Nothing executes until you confirm this specification.
+            {hasRun
+              ? "Edit the candidates above and run again to replace this result."
+              : "Starting on its own. Edit the candidates above to change it first."}
           </p>
         )}
       </div>

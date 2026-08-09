@@ -8,6 +8,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import ChatThread from "./ChatThread.jsx";
+import SpecCard from "./SpecCard.jsx";
 
 vi.mock("../api.js", () => ({ prepareReportPdf: vi.fn() }));
 
@@ -106,5 +107,25 @@ describe("the results placeholder waits until results are what comes next", () =
     expect(container.textContent.length).toBeGreaterThan(0);
     // Something rendered for the running run rather than nothing at all.
     expect(container.querySelector(".pb-skeleton, [class*='rounded']")).toBeTruthy();
+  });
+});
+
+describe("the spec card's action names what will happen", () => {
+  const spec = {
+    benchmark_type: "tool_assessment",
+    category: "worksheets",
+    objective: "generate math practice questions",
+    candidates: [{ name: "alpha", display_name: "Alpha", docs_url: "https://a.test" }],
+  };
+
+  it("offers to run when this session has never run", () => {
+    render(<SpecCard spec={spec} onRun={() => {}} onStop={() => {}} />);
+    expect(screen.getByRole("button", { name: "Run benchmark" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Run again" })).toBeNull();
+  });
+
+  it("offers to run again only once a result exists", () => {
+    render(<SpecCard spec={spec} onRun={() => {}} onStop={() => {}} hasRun />);
+    expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
   });
 });

@@ -353,6 +353,7 @@ export default function ChatThread({ statusMessage = "", statusFailed = false, m
       running={running}
       stopping={stopping}
       interactionDisabled={interactionDisabled}
+      hasRun={Boolean(results || runId)}
     />
   ) : null;
 

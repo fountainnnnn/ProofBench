@@ -1,13 +1,18 @@
 """Bounded support agent for ProofBench provider configuration.
 
-It answers questions about what this deployment already implements, and designs
-integrations for what it does not. Which of those a request needs is decided
-first, from the deployment's own facts, so a question about shipped behaviour is
-not answered by reading a vendor's marketing page.
+It answers questions about what this deployment already implements, configures
+what it can, and designs integrations for what it does not have. It works
+through the tools in :mod:`engine.integration_tools`, deciding for itself which
+to reach for: reading its own deployment state costs nothing and answers most
+questions outright, so a question about shipped behaviour is not answered by
+reading a vendor's marketing page.
 
-The agent may research and generate a proposal, but it never writes application
-source, installs dependencies, changes credentials, or activates a connector.
-Those remain explicit operator actions outside this module.
+The agent changes settings an operator can already change in the browser tab it
+runs in — credentials, models, base URLs, the scraper chain — and every one of
+those writes is delegated to the caller and re-validated there. It still never
+writes application source, installs dependencies, or activates a connector, and
+it never sees a credential value: those remain explicit operator actions, and
+the boundary is enforced by which tools exist rather than by asking nicely.
 """
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from engine import docs_intel, scrapers
+from engine import docs_intel, integration_tools, scrapers
 from engine.llm_clients import (
     capability_providers,
     chat_client,
@@ -100,6 +105,19 @@ def _deployment_facts(env: dict[str, str]) -> str:
         creds = ", ".join(meta.get("credentials", ())) or "none needed"
         lines.append(f"- {name} ({label}): {meta.get('role', '')}, "
                      f"credentials {creds} ({state})")
+
+    # The chain order and the effective model are the two things an operator
+    # asks about that names-and-configured-state alone cannot answer, and an
+    # agent that can now change both has to be able to read both first.
+    lines.append("")
+    lines.append("Scraper chain order, most preferred first: "
+                 + " ".join(scrapers.order_from_env(env)))
+    lines.append("")
+    lines.append("Effective model for each LLM provider:")
+    for name, spec in PROVIDERS.items():
+        model = str(env.get(spec.model_env) or "").strip()
+        lines.append(f"- {name}: {model or spec.default_model}"
+                     f"{'' if model else ' (default, not set here)'}")
 
     lines.append("")
     lines.append("Candidate tools with a built-in adapter: " + ", ".join(sorted(FALLBACK_MODULES)))
@@ -219,101 +237,6 @@ def _credential(value: Any) -> dict[str, str] | None:
     return {"env": env, "label": label or env}
 
 
-def _plan(
-    request: str,
-    facts: str,
-    conversation: str,
-    provider: str,
-    settings: dict[str, str],
-) -> dict[str, Any]:
-    """Decide what this request actually needs before doing any of it.
-
-    Reading vendor documentation is the expensive path and it answers exactly
-    one kind of question: what a vendor offers. "Is X implemented", "which
-    scraper is active", "what does this setting do" are answered from what this
-    deployment already knows, and researching them wastes a search, four page
-    reads, and the operator's patience on a worse answer.
-    """
-    prompt = f"""You support an operator configuring ProofBench. Decide how to handle
-one request. ProofBench integrates LLM providers, web search and scraping
-providers, and candidate tools — the request may be about any of them, or about
-the deployment itself.
-
-What this deployment already implements:
-{facts}
-
-Prior conversation:
-{conversation or "No prior turns."}
-
-Request:
-{request}
-
-Return one strict JSON object with:
-{{
-  "thought": "One short sentence naming what is being asked and how you will answer it.",
-  "action": "answer" | "research",
-  "query": "A web search query. Only when action is research.",
-  "answer": "The full answer in markdown. Only when action is answer.",
-  "credential": {{
-    "env": "The exact variable a credential the operator still owes belongs in,
-            copied verbatim from the facts above. Never invent a spelling.",
-    "label": "The provider's display name, for example Scrape.do."
-  }}
-}}
-
-Choose "answer" when the facts above already settle it — anything about what
-ProofBench implements, what is configured, which provider serves a role, or
-what a setting means. Say plainly that something IS implemented when it is
-listed above, and name its credential variable exactly as written.
-
-Include "credential" whenever answering leaves the operator owing a key — they
-are offering one, or the provider they asked about is listed with no credential.
-The interface collects the value, so do not ask for it in prose and do not tell
-them to set the variable themselves. Omit "credential" entirely otherwise.
-
-Choose "research" only when the answer depends on what an external vendor
-offers and the facts above do not cover it — adding a provider that is not
-listed, or a vendor's endpoints, models, or authentication.
-"""
-    client = chat_client(provider, settings)
-    response = client.chat.completions.create(
-        model=provider_model(provider, settings),
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You triage ProofBench configuration requests. You answer from the "
-                    "deployment facts you are given whenever they suffice, and reach for "
-                    "external documentation only when they do not. Return strict JSON."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    value = _json_object(response.choices[0].message.content or "")
-    action = str(value.get("action") or "").strip().lower()
-    if action not in {"answer", "research"}:
-        raise ValueError("integration agent returned an invalid plan")
-    thought = str(value.get("thought") or "").strip()[:300]
-    answer = str(value.get("answer") or "").strip()
-    query = str(value.get("query") or "").strip()[:MAX_MESSAGE_CHARS]
-    # A plan to answer with nothing to say is not an answer; fall through to
-    # research rather than returning an empty turn.
-    if action == "answer" and not answer:
-        action = "research"
-    if action == "research" and not query:
-        query = f"{request} official API documentation"
-    return {
-        "action": action,
-        "thought": thought,
-        "answer": answer,
-        "query": query,
-        "credential": _credential(value.get("credential")),
-    }
-
-
 def _bounded_history(history: list[dict[str, str]] | None) -> str:
     remaining = MAX_HISTORY_CHARS
     lines = []
@@ -427,13 +350,90 @@ BASE_URL setting. Return an empty options list rather than guessing.
     }
 
 
+
+
+MAX_TOOL_TURNS = 8
+# One assistant turn per iteration plus its tool results. The cap exists so a
+# model that loops on a failing tool ends the turn instead of the operator's
+# patience, and it is generous enough that a real integration — check state,
+# search, read two pages, write, confirm — finishes inside it comfortably.
+
+SYSTEM_PROMPT = """You configure ProofBench for an operator, using tools.
+
+You act rather than instruct. When the operator asks you to set something and
+you have a tool for it, call the tool. Do not tell them to set an environment
+variable, edit a file, or restart anything that you could have done yourself.
+
+Read before you write. deployment_state tells you what ProofBench implements and
+how it is configured right now; consult it before claiming anything is or is not
+set up, and take variable names from it verbatim rather than inventing spellings.
+Search and read vendor documentation only for facts about an external service.
+
+You never see credentials. A key the operator pasted appears to you only as a
+pasted_secret_N reference: pass that reference to save_credential. When a key is
+needed and no reference exists, call request_credential to put a field in front
+of them. Never ask for a key in prose and never repeat a reference into your
+reply.
+
+When you are done, reply in markdown. Say plainly what you changed, naming each
+setting. Never claim something was installed, activated, executed, or verified
+when no tool result shows it. Do not propose weakening host allowlists, TLS
+checks, tenant scoping, redaction, sandbox credential entitlements, or
+deterministic evaluation. You do not write application source, install
+dependencies, or activate connectors — for those, propose the smallest bounded
+change and leave it to the operator.
+"""
+
+
+def _tool_arguments(raw: Any) -> dict[str, Any]:
+    """A tool call's arguments, or an empty mapping.
+
+    Models occasionally emit no arguments at all for a no-argument tool, and
+    occasionally emit malformed JSON under load. Neither is worth failing a
+    turn over: the dispatcher validates every field it uses anyway, so an empty
+    mapping produces an ordinary "that is required" result the agent can act on.
+    """
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _assistant_turn(message: Any) -> dict[str, Any]:
+    """One assistant message, in the shape the next request has to send back."""
+    calls = list(getattr(message, "tool_calls", None) or [])
+    turn: dict[str, Any] = {"role": "assistant", "content": getattr(message, "content", "") or ""}
+    if calls:
+        turn["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.function.name, "arguments": call.function.arguments},
+            }
+            for call in calls
+        ]
+    return turn
+
+
 def respond(
     message: str,
     env: dict[str, str] | None = None,
     history: list[dict[str, str]] | None = None,
     on_progress: Any = None,
+    actions: integration_tools.Actions | None = None,
 ) -> dict[str, Any]:
-    """Answer one configuration request, researching only when that is what it needs."""
+    """Handle one configuration request, using tools until it is actually done.
+
+    `actions` is what separates advice from work. Given one, the agent can store
+    a credential, set a model or base URL, clear a setting, and reorder the
+    scraper chain — the same writes the operator can already make in the tab
+    this runs in, re-validated by the caller on the same path the HTTP endpoints
+    use. Given none, the agent keeps every read tool and simply has nothing to
+    write with, which is the correct behaviour for a caller that never opted in.
+    """
     request = str(message or "").strip()
     if not request:
         raise ValueError("message is required")
@@ -452,116 +452,90 @@ def respond(
         except Exception:
             pass
 
-    safe_request = _redact_configured_secrets(request, settings)
+    # Two passes, in this order. Redaction hides values this deployment already
+    # holds; the vault lifts out the key the operator just pasted, which by
+    # definition is not configured yet and so survives redaction untouched.
+    vault = integration_tools.SecretVault()
+    safe_request = vault.scrub(_redact_configured_secrets(request, settings))
+    conversation = vault.scrub(_redact_configured_secrets(_bounded_history(history), settings))
     provider = str(state["llm"]["provider"])
-    conversation = _redact_configured_secrets(_bounded_history(history), settings)
-    facts = _deployment_facts(settings)
 
-    report(phase="thinking")
-    plan = _plan(safe_request, facts, conversation, provider, settings)
-    report(phase="plan", thought=plan["thought"], action=plan["action"])
-
-    # A question this deployment can already answer is answered, not researched.
-    # It still carries a credential name when one is owed: an operator offering
-    # a key for a provider that already ships takes this path every time, and
-    # without the name there is no field to paste it into — only prose telling
-    # them to go set the variable themselves, which is the one thing this flow
-    # exists to spare them.
-    if plan["action"] == "answer":
-        return {
-            "message": plan["answer"][:MAX_RESPONSE_CHARS],
-            "sources": [],
-            "implementation": {"status": "answer", "summary": plan["thought"] or "Answered."},
-            **({"credential": plan["credential"]} if plan["credential"] else {}),
-        }
-
-    sources, documentation = _research(plan["query"], settings, on_progress)
-    report(phase="compose", provider=provider)
-    prompt = f"""The operator wants to add or adapt a service provider.
-
-What this deployment already implements:
-{facts}
-
-Prior conversation:
-{conversation or "No prior turns."}
-
-Current request:
-
-{safe_request}
-
-Research excerpts:
-{documentation or "No usable documentation page was retrieved."}
-
-Return one strict JSON object with:
-{{
-  "message": "A concise technical response. Include any bounded connector or manifest code
-              needed for the proposal, and clearly name unresolved inputs.",
-  "implementation": {{
-    "status": "proposal" | "needs_input" | "unsupported",
-    "summary": "One short literal status summary."
-  }},
-  "credential": {{
-    "env": "The exact environment variable name this provider's credential belongs in,
-            for example MISTRAL_API_KEY. If the provider is already implemented above,
-            use the variable named there verbatim; otherwise take it from the
-            documentation you read. Never invent a spelling.",
-    "label": "The provider's display name, for example Mistral."
-  }}
-}}
-
-Include "credential" whenever the operator needs to supply a credential, so they
-can paste it without knowing the variable name; they supply the value in the
-interface and you never see or ask for it. Omit "credential" entirely when none
-applies or no name is documented.
-
-A provider listed above as implemented needs no connector: say it is already
-implemented, name what it does, and offer its credential variable if it has no
-credential yet.
-
-Prefer an OpenAI-compatible configuration-only connector when the documentation
-supports it. Otherwise propose the smallest custom HTTP connector. Never include
-credentials or claim that code was installed, activated, executed, or validated
-when the supplied documentation does not prove that. Do not suggest weakening
-host allowlists, TLS checks, tenant scoping, redaction, sandbox credential
-entitlements, or deterministic evaluation.
-"""
-    client = chat_client(provider, settings)
-    response = client.chat.completions.create(
-        model=provider_model(provider, settings),
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You design bounded ProofBench provider integrations from official "
-                    "documentation, for LLM providers, scraping providers, and candidate "
-                    "tools alike. You produce proposals only. Return strict JSON."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
+    writable = actions is not None
+    dispatcher = integration_tools.Dispatcher(
+        env=settings,
+        vault=vault,
+        actions=actions or integration_tools.Actions(),
+        facts=_deployment_facts,
+        search=docs_intel.web_search,
+        read=docs_intel.scrape_page,
+        safe_sources=_safe_sources,
+        credential=_credential,
+        on_progress=report,
     )
-    content = response.choices[0].message.content
-    value = _json_object(content or "")
-    answer = str(value.get("message") or "").strip()
-    implementation = value.get("implementation")
+    tools = integration_tools.definitions(writable)
+
+    pasted = (
+        "\n\nThe operator pasted "
+        f"{'these secrets' if len(vault.references) > 1 else 'a secret'} in this "
+        f"conversation, available to save_credential as: {', '.join(vault.references)}."
+        if vault else ""
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": (
+            f"Prior conversation:\n{conversation or 'No prior turns.'}\n\n"
+            f"Request:\n{safe_request}{pasted}"
+        )},
+    ]
+
+    client = chat_client(provider, settings)
+    model = provider_model(provider, settings)
+    answer = ""
+    report(phase="thinking")
+    for _ in range(MAX_TOOL_TURNS):
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            temperature=0,
+        )
+        reply = response.choices[0].message
+        calls = list(getattr(reply, "tool_calls", None) or [])
+        if not calls:
+            answer = str(getattr(reply, "content", "") or "").strip()
+            break
+        messages.append(_assistant_turn(reply))
+        for call in calls:
+            report(phase="tool", tool=call.function.name)
+            result = dispatcher.run(call.function.name, _tool_arguments(call.function.arguments))
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+    else:
+        # Out of turns with tools still pending. Ask once for the reply the
+        # agent owes, without tools, so a long investigation ends in a summary
+        # rather than in silence.
+        report(phase="compose", provider=provider)
+        messages.append({"role": "user", "content": (
+            "Stop using tools and answer now: say what you did, what you found, "
+            "and what is still outstanding.")})
+        response = client.chat.completions.create(
+            model=model, messages=messages, temperature=0)
+        answer = str(response.choices[0].message.content or "").strip()
+
     if not answer or len(answer) > MAX_RESPONSE_CHARS:
         raise ValueError("integration agent returned an invalid message")
-    if not isinstance(implementation, dict):
-        raise ValueError("integration agent returned no implementation status")
-    status = str(implementation.get("status") or "")
-    summary = str(implementation.get("summary") or "").strip()
-    if status not in {"proposal", "needs_input", "unsupported", "answer"}:
-        raise ValueError("integration agent returned an invalid implementation status")
-    if not summary or len(summary) > 500:
-        raise ValueError("integration agent returned an invalid implementation summary")
+    # A reference is a handle, not a secret, but it is also meaningless to a
+    # person and reads like leaked plumbing. It should never appear; if a model
+    # echoes one anyway, it does not reach the transcript.
+    for reference in vault.references:
+        answer = answer.replace(reference, "the key you pasted")
+
+    changes = dispatcher.changes
     return {
         "message": answer,
-        "sources": sources,
-        "implementation": {"status": status, "summary": summary},
-        # Absent rather than null when the agent named nothing usable, so the
-        # client's check stays a plain truthiness test.
-        **({"credential": credential}
-           if (credential := _credential(value.get("credential"))) else {}),
+        "sources": dispatcher.sources,
+        "implementation": {
+            "status": "applied" if changes else "answer",
+            "summary": "; ".join(changes) if changes else "Answered.",
+        },
+        **({"credential": dispatcher.credential} if dispatcher.credential else {}),
     }
