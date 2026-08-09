@@ -72,7 +72,7 @@ describe("Integration agent panel", () => {
     expect(screen.getByText(/Ask about a provider/i)).toBeTruthy();
     // Prompt starters give the empty state something to act on immediately,
     // and one of them is a question rather than a build request.
-    expect(screen.getByRole("button", { name: "Is Scrape.do implemented?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "What are the model options for Doubleword?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add support for Mistral" })).toBeTruthy();
     // Credentials are the Services card's job, not this panel's.
     expect(screen.queryByLabelText(/API key/i)).toBeNull();

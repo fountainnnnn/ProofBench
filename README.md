@@ -91,7 +91,36 @@ host: it authenticates nothing.
 
 ## Compose quickstart
 
+Compose is the portable path and the one to prefer when moving between
+machines. Both images pin their base by digest and install from a hash-locked
+`requirements.txt`, so the stack that runs on one host runs identically on
+another; nothing depends on a local Python, Node, or virtualenv.
+
 Pick one of two deployment profiles. The API refuses to start with neither.
+
+### Moving between macOS, Windows, and Linux
+
+The commands below are identical on all three (PowerShell, `cmd`, and any POSIX
+shell), because everything runs inside the containers. What travels with you is
+`.env`, which is deliberately gitignored: clone the repository, copy
+`.env.example` to `.env`, paste your provider credentials back in, and start the
+stack. Runs and datasets live in the `proofbench-runs` and `proofbench-data`
+named volumes and stay on the machine that created them.
+
+Two portability rules the code already follows, worth knowing because breaking
+either is what makes a checkout "work on one machine only":
+
+- **Never hardcode an interpreter path.** A helper that looked for the Windows
+  venv layout (`.venv\Scripts\python.exe`) and fell back to a bare `python`
+  failed on every POSIX host and in the container, where neither exists; it now
+  resolves the running interpreter. Paths are built with `os.path.join`, never
+  by concatenating separators.
+- **Keep host tooling out of the runtime.** The API image carries its own Python
+  3.12 and dependencies. Installing `uv`, a virtualenv, or Node on the host is a
+  convenience for editing the source, never a requirement for running it.
+
+Docker Desktop must be running before `docker compose` will do anything; on
+Windows that is the single most common cause of a stack that "stopped working".
 
 ### Local (default, tokenless, loopback only)
 
@@ -214,10 +243,11 @@ procedure stays testable. Local builds are unaffected.
 ## Main product flow
 
 1. Sign in and create a benchmark session.
-2. Select an existing owned dataset, generate the sample labelled dataset, or
-   upload images plus a matching `ground_truth.csv`. The sample dataset's images
-   are synthetic, but they carry known ground truth, so a real run measured
-   against them produces genuine metrics.
+2. Attach labelled data one of four ways: pick a dataset you already own,
+   generate the sample one, upload images plus a matching `ground_truth.csv`, or
+   describe what you want to test and let ProofBench design a dataset for it.
+   Every option is previewed before a run uses it - kind, field schema, sample
+   documents, and the first ground-truth rows.
 3. Review the explicit extraction or tool-assessment specification.
 4. Start a run. Every run executes for real; there is no demo or simulated mode.
    Each retry gets a new immutable run ID.
@@ -225,6 +255,54 @@ procedure stays testable. Local builds are unaffected.
 6. Review provenance, deterministic metrics where applicable, citations, and the
    downloadable report. New runs persist `measured`; `synthetic` appears only on
    read-only historical runs written before ProofBench became real-only.
+
+## Extraction schemas
+
+A benchmark declares the columns it is scored on, and each column declares a
+type. ProofBench began with the four invoice fields pinned in the API schema and
+normalization dispatching on a field's *name* - `date` parsed as a date, `total`
+as an amount - which meant a receipts, purchase-order, or shipping-label
+benchmark could not be expressed at all, let alone scored.
+
+Comparison now dispatches on the declared type (`engine/fields.py`), so a
+benchmark names whatever columns its documents actually have:
+
+```json
+"fields": [
+  {"name": "po_ref",      "type": "text"},
+  {"name": "issued_on",   "type": "date"},
+  {"name": "amount_due",  "type": "currency"},
+  {"name": "line_count",  "type": "number"}
+]
+```
+
+`text` compares case-folded and whitespace-collapsed; `date` as a calendar date,
+so `03/04/2026` and `2026-04-03` agree; `currency` in minor units, so `$1,234.50`
+and `1234.5` agree; `number` as a plain value. A bare list of names is still
+accepted and carries the typing those names always had, so existing specs,
+datasets, and stored runs mean exactly what they meant before.
+
+The schema travels into each sandbox as `pb_schema.json`, and every first-party
+adapter reads it, so one adapter serves any schema rather than hardcoding
+columns. Generated adapters are told the requested fields in their prompt.
+
+## Designed datasets
+
+When no labelled data exists, ProofBench can build some. The orchestration model
+proposes a document kind, a typed schema, and the ground-truth rows; a
+deterministic Pillow renderer (`engine/dataset_gen.py`) then draws one document
+image per row across rotating layout templates.
+
+The model authors *content only*. Every pixel is drawn by fixed code from
+validated rows, so the ground truth is exact by construction rather than by a
+second model reading the images back - there is no labelling error to inherit.
+Field names, types, row counts, and value sizes are all validated before
+anything is rendered, and rendering is seeded from the proposal, so the same
+proposal produces byte-identical documents on any machine.
+
+Generated datasets are ordinary dataset directories (`images/` plus
+`ground_truth.csv`) with `schema.json` and `manifest.json` alongside, and the
+console previews them before a run uses one.
 
 ## Sandbox capacity and cleanup
 
@@ -300,6 +378,9 @@ Anything not `ARCHIVED` is consuming budget, whatever its state says.
 | Path | Purpose |
 |---|---|
 | `engine/` | Orchestrator, capability-bound tools, sandbox lifecycle, evaluator, report generation |
+| `engine/fields.py` | The typed extraction schema a benchmark is scored against |
+| `engine/dataset_gen.py` | AI-proposed, deterministically rendered labelled datasets |
+| `engine/snapshots.py` | Prebuilt sandbox images, including the shared base every candidate starts from |
 | `server/` | Authenticated FastAPI service and durable state |
 | `web/` | React console and Nginx production image |
 | `docs/` | Operations and data-handling requirements |

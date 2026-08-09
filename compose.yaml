@@ -67,8 +67,12 @@ services:
       # Total concurrent sandbox memory the account permits; 0 disables the cap.
       # See README "Sandbox capacity and cleanup".
       PROOFBENCH_SANDBOX_MEMORY_BUDGET_GIB: ${PROOFBENCH_SANDBOX_MEMORY_BUDGET_GIB:-0}
-      PROOFBENCH_SANDBOX_MEMORY_GIB: ${PROOFBENCH_SANDBOX_MEMORY_GIB:-4}
-      PROOFBENCH_SANDBOX_CPU: ${PROOFBENCH_SANDBOX_CPU:-2}
+      PROOFBENCH_SANDBOX_MEMORY_GIB: ${PROOFBENCH_SANDBOX_MEMORY_GIB:-8}
+      PROOFBENCH_SANDBOX_CPU: ${PROOFBENCH_SANDBOX_CPU:-4}
+      # Accelerator on every candidate sandbox. Off by default: see README
+      # "Sandbox capacity and cleanup" for why it is a trade, not a free win.
+      PROOFBENCH_SANDBOX_GPU: ${PROOFBENCH_SANDBOX_GPU:-0}
+      PROOFBENCH_SANDBOX_GPU_TYPE: ${PROOFBENCH_SANDBOX_GPU_TYPE:-RTX-4090}
       ORCHESTRATOR_PROVIDER: ${ORCHESTRATOR_PROVIDER:-auto}
       MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
       KIMI_MODEL: ${KIMI_MODEL:-kimi-k2-thinking}

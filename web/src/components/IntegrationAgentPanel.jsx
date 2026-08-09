@@ -16,8 +16,15 @@ import proposalMark from "../assets/proposal.png";
 /* Starters, not instructions: a blank textarea is the weakest possible
    invitation (recognition over recall), so the empty state hands over two
    real questions the agent can act on immediately. */
+// Matches the field's max-h-28 so the JS growth and the CSS cap agree.
+const COMPOSER_MAX_HEIGHT = 112;
+// Below this the field is not really laid out (a closed or collapsed panel
+// reports a few pixels), every character wraps onto its own line, and
+// scrollHeight describes a column one character wide rather than the text.
+const COMPOSER_MIN_MEASURABLE_WIDTH = 120;
+
 const PROMPTS = [
-  "Is Scrape.do implemented?",
+  "What are the model options for Doubleword?",
   "Add support for Mistral",
 ];
 
@@ -426,6 +433,30 @@ export default function IntegrationAgentPanel({
     }
   };
 
+  /* A one-row textarea silently clips its second line, so a starter long
+     enough to wrap rendered as a half-sentence. Grow to fit, up to the same
+     cap the stylesheet enforces, then let it scroll.
+
+     The width guard is not defensive padding: while the panel is closed the
+     field is laid out at zero width, every character wraps onto its own line,
+     and scrollHeight reports the height of a column one character wide (714px
+     for a single sentence). Measuring then would fix that nonsense as an
+     inline height the moment the panel opened. */
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!field) return;
+    if (!text) {
+      // Empty field: drop the inline height entirely and let the stylesheet's
+      // single-row minimum govern again. Leaving the last measured height in
+      // place left an empty composer standing several rows tall.
+      field.style.height = "";
+      return;
+    }
+    if (field.clientWidth < COMPOSER_MIN_MEASURABLE_WIDTH) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(field.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+  }, [text]);
+
   const onKeyDown = (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -652,10 +683,10 @@ export default function IntegrationAgentPanel({
         {/* Focus is signalled by light spilling out of the pill, not by a ring
             drawn on it: the surface colour stays put and only the glow changes. */}
         <div
-          className="pb-composer rounded-full p-[1.5px]"
+          className="pb-composer rounded-[22px] p-[1.5px]"
           style={{ background: COMPOSER_GRADIENT }}
         >
-          <div className="flex items-end gap-2 rounded-full bg-[var(--surface)] py-1.5 pl-3.5 pr-1.5">
+          <div className="flex items-end gap-2 rounded-[21px] bg-[var(--surface)] py-1.5 pl-3.5 pr-1.5">
             {/* The bloom reacts when the field takes focus: it blooms open and
                 throws a few glitters. Purely decorative, so it is aria-hidden
                 and frozen under prefers-reduced-motion. */}

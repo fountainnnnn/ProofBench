@@ -63,3 +63,14 @@ Run the API with `.venv\Scripts\python.exe -m uvicorn server.main:app
    regenerate the lock.
 10. Behavior changes require focused regression tests plus the relevant full
     suite. Never weaken a failing security or correctness test to make it pass.
+11. Land work as you finish it. A change that is verified is committed and
+    pushed in the same sitting, not left dirty in a working tree: this repo is
+    edited from more than one machine, and unpushed work is work the next
+    machine cannot see. Commit when the relevant suites pass, push the branch,
+    and say what landed. Do not batch a day of unrelated changes into one
+    commit because pushing was deferred.
+12. Documentation is part of the change, not a follow-up. When a change alters
+    what the product does, what it costs, or how it is operated, update
+    `README.md` in the same commit. Record measurements rather than adjectives
+    (`399s -> 84s`, not "much faster"), and write down negative results too:
+    a documented dead end is what stops the next person paying for it twice.
