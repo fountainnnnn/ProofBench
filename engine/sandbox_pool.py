@@ -560,6 +560,13 @@ class SandboxPool:
         that rejection first. The probe is kept in the available queue and
         leased by the first candidate, so the check provisions nothing extra.
         """
+        # A subclass that owns its own handle lifecycle (the offline test's
+        # local pool, an injected fake) creates nothing remotely, so probing
+        # the provider would fail on a machine that has no credentials and
+        # never needed any. Same test `_sandbox_for` uses to decide whether a
+        # handle is base-pool managed.
+        if type(self).acquire is not SandboxPool.acquire:
+            return
         with self._lock:
             if self._started or not self._available.empty():
                 return

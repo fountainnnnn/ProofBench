@@ -60,7 +60,13 @@ Run the API with `.venv\Scripts\python.exe -m uvicorn server.main:app
    data honestly.
 9. Keep dependencies locked, hashed where supported, and audited. Add new
    direct dependencies to the corresponding `.in` or `package.json` file and
-   regenerate the lock.
+   regenerate the lock. `pip-compile` resolves only for the platform it runs
+   on, so recompiling on macOS or Linux silently drops the Windows-only wheels
+   (`colorama`, `win32-setctime`) and the Windows CI job then fails at install
+   under `--require-hashes`. Regenerate on Windows, or re-add those entries by
+   hand and verify with `pip install --dry-run --require-hashes` against both
+   locks. Keep the flags the file header documents; dropping `--allow-unsafe`
+   from the dev lock unpins `pip` itself and fails the same way.
 10. Behavior changes require focused regression tests plus the relevant full
     suite. Never weaken a failing security or correctness test to make it pass.
 11. Land work as you finish it. A change that is verified is committed and
