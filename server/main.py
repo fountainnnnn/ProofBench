@@ -354,7 +354,9 @@ async def _request_observability(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
-        "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
+        # The bundler inlines the display face as a data: URI, so 'self' alone
+        # blocks the console's own font and headings fall back to a system serif.
+        "font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; "
         "form-action 'self'"
     )
     forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
