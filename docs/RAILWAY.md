@@ -10,7 +10,29 @@ is not a general-availability production architecture and defines no SLA.
 3. Add an application service from the repository. `railway.json` selects
    `Dockerfile.railway`; no start command is needed.
 4. Add a volume to the application service and mount it at `/app/runtime`.
+   Then confirm it is actually mounted — see below. A volume can be reported as
+   attached by the provider and not be present in the container.
 5. Generate a public domain for the application service.
+
+### Confirm the volume is really mounted
+
+`GET /api/storage` (authenticated) reports the filesystem the running process
+can see. A working mount looks like this:
+
+    "railway_volume_mount_path": "/app/runtime",
+    "runtime_root": { "is_mount": true, "total_gib": 4.51 }
+
+An unmounted one reports `railway_volume_mount_path: null`, `is_mount: false`,
+and the host disk's capacity — several thousand GiB rather than the volume's
+size. Check this rather than the provider's dashboard: on this deployment the
+service config listed the volume as mounted, and `hasVolume` reported false,
+while files written to `/app/runtime` did not survive a deploy. Deleting the
+volume and creating a new one fixed it; the config read had been wrong twice.
+
+The failure is quiet, which is why it is worth checking deliberately. Dataset
+rows live in Postgres and survive, so the console keeps listing a dataset with
+the right image count after its files are gone, and only fetching an image
+shows the 404.
 
 Keep exactly one application replica. The volume and in-process run worker are
 not horizontally shareable.
