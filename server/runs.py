@@ -433,11 +433,24 @@ def job_heartbeat(session_id: str, job_id: str):
 
     def pulse():
         interval = max(5, STORE.lease_seconds // 3)
+        missed = 0
         while not stopped.wait(interval):
             try:
-                if not STORE.heartbeat_job(session_id, job_id):
-                    return
-                STORE.heartbeat_worker()
+                if STORE.heartbeat_job(session_id, job_id):
+                    missed = 0
+                    STORE.heartbeat_worker()
+                    continue
+                # A renewal that matches no row used to end the thread outright.
+                # That reads one blip as "another worker owns this job now", and
+                # the cost of being wrong is total: nothing renews the lease
+                # again, so the reaper fails a run that is still working and
+                # throws away metrics it had already computed. Keep pulsing —
+                # a renewal for a job we no longer own simply matches no row —
+                # and say so once, so a genuine handover is still visible.
+                missed += 1
+                if missed == 1:
+                    LOGGER.warning(json.dumps({"event": "job_lease_not_renewed",
+                                               "session_id": session_id, "job_id": job_id}))
             except Exception as exc:
                 LOGGER.warning(json.dumps({"event": "job_heartbeat_failed",
                                            "error_type": type(exc).__name__}))

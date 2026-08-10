@@ -353,3 +353,44 @@ def test_v1_migration_is_atomic_backed_up_and_rejects_future_schema(tmp_path, mo
         connection.execute("PRAGMA user_version=999")
     with pytest.raises(RuntimeError, match="unsupported"):
         SQLiteStore(str(path), worker_id="future-reader")
+
+
+def test_a_single_missed_renewal_does_not_end_the_heartbeat(monkeypatch):
+    """A blip must not hand a still-working run to the reaper.
+
+    The pulse thread used to return the first time a renewal matched no row,
+    reading one blip as "another worker owns this now". Nothing renewed the
+    lease afterwards, so a run that was still executing got failed and the
+    metrics it had already computed were discarded with it.
+    """
+    import threading
+
+    from server import runs
+
+    results = [False, True, True]
+    calls = threading.Semaphore(0)
+    seen: list[bool] = []
+
+    class FakeStore:
+        lease_seconds = 15  # -> a 5s floor on the pulse interval
+
+        def heartbeat_job(self, session_id, job_id):
+            value = results[len(seen)] if len(seen) < len(results) else True
+            seen.append(value)
+            calls.release()
+            return value
+
+        def heartbeat_worker(self):
+            return None
+
+    monkeypatch.setattr(runs, "STORE", FakeStore())
+    monkeypatch.setattr(runs.threading.Event, "wait",
+                        lambda self, timeout=None: self.is_set())
+
+    with runs.job_heartbeat("session-a", "job-a"):
+        for _ in range(3):
+            assert calls.acquire(timeout=5), "heartbeat stopped pulsing"
+
+    # The first renewal failed; the thread kept going and renewed afterwards.
+    assert seen[0] is False
+    assert True in seen[1:], "no renewal was attempted after a missed one"

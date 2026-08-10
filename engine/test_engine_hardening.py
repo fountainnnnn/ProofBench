@@ -2418,3 +2418,57 @@ def test_a_trusted_builtin_is_never_sent_for_repair(tmp_path, monkeypatch):
     ok = orchestrator._validate(SimpleNamespace(id="h", label="repairable"), candidate)
 
     assert ok is False
+
+
+def test_a_provider_without_declarative_builds_still_gets_sandboxes(tmp_path):
+    """An unentitled account must not lose every candidate that needs an image.
+
+    Naming a registry image is a "declarative build". On an account without
+    that entitlement, sandbox creation failed outright for those candidates
+    while snapshot-backed ones in the same run succeeded, so the comparison
+    silently lost half its field. The image is dropped and the provider's own
+    default environment is used instead.
+    """
+    class RefusingClient(LedgerClient):
+        def __init__(self):
+            super().__init__()
+            self.attempts = []
+
+        def create(self, params, **kwargs):
+            image = getattr(params, "image", None)
+            self.attempts.append(image)
+            if image:
+                raise RuntimeError(
+                    "Failed to create sandbox: Declarative builds are not "
+                    "available to your organization")
+            return super().create(params, **kwargs)
+
+    pool = SandboxPool(size=0, owner_key="declarative-test",
+                       ledger_path=str(tmp_path / "ledger.sqlite3"))
+    client = RefusingClient()
+    pool._daytona = client
+
+    handle = pool._create_one()
+    assert handle is not None, "the candidate should still get a sandbox"
+    assert client.attempts[0], "the image was tried first"
+    assert client.attempts[-1] in (None, ""), "it fell back to the default environment"
+
+    # The entitlement will not appear mid-run, so later candidates skip the
+    # doomed image attempt entirely rather than repeating the failure.
+    before = len(client.attempts)
+    pool._create_one()
+    assert all(not image for image in client.attempts[before:])
+
+
+def test_an_authorization_failure_that_is_not_about_builds_still_raises(tmp_path):
+    """A bad API key must not be hidden behind the declarative-build fallback."""
+    class UnauthorizedClient(LedgerClient):
+        def create(self, params, **kwargs):
+            raise RuntimeError("Unauthorized: invalid API key")
+
+    pool = SandboxPool(size=0, owner_key="unauthorized-test",
+                       ledger_path=str(tmp_path / "ledger.sqlite3"))
+    pool._daytona = UnauthorizedClient()
+
+    with pytest.raises(RuntimeError, match="invalid API key"):
+        pool._create_one()

@@ -19,6 +19,17 @@ from pathlib import Path
 
 
 LOGGER = logging.getLogger("proofbench.sandbox_pool")
+
+
+def _is_declarative_build_error(exc) -> bool:
+    """Whether the provider refused to build an environment from an image name.
+
+    Matched on the message because the SDK reports it as a generic
+    authorization error, which also covers a bad API key — and retrying that
+    without an image would hide a credential problem behind a silent fallback.
+    """
+    message = str(exc).casefold()
+    return "declarative build" in message and "not available" in message
 _LEDGER_LOCK = threading.RLock()
 _PROCESS_WORKER_ID = os.environ.get(
     "PROOFBENCH_WORKER_ID", f"pid-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -337,6 +348,18 @@ class SandboxPool:
         return bool(self.gpu) and any(
             marker in message for marker in self._GPU_UNAVAILABLE_MARKERS)
 
+    def _create_default_sandbox(self):
+        """A sandbox in the provider's own default environment, no image named.
+
+        The only shape available when declarative builds are not entitled. It
+        carries no resource override either: those travel with the image
+        request, and asking for them here is what the provider is refusing.
+        """
+        from daytona import CreateSandboxFromSnapshotParams
+
+        return self._create_with_capacity_retry(
+            CreateSandboxFromSnapshotParams(language="python", auto_delete_interval=0))
+
     def _create_with_capacity_retry(self, create_params, register: bool = False):
         last_error = None
         for attempt in range(self.CAPACITY_RETRY_ATTEMPTS):
@@ -380,6 +403,10 @@ class SandboxPool:
                 CreateSandboxFromSnapshotParams(snapshot=snapshot, language="python",
                                                 auto_delete_interval=0),
                 register=True)
+        if not self.image:
+            # Cleared after the provider refused declarative builds; every
+            # later candidate goes straight to the default environment.
+            return self._register_created(self._create_default_sandbox())
         try:
             from daytona import CreateSandboxFromImageParams
             from daytona.common.sandbox import Resources
@@ -411,6 +438,20 @@ class SandboxPool:
         try:
             sandbox = self._create_with_capacity_retry(create_params)
         except Exception as exc:
+            if _is_declarative_build_error(exc):
+                # Naming a registry image is a "declarative build", and an
+                # account without that entitlement cannot create a sandbox at
+                # all this way — every candidate needing one failed outright
+                # while snapshot-backed candidates in the same run succeeded.
+                # The provider's own default environment still runs Python, and
+                # candidates install what they need in-sandbox regardless, so
+                # drop the image rather than lose the candidate. Remembered for
+                # the pool's life: the entitlement will not appear mid-run, and
+                # retrying it once per candidate just repeats the failure.
+                LOGGER.info("declarative image builds unavailable, "
+                            "creating sandboxes from the provider default")
+                self.image = ""
+                return self._register_created(self._create_default_sandbox())
             if not self._is_gpu_capacity_error(exc):
                 raise
             # Drop the accelerator for the rest of this pool's life so every
