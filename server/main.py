@@ -820,6 +820,44 @@ def api_deploy_ready():
     return {"status": "ready"}
 
 
+@app.get("/api/storage")
+def api_storage(identity: Identity = Depends(authenticate)):
+    """Whether the paths this deployment writes to are actually durable.
+
+    A managed volume that is configured but not mounted is invisible from the
+    outside: the app writes happily to the container filesystem and the files
+    are simply gone after the next deploy, while the database rows that
+    describe them survive — so the console lists a dataset whose images 404.
+    This reports what the process can actually see, which is the only account
+    that settles it.
+    """
+    import shutil
+
+    def describe(path: str) -> dict:
+        real = os.path.realpath(path)
+        exists = os.path.isdir(real)
+        usage = shutil.disk_usage(real) if exists else None
+        return {
+            "path": real,
+            "exists": exists,
+            # A mount point is a directory whose device differs from its
+            # parent's. On an unmounted volume this is False and everything
+            # written there dies with the container.
+            "is_mount": os.path.ismount(real) if exists else False,
+            "total_gib": round(usage.total / 1024 ** 3, 2) if usage else None,
+            "free_gib": round(usage.free / 1024 ** 3, 2) if usage else None,
+            "entries": len(os.listdir(real)) if exists else 0,
+        }
+
+    runtime = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "")
+    return {
+        "railway_volume_mount_path": runtime or None,
+        "runtime_root": describe(runtime or "/app/runtime"),
+        "dataset_root": describe(UPLOADS_DIR),
+        "runs_root": describe(runs.RUNS_DIR),
+    }
+
+
 # The bootstrap route runs before authentication, so its body is attacker
 # controlled and unmetered by the per-tenant quota. A token is a few dozen
 # bytes; 16 KiB is generous for the whole JSON envelope.
