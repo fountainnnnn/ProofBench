@@ -28,6 +28,10 @@ from engine.fields import FIELD_TYPES, MAX_FIELDS, infer_type
 MIN_DOCS = 5
 MAX_DOCS = 30
 DEFAULT_DOCS = 12
+# How many times the designer may be asked before the run gives up. Three
+# covers the occasional malformed draw without letting a genuinely impossible
+# schema stall a run behind repeated model calls.
+PROPOSAL_ATTEMPTS = 3
 MAX_VALUE_CHARS = 80
 MAX_TITLE_CHARS = 80
 MAX_DESCRIPTION_CHARS = 400
@@ -83,20 +87,40 @@ def propose_dataset(prompt: str, n: int = DEFAULT_DOCS, env: dict | None = None,
             "with these names and types, and no others:\n"
             + json.dumps(required)
         )
-    response = _orchestrator_complete(
-        dict(env or {}),
-        messages=[{"role": "system", "content": _PROPOSAL_SYSTEM},
-                  {"role": "user", "content": request}],
-        temperature=0.4,
-    )
-    content = response.choices[0].message.content or ""
-    start, end = content.find("{"), content.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("dataset proposal contained no JSON object")
-    proposal = json.loads(content[start:end + 1])
-    if not isinstance(proposal, dict):
-        raise ValueError("dataset proposal was not a JSON object")
-    return _validated_proposal(proposal, n, required)
+    # One sample, validated strictly, used to be the whole of it: a proposal
+    # that renamed a column or returned the wrong number of rows failed the
+    # benchmark at start, before a single candidate ran. That is a sampling
+    # accident, not a reason to throw the run away, so a rejected proposal is
+    # asked for again with the rejection quoted back. The last failure is
+    # raised unchanged when every attempt is spent, so the caller still sees
+    # why rather than a generic timeout.
+    failure: Exception | None = None
+    for attempt in range(PROPOSAL_ATTEMPTS):
+        messages = [{"role": "system", "content": _PROPOSAL_SYSTEM},
+                    {"role": "user", "content": request}]
+        if failure is not None:
+            messages.append({"role": "user", "content": (
+                f"The previous proposal was rejected: {failure}. "
+                "Return corrected JSON that satisfies every rule.")})
+        try:
+            response = _orchestrator_complete(
+                dict(env or {}), messages=messages,
+                # A rejected sample is retried slightly hotter, because
+                # repeating the same near-deterministic draw tends to repeat
+                # the same mistake.
+                temperature=0.4 + 0.2 * attempt,
+            )
+            content = response.choices[0].message.content or ""
+            start, end = content.find("{"), content.rfind("}")
+            if start < 0 or end < start:
+                raise ValueError("dataset proposal contained no JSON object")
+            proposal = json.loads(content[start:end + 1])
+            if not isinstance(proposal, dict):
+                raise ValueError("dataset proposal was not a JSON object")
+            return _validated_proposal(proposal, n, required)
+        except (ValueError, json.JSONDecodeError) as exc:
+            failure = exc
+    raise failure
 
 
 def _required_fields(fields: list | None) -> list[dict] | None:

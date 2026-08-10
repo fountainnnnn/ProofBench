@@ -78,3 +78,50 @@ def test_rendering_is_deterministic_and_complete(tmp_path):
     manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["doc_count"] == 6
     assert manifest["generated_from_prompt"] == "compare label OCR"
+
+
+class _Response:
+    def __init__(self, content):
+        self.choices = [type("C", (), {"message": type("M", (), {"content": content})()})()]
+
+
+def test_a_rejected_proposal_is_asked_for_again_instead_of_failing_the_run(monkeypatch):
+    """One malformed draw must not destroy a benchmark before it starts.
+
+    The designer's output is validated strictly, and a single sample that
+    renamed a column failed the whole measured run at start — before any
+    candidate had been built or executed. Sampling accidents are retried.
+    """
+    from engine import dataset_gen
+
+    good = json.dumps(_proposal())
+    calls = []
+
+    def fake_complete(env, messages, temperature):
+        calls.append(messages)
+        # First draw invents a column the pinned schema does not declare.
+        if len(calls) == 1:
+            return _Response(json.dumps(_proposal(fields=[
+                {"name": "renamed_column", "type": "text"},
+                {"name": "ship_date", "type": "date"},
+            ])))
+        return _Response(good)
+
+    monkeypatch.setattr("engine.agent._orchestrator_complete", fake_complete)
+    proposal = dataset_gen.propose_dataset("parcels", 6, env={})
+
+    assert len(calls) == 2, "a rejected proposal should be requested again"
+    assert len(proposal["rows"]) == 6
+    # The retry is told what was wrong rather than repeating the same ask.
+    assert any("rejected" in m["content"] for m in calls[1])
+
+
+def test_the_designer_gives_up_with_the_real_reason_after_repeated_failures(monkeypatch):
+    from engine import dataset_gen
+
+    def always_bad(env, messages, temperature):
+        return _Response("no json here")
+
+    monkeypatch.setattr("engine.agent._orchestrator_complete", always_bad)
+    with pytest.raises(ValueError, match="no JSON object"):
+        dataset_gen.propose_dataset("parcels", 6, env={})

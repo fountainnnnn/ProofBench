@@ -621,6 +621,14 @@ def _authorize_builtin_candidates(orch, spec: dict) -> dict:
 
 
 def _fail_worker(session_id: str, exc: Exception, job_id: str | None = None) -> None:
+    # The client is told to check the server logs, so the server has to put
+    # something in them. It did not: a run that died mid-evaluation reported
+    # only its exception class, and the traceback existed nowhere at all, which
+    # left no way to tell an unreadable dataset from a broken adapter.
+    # The traceback is operator-only; the client message stays sanitized
+    # because it is rendered to whoever is holding the session.
+    LOGGER.exception(json.dumps({"event": "job_failed", "session_id": session_id,
+                                 "job_id": job_id, "error": type(exc).__name__}))
     runs.emit(session_id, "error", {
         "message": f"Operation failed ({type(exc).__name__}). Check server logs and retry."}, job_id)
 
@@ -2292,6 +2300,11 @@ async def api_run(session_id: str, request: Request,
                         }, run_id)
                     else:
                         failed = True
+                        # Same reason as _fail_worker: the message points the
+                        # operator at logs, so the traceback has to reach them.
+                        LOGGER.exception(json.dumps({
+                            "event": "run_failed", "session_id": session_id,
+                            "run_id": run_id, "error": type(exc).__name__}))
                         runs.emit(session_id, "error", {
                             "message": f"Operation failed ({type(exc).__name__}). Check server logs and retry."
                         }, run_id)
