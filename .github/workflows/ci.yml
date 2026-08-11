@@ -128,6 +128,10 @@ jobs:
           format: table
           exit-code: "1"
           severity: CRITICAL,HIGH
+          # Named rather than left to auto-detection, so a rename or a move of
+          # the exceptions file fails loudly here instead of silently scanning
+          # without them.
+          trivyignores: .trivyignore.yaml
           skip-setup-trivy: true
       - name: Build API image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0

@@ -1,0 +1,17 @@
+# Scanner exceptions. Each one names a single finding on a single path and says
+# why, so the rule keeps applying everywhere else.
+
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - "Dockerfile.railway"
+    statement: >-
+      This image has no USER directive on purpose. Railway mounts its managed
+      volume root-owned, so the process must start as root to chown the mount
+      before anything can write to it; a USER directive would leave the volume
+      unwritable and datasets and run artifacts would fail to persist. The
+      privilege is dropped before any application code runs:
+      server/railway_entrypoint.py prepares the mount, then calls setgroups([]),
+      setgid(10001) and setuid(10001) and only then execs uvicorn, so the server
+      itself never runs as root. Dockerfile.api, which has no volume to prepare,
+      keeps its USER directive and is still held to this rule.
