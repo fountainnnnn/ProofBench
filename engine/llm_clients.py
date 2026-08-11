@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DOUBLEWORD_BASE_URL = "https://api.doubleword.ai/v1"
-MINIMAX_BASE_URL = "https://api.minimax.io/v1"
 MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -81,36 +81,22 @@ PROVIDERS: dict[str, ProviderSpec] = {
         model_env="DOUBLEWORD_MODEL",
         base_url_env="DOUBLEWORD_BASE_URL",
     ),
-    # MiniMax speaks the OpenAI wire format, which is the only reason it could
-    # be driven through the openai slot at all — by pointing OPENAI_BASE_URL at
-    # it and putting a MiniMax key in OPENAI_API_KEY. That works and reads as a
-    # lie: readiness, run provenance, and the supervisor's "distinct reviewer"
-    # rule all identify a provider by slot, so a MiniMax run would report itself
-    # as OpenAI and could be picked as its own independent reviewer. It gets its
-    # own slot instead.
-    "minimax": ProviderSpec(
-        api_key_env="MINIMAX_API_KEY",
-        default_base_url=MINIMAX_BASE_URL,
-        default_model="MiniMax-M3",
-        model_env="MINIMAX_MODEL",
-        base_url_env="MINIMAX_BASE_URL",
-    ),
 }
 
 # capability -> providers in preference order. The first configured one is used;
 # callers that tolerate a failure walk the rest of the list.
 CAPABILITY_PROVIDERS: dict[str, tuple[str, ...]] = {
-    "orchestration": ("moonshot", "openai", "minimax", "openrouter", "deepseek"),
-    "assessment": ("doubleword", "openrouter", "openai", "minimax", "deepseek"),
-    "report": ("moonshot", "openai", "minimax", "openrouter", "deepseek"),
-    "codegen": ("deepseek", "minimax", "openrouter"),
+    "orchestration": ("moonshot", "openai", "openrouter", "deepseek"),
+    "assessment": ("doubleword", "openrouter", "openai", "deepseek"),
+    "report": ("moonshot", "openai", "openrouter", "deepseek"),
+    "codegen": ("deepseek", "openrouter"),
     # Supervision is the pool a DISTINCT reviewer is drawn from. Order is a
     # preference, not a guarantee: supervisor_identity walks it and takes the
     # first configured provider whose (provider, model) differs from the primary
     # producer, so on a two-provider deployment the reviewer is naturally the one
     # the primary is not. It is never resolved with resolve_provider, because a
     # supervisor that collapses onto the primary is worse than none.
-    "supervision": ("moonshot", "openai", "minimax", "deepseek", "openrouter", "doubleword"),
+    "supervision": ("moonshot", "openai", "deepseek", "openrouter", "doubleword"),
 }
 
 # Every provider is selectable as a default, plus the historical "kimi" spelling
@@ -128,8 +114,62 @@ _PIN_ENV: dict[str, tuple[str, ...]] = {
 }
 
 
+# A provider is a name plus three settings, so a deployment can declare one the
+# code has never heard of: set FOO_API_KEY and FOO_BASE_URL (FOO_MODEL optional)
+# and `foo` becomes a provider. Nothing about a vendor needs to be compiled in —
+# adding one used to mean editing this table, an allowlist, and a logo map, and
+# a vendor nobody had anticipated simply could not be added at all.
+_DECLARED_RE = re.compile(r"^([A-Z][A-Z0-9_]{0,63})_API_KEY$")
+# Names that are credentials for something other than an LLM endpoint. They match
+# the shape but are not providers, and registering them would offer the operator
+# a scraper as an orchestrator.
+_NOT_PROVIDERS = frozenset({
+    "DAYTONA", "OXYLABS", "SCRAPEDO", "BRIGHTDATA", "PROOFBENCH", "SEARXNG",
+    "CRAWL4AI", "NOSANA",
+})
+
+
 def _env(env: dict | None):
     return os.environ if env is None else env
+
+
+def declared_providers(env: dict | None = None) -> dict[str, ProviderSpec]:
+    """Providers this deployment declared but the code does not ship.
+
+    Discovered rather than registered: the environment already carries every
+    fact a provider needs, so asking an operator to also announce it would be a
+    second place to keep in sync.
+    """
+    values = _env(env)
+    found: dict[str, ProviderSpec] = {}
+    for key in values:
+        match = _DECLARED_RE.match(str(key))
+        if not match:
+            continue
+        prefix = match.group(1)
+        name = prefix.casefold()
+        if prefix in _NOT_PROVIDERS or name in PROVIDERS:
+            continue
+        base_url = _value(values, f"{prefix}_BASE_URL")
+        # The base URL is what makes it an endpoint rather than a stray key.
+        if not base_url:
+            continue
+        found[name] = ProviderSpec(
+            api_key_env=f"{prefix}_API_KEY",
+            default_base_url=base_url,
+            default_model=_value(values, f"{prefix}_MODEL"),
+            model_env=f"{prefix}_MODEL",
+            base_url_env=f"{prefix}_BASE_URL",
+            # allowed_hosts stays None: the transport locks itself to the host
+            # of the URL the deployment supplied, which is the same guarantee
+            # the shipped providers get.
+        )
+    return found
+
+
+def all_providers(env: dict | None = None) -> dict[str, ProviderSpec]:
+    """Shipped providers plus any this deployment declared for itself."""
+    return {**PROVIDERS, **declared_providers(env)}
 
 
 def _value(env, name: str) -> str:
@@ -138,15 +178,16 @@ def _value(env, name: str) -> str:
 
 def provider_configured(provider: str, env: dict | None = None) -> bool:
     """True when this deployment supplied the provider's API key."""
-    spec = PROVIDERS.get(provider)
+    spec = all_providers(env).get(provider)
     return bool(spec) and bool(_value(_env(env), spec.api_key_env))
 
 
 def _pinned_provider(capability: str, env) -> str | None:
+    aliases = {**_PIN_ALIASES, **{name: name for name in declared_providers(env)}}
     for name in _PIN_ENV.get(capability, ()):
         raw = _value(env, name).casefold()
         if raw:
-            return _PIN_ALIASES.get(raw)
+            return aliases.get(raw)
     return None
 
 
@@ -158,7 +199,11 @@ def capability_providers(capability: str, env: dict | None = None) -> tuple[str,
     than failing the whole run.
     """
     env = _env(env)
-    order = CAPABILITY_PROVIDERS[capability]
+    # A declared provider is an OpenAI-compatible endpoint like any other, so it
+    # can serve any capability. It sits after the shipped ones: preference order
+    # is a product judgement, and a provider the code has never seen has not
+    # earned a place ahead of them unless the operator pins it.
+    order = (*CAPABILITY_PROVIDERS[capability], *declared_providers(env))
     pin = _pinned_provider(capability, env)
     if pin and pin in order:
         order = (pin, *(item for item in order if item != pin))
@@ -177,7 +222,7 @@ def resolve_provider(capability: str, env: dict | None = None) -> str:
 
 
 def provider_model(provider: str, env: dict | None = None) -> str:
-    spec = PROVIDERS[provider]
+    spec = all_providers(env)[provider]
     return _value(_env(env), spec.model_env) or spec.default_model
 
 
@@ -299,7 +344,7 @@ def provider_base_url(provider: str, env: dict | None = None) -> str:
 
 
 def _client_kwargs(provider: str, env, secure_factory):
-    spec = PROVIDERS[provider]
+    spec = all_providers(env)[provider]
     env = _env(env)
     api_key = _value(env, spec.api_key_env)
     if not api_key:

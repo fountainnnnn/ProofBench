@@ -67,7 +67,6 @@ SYSTEM_SANDBOX_ENV = {
 # granted one however it is named or what its generated source asks for.
 SYSTEM_ORCHESTRATION_ENV = {
     "MOONSHOT_API_KEY", "KIMI_MODEL",
-    "MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_MODEL",
     "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL",
     "SUPERVISOR_PROVIDER", "SUPERVISOR_MODEL",
 }
@@ -84,11 +83,25 @@ SYSTEM_SCRAPER_ENV = {
 SYSTEM_PROVISION_ENV = {"DAYTONA_API_KEY"}
 # Every provider credential the Settings page may list or reveal. This is a
 # superset of what reaches a sandbox: it adds the provisioning keys above.
-SETTINGS_PROVIDER_ENV = (SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
+_SHIPPED_PROVIDER_ENV = (SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
                          | SYSTEM_SCRAPER_ENV | SYSTEM_PROVISION_ENV)
+
+
+def _settings_provider_env() -> set[str]:
+    """Names Settings may list or reveal: the shipped ones plus any declared.
+
+    A deployment that declares its own provider gets the same treatment for its
+    three variables as a shipped one. Listing them by hand meant a provider
+    added at runtime was invisible in the very page used to configure it.
+    """
+    from engine.llm_clients import declared_providers
+
+    names = set(_SHIPPED_PROVIDER_ENV)
+    for spec in declared_providers(os.environ).values():
+        names.update({spec.api_key_env, spec.base_url_env, spec.model_env} - {None})
+    return names
 BUILTIN_PROVIDER_HOSTS = {
-    "api.deepseek.com", "api.doubleword.ai", "api.minimax.io", "api.moonshot.ai",
-    "openrouter.ai",
+    "api.deepseek.com", "api.doubleword.ai", "api.moonshot.ai", "openrouter.ai",
 }
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}_(?:API_KEY|BASE_URL|MODEL)$")
 # Oxylabs authenticates with a username/password pair rather than an API key, so
@@ -407,8 +420,11 @@ DEFAULT_PROVIDER_ENV = {
 def provider_environment(tenant_id: str) -> dict[str, str]:
     from engine import scrapers
 
+    # Every provider setting this deployment holds, including ones it declared
+    # for itself. Enumerating names here meant a declared provider's key never
+    # reached the engine: the console listed it and a run could not use it.
     values = {name: os.environ[name]
-              for name in SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV | SYSTEM_SCRAPER_ENV
+              for name in _settings_provider_env() - SYSTEM_PROVISION_ENV
               if os.environ.get(name)}
     values.update(provider_credentials.snapshot(tenant_id))
     # The engine reads all its configuration from this snapshot, so the stored
@@ -430,8 +446,12 @@ def _is_provider_env_name(name: str) -> bool:
 
 def _validate_provider_setting(name: str, value: str) -> None:
     if name == "SUPERVISOR_PROVIDER":
-        allowed = {"openai", "moonshot", "kimi", "minimax", "openrouter", "deepseek",
-                   "doubleword"}
+        from engine.llm_clients import all_providers
+
+        # Any provider this deployment holds, plus the historical "kimi"
+        # spelling. A fixed list here silently excluded declared providers from
+        # supervision, which is the one role where a second vendor matters most.
+        allowed = {"kimi", *all_providers(os.environ)}
         if value.strip().casefold() not in allowed:
             raise HTTPException(
                 status_code=422,
@@ -457,13 +477,29 @@ def _validate_provider_setting(name: str, value: str) -> None:
     metadata_hosts = {"metadata.google.internal", "metadata", "instance-data.ec2.internal"}
     if hostname == "localhost" or hostname.endswith(".localhost") or hostname in metadata_hosts:
         raise HTTPException(status_code=422, detail="provider base URLs must not target localhost")
-    allowlist = BUILTIN_PROVIDER_HOSTS | {item.strip().lower().rstrip(".") for item in os.environ.get(
+    # A fixed list of vendor hostnames cannot be right: it made adding a
+    # provider a code change, so a deployment could not point at a vendor this
+    # repository had never heard of — the reason MiniMax was refused. The list
+    # is now a lockdown an operator opts into rather than the default gate. When
+    # PROOFBENCH_PROVIDER_HOST_ALLOWLIST is set, only those hosts (plus the
+    # shipped ones) are accepted; when it is not, any host that survives the
+    # checks around this one is.
+    #
+    # What is NOT relaxed: the URL must still be public HTTPS on port 443, must
+    # not be localhost or a cloud metadata endpoint, and must not resolve to a
+    # private address — the checks that stop this setting from becoming a way to
+    # read the deployment's own network. Naming the endpoint an orchestrator
+    # talks to stays a privileged action; it is now an operator's decision
+    # rather than ours.
+    configured = {item.strip().lower().rstrip(".") for item in os.environ.get(
         "PROOFBENCH_PROVIDER_HOST_ALLOWLIST", "").split(",") if item.strip()}
-    if not any(hostname == item or (item.startswith("*.") and
-                                    hostname.endswith(item[1:]) and
-                                    hostname != item[2:])
-               for item in allowlist):
-        raise HTTPException(status_code=422, detail="provider base URL host is not allowed")
+    if configured:
+        allowlist = BUILTIN_PROVIDER_HOSTS | configured
+        if not any(hostname == item or (item.startswith("*.") and
+                                        hostname.endswith(item[1:]) and
+                                        hostname != item[2:])
+                   for item in allowlist):
+            raise HTTPException(status_code=422, detail="provider base URL host is not allowed")
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
@@ -1075,18 +1111,16 @@ PROVIDER_NOTES = {
         # capability layer below would accept any configured LLM, but OpenAI is
         # the default a deployment is expected to hold, so a run is blocked
         # without it.
-        "label": "OpenAI", "essential": True, "site": "https://openai.com",
+        "label": "OpenAI", "essential": True,
         "capability": "Orchestrator reasoning and the built-in openai_vision candidate.",
         "optional": ("OPENAI_VISION_MODEL",),
     },
     "openrouter": {
         "label": "OpenRouter",
-        "site": "https://openrouter.ai",
         "capability": "OpenAI-compatible orchestration, documentation assessment, and reports.",
     },
     "doubleword": {
         "label": "Doubleword",
-        "site": "https://doubleword.ai",
         "capability": "Batched documentation assessment and the built-in doubleword candidate.",
         # A gateway serves many models, so choosing the provider is not yet a
         # choice of model: this one is required rather than optional.
@@ -1094,26 +1128,30 @@ PROVIDER_NOTES = {
     },
     "deepseek": {
         "label": "DeepSeek",
-        "site": "https://www.deepseek.com",
         "capability": "Generates and repairs adapters for candidates without a built-in.",
     },
     "moonshot": {
         "label": "Moonshot (Kimi)",
-        "site": "https://www.moonshot.ai",
         "capability": "Orchestration and supervisor reasoning with Kimi models.",
-    },
-    "minimax": {
-        "label": "MiniMax",
-        "site": "https://www.minimax.io",
-        "capability": "Orchestration, documentation assessment, and reports with MiniMax models.",
-        # A MiniMax key is not a choice of MiniMax model, and the default here
-        # ages faster than the provider does.
-        "required": ("MINIMAX_MODEL",),
     },
 }
 
 
-def _provider_readiness() -> tuple[dict, ...]:
+def _vendor_site(base_url: str) -> str:
+    """A vendor's own site, taken from the endpoint it serves.
+
+    Used only to resolve a logo. Derived rather than tabulated: a table means a
+    vendor nobody listed has no mark, which is the same hardcoding that stopped
+    a new provider being added at all. `api.` is dropped because vendors serve
+    their API from a subdomain and their brand from the bare domain.
+    """
+    host = urlsplit(str(base_url or "")).hostname or ""
+    if not host:
+        return ""
+    return f"https://{host[4:] if host.startswith('api.') else host}"
+
+
+def _provider_readiness(env: dict | None = None) -> tuple[dict, ...]:
     """One Settings row per service this deployment can actually hold a key for.
 
     Everything the engine implements appears, configured or not, so an operator
@@ -1122,14 +1160,14 @@ def _provider_readiness() -> tuple[dict, ...]:
     and its liveness is reported by the scraper chain card instead.
     """
     from engine import scrapers
-    from engine.llm_clients import PROVIDERS
+    from engine.llm_clients import all_providers
 
     rows = [{"provider": "daytona", "label": "Daytona sandboxes",
              "capability": "Executes every benchmark candidate in an isolated sandbox.",
              "required": ("DAYTONA_API_KEY",), "optional": (), "essential": True,
              "site": "https://www.daytona.io"}]
 
-    for name, spec in PROVIDERS.items():
+    for name, spec in all_providers(env).items():
         notes = PROVIDER_NOTES.get(name, {})
         extra_required = tuple(notes.get("required", ()))
         optional = tuple(
@@ -1138,13 +1176,14 @@ def _provider_readiness() -> tuple[dict, ...]:
         rows.append({
             "provider": name,
             "label": notes.get("label", name.replace("_", " ").title()),
+            "declared": name not in PROVIDER_NOTES and not notes,
             "capability": notes.get("capability", "An OpenAI-compatible LLM provider."),
             "required": (spec.api_key_env, *extra_required),
             "optional": optional,
             "essential": bool(notes.get("essential", False)),
-            # Where this vendor's mark is resolved from. Stated here so the
-            # logo fetch has a server-owned URL and never a caller's.
-            "site": notes.get("site", ""),
+            # Where this vendor's mark is resolved from: its own endpoint. The
+            # URL is still one the server holds, never one a request supplies.
+            "site": notes.get("site") or _vendor_site(spec.default_base_url),
         })
 
     for name in scrapers.DEFAULT_ORDER:
@@ -1215,7 +1254,7 @@ def api_providers(identity: Identity = Depends(authenticate)):
         return bool(str(env.get(name) or os.environ.get(name) or "").strip())
 
     providers = []
-    for entry in PROVIDER_READINESS:
+    for entry in _provider_readiness(env):
         missing = [name for name in entry["required"] if not configured(name)]
         present_optional = [name for name in entry["optional"] if configured(name)]
         if not entry["required"]:
@@ -1338,7 +1377,7 @@ def api_session(session_id: str, identity: Identity = Depends(authenticate)):
 @app.get("/api/settings/provider-keys")
 def api_provider_keys(identity: Identity = Depends(authenticate)):
     tenant_names = set(provider_credentials.names(identity.tenant_id))
-    system = {name for name in SETTINGS_PROVIDER_ENV if os.environ.get(name)}
+    system = {name for name in _settings_provider_env() if os.environ.get(name)}
     # A mask is the tail of a secret and nothing else. Non-secret settings
     # (model ids, base URLs, the supervisor selector) carry no mask at all
     # rather than their value: this listing must stay provably free of any
@@ -1386,7 +1425,7 @@ def _defaults_payload(tenant_id: str) -> dict:
     resolution_env = {name: str(env.get(name) or os.environ.get(name) or "")
                       for name in {*env, *os.environ}}
     pins = runs.default_providers(tenant_id)
-    labels = {item["provider"]: item["label"] for item in PROVIDER_READINESS}
+    labels = {item["provider"]: item["label"] for item in _provider_readiness()}
     detail = {item["capability"]: item for item in CAPABILITY_READINESS}
 
     llm = []
@@ -1704,7 +1743,7 @@ async def api_reveal_provider_key(request: Request, identity: Identity = Depends
         # Falling back to the deployment environment is what makes this useful:
         # a fresh deployment holds every key in .env, and a reveal that only
         # ever saw runtime overrides would answer nothing on the first visit.
-        value = os.environ.get(env) if env in SETTINGS_PROVIDER_ENV else None
+        value = os.environ.get(env) if env in _settings_provider_env() else None
         source = "system"
     if not value:
         raise HTTPException(status_code=404, detail="no value is stored for that setting")
@@ -1761,7 +1800,7 @@ def api_brand_providers(identity: Identity = Depends(authenticate)):
     than no logo.
     """
     logos = {}
-    for row in PROVIDER_READINESS:
+    for row in _provider_readiness(provider_environment(identity.tenant_id)):
         site = row.get("site")
         if not site:
             continue

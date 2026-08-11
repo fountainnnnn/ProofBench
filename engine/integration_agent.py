@@ -87,10 +87,11 @@ def _deployment_facts(env: dict[str, str]) -> str:
     Names and configured/not-configured only. No value ever appears here.
     """
     from engine.adapter_gen import FALLBACK_MODULES
-    from engine.llm_clients import PROVIDERS
+    from engine.llm_clients import all_providers
 
+    providers = all_providers(env)
     lines = ["LLM providers implemented in ProofBench:"]
-    for name, spec in PROVIDERS.items():
+    for name, spec in providers.items():
         state = "configured" if str(env.get(spec.api_key_env) or "").strip() else "no credential"
         lines.append(f"- {name}: credential {spec.api_key_env}, model {spec.model_env} ({state})")
 
@@ -114,11 +115,29 @@ def _deployment_facts(env: dict[str, str]) -> str:
                  + " ".join(scrapers.order_from_env(env)))
     lines.append("")
     lines.append("Effective model for each LLM provider:")
-    for name, spec in PROVIDERS.items():
+    for name, spec in providers.items():
         model = str(env.get(spec.model_env) or "").strip()
         lines.append(f"- {name}: {model or spec.default_model}"
                      f"{'' if model else ' (default, not set here)'}")
 
+    # The list above is what this deployment holds, not what it can hold. An
+    # agent that only ever saw shipped providers had one way to satisfy "use
+    # vendor X": point an existing provider's base URL at X, which makes every
+    # run report the wrong vendor. Declaring a new one is the honest route, and
+    # it has to be stated or the agent cannot know it exists.
+    lines.append("")
+    lines.append(
+        "A provider does not have to be one of the above. Any OpenAI-compatible "
+        "vendor can be added by setting three settings named after it: "
+        "<VENDOR>_API_KEY, <VENDOR>_BASE_URL and <VENDOR>_MODEL — for example "
+        "ACME_API_KEY, ACME_BASE_URL, ACME_MODEL for a vendor called Acme. The "
+        "vendor then appears as its own service with its own logo, and can serve "
+        "orchestration, assessment, reports, codegen and supervision. Prefer this "
+        "over repointing an existing provider's BASE_URL at a different vendor: "
+        "readiness, run provenance and the distinct-reviewer rule all identify a "
+        "provider by its name, so a run would report the wrong vendor and could "
+        "be chosen as its own independent reviewer."
+    )
     lines.append("")
     lines.append("Candidate tools with a built-in adapter: " + ", ".join(sorted(FALLBACK_MODULES)))
     return "\n".join(lines)

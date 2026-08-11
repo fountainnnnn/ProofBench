@@ -127,7 +127,6 @@ NEVER_SANDBOX_PREFIXES = (
     "DEEPSEEK_",
     "DOUBLEWORD_",
     "KIMI_",
-    "MINIMAX_",
     "MOONSHOT_",
     "OPENAI_",
     "OPENROUTER_",
@@ -135,6 +134,21 @@ NEVER_SANDBOX_PREFIXES = (
     "OXYLABS_",
     "SCRAPEDO_",
 )
+
+
+def _never_sandbox_prefixes() -> tuple[str, ...]:
+    """Credential prefixes no candidate may ever be entitled to.
+
+    The shipped list plus every provider this deployment declared for itself.
+    Naming them one by one meant a provider added after this code was written
+    had no such protection: its key was orchestration-only in intent and
+    sandbox-eligible in fact, which is the worst possible default for the one
+    credential that can read every prompt the orchestrator sends.
+    """
+    from engine.llm_clients import declared_providers
+
+    declared = {f"{name.upper()}_" for name in declared_providers(os.environ)}
+    return (*NEVER_SANDBOX_PREFIXES, *sorted(declared))
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -1564,7 +1578,7 @@ class Orchestrator:
             # Orchestration credentials never reach a sandbox. The only
             # exceptions are the exact names a first-party adapter genuinely
             # needs to run, enumerated server-side in engine.builtin_adapters.
-            if (canonical_name.startswith(NEVER_SANDBOX_PREFIXES)
+            if (canonical_name.startswith(_never_sandbox_prefixes())
                     and env_name not in SANDBOX_ELIGIBLE_CREDENTIALS):
                 raise ValueError("orchestration credentials cannot be sandbox-entitled")
             if env_name not in self.ctx.env_passthrough:

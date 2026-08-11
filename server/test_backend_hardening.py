@@ -679,25 +679,50 @@ def test_public_api_responses_never_expose_server_dataset_paths(client):
         assert "/etc/passwd" not in response.text
 
 
-def test_provider_base_url_policy_is_allowlisted_and_private_safe(monkeypatch):
+def test_provider_base_url_policy_is_private_safe_and_lockable(monkeypatch):
+    """Any vendor may be named; the network protections are what hold.
+
+    A fixed list of vendor hostnames made adding a provider a code change, so a
+    deployment could not point at a vendor this repository had never heard of.
+    The list is now a lockdown an operator opts into. Everything that stops the
+    setting being used to read the deployment's own network still applies
+    unconditionally.
+    """
     public_answer = [(2, 1, 6, "", ("93.184.216.34", 443))]
+    monkeypatch.delenv("PROOFBENCH_PROVIDER_HOST_ALLOWLIST", raising=False)
     monkeypatch.setattr(main_module.socket, "getaddrinfo", lambda *_args, **_kwargs: public_answer)
+
+    # A shipped vendor, and one nobody listed: both fine by default.
     main_module._validate_provider_setting("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-    with pytest.raises(Exception) as unknown:
-        main_module._validate_provider_setting("CUSTOM_BASE_URL", "https://attacker.example/v1")
-    assert "attacker.example" not in str(unknown.value)
+    main_module._validate_provider_setting("NEWVENDOR_BASE_URL", "https://api.newvendor.example/v1")
+
+    # Opting into the lockdown restores the strict behaviour.
     monkeypatch.setenv("PROOFBENCH_PROVIDER_HOST_ALLOWLIST", "*.vendor.example")
     main_module._validate_provider_setting("CUSTOM_BASE_URL", "https://api.vendor.example/v1")
+    with pytest.raises(Exception) as blocked:
+        main_module._validate_provider_setting("CUSTOM_BASE_URL", "https://attacker.example/v1")
+    assert "attacker.example" not in str(blocked.value)
+    # A shipped vendor stays reachable even under a lockdown that omits it.
+    main_module._validate_provider_setting("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
+    # None of the following depend on the allowlist at all.
+    monkeypatch.delenv("PROOFBENCH_PROVIDER_HOST_ALLOWLIST", raising=False)
     with pytest.raises(Exception):
         main_module._validate_provider_setting("CUSTOM_BASE_URL", "https://api.vendor.example:8443/v1")
+    with pytest.raises(Exception):
+        main_module._validate_provider_setting("CUSTOM_BASE_URL", "http://api.vendor.example/v1")
+    with pytest.raises(Exception):
+        main_module._validate_provider_setting("CUSTOM_BASE_URL", "https://localhost/v1")
+    with pytest.raises(Exception):
+        main_module._validate_provider_setting(
+            "CUSTOM_BASE_URL", "https://user:password@api.vendor.example/v1")
+    # A host that resolves onto the cloud metadata address is refused however
+    # public its name looks.
     monkeypatch.setattr(main_module.socket, "getaddrinfo", lambda *_args, **_kwargs: [
         (2, 1, 6, "", ("169.254.169.254", 443))])
     with pytest.raises(Exception) as private:
         main_module._validate_provider_setting("CUSTOM_BASE_URL", "https://api.vendor.example/v1")
     assert "api.vendor.example" not in str(private.value)
-    with pytest.raises(Exception):
-        main_module._validate_provider_setting(
-            "CUSTOM_BASE_URL", "https://user:password@api.vendor.example/v1")
 
 
 def test_deletion_queue_retries_and_keeps_dataset_tombstone(client, monkeypatch):
@@ -1100,60 +1125,75 @@ def test_running_session_reports_which_kind_of_work_is_in_flight(local_client):
     assert settled["active_kind"] is None
 
 
-def test_minimax_is_its_own_provider_and_its_key_never_reaches_a_sandbox(local_client):
-    """A different vendor gets a different slot, not OpenAI's.
 
-    MiniMax speaks the OpenAI wire format, so it can be driven through the
-    openai slot by repointing OPENAI_BASE_URL and putting a MiniMax key in
-    OPENAI_API_KEY. That works and misreports: readiness, run provenance, and
-    the supervisor's distinct-reviewer rule all identify a provider by slot, so
-    the run would call itself OpenAI and could be chosen as its own independent
-    reviewer.
+def test_a_vendor_the_code_has_never_heard_of_becomes_a_usable_provider():
+    """Adding a provider must not require changing this repository.
+
+    Providers used to be a table, their hostnames a second table, and their
+    logos a third, so a vendor nobody had anticipated could not be added at all
+    — a MiniMax key could only be used by pointing OPENAI_BASE_URL at MiniMax,
+    which then reported the run as OpenAI. A provider is now anything the
+    deployment declares: a key, a base URL, and optionally a model.
     """
-    from engine.agent import NEVER_SANDBOX_PREFIXES
-    from engine.llm_clients import CAPABILITY_PROVIDERS, PROVIDERS
+    from engine.llm_clients import (
+        all_providers, capability_providers, declared_providers, provider_model,
+    )
 
-    from server.main import BUILTIN_PROVIDER_HOSTS, SYSTEM_SANDBOX_ENV
-
-    spec = PROVIDERS["minimax"]
+    env = {
+        "MINIMAX_API_KEY": "secret",
+        "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+        "MINIMAX_MODEL": "MiniMax-M3",
+    }
+    assert "minimax" in declared_providers(env)
+    spec = all_providers(env)["minimax"]
     assert spec.api_key_env == "MINIMAX_API_KEY"
-    assert spec.base_url_env == "MINIMAX_BASE_URL"
-    assert "api.minimax.io" in BUILTIN_PROVIDER_HOSTS
+    assert provider_model("minimax", env) == "MiniMax-M3"
 
-    # Orchestration only: no adapter may ever be entitled to the key.
-    assert any(prefix == "MINIMAX_" for prefix in NEVER_SANDBOX_PREFIXES)
-    assert not {name for name in SYSTEM_SANDBOX_ENV if name.startswith("MINIMAX_")}
+    # Usable, not merely listed: it serves capabilities like any other provider.
+    for capability in ("orchestration", "assessment", "report", "codegen"):
+        assert "minimax" in capability_providers(capability, env)
 
-    # It is a real alternative, not a dead entry.
-    assert "minimax" in CAPABILITY_PROVIDERS["orchestration"]
-
-    # And it shows up as its own service in the console rather than as OpenAI.
-    rows = local_client.get("/api/providers").json()["providers"]
-    labels = {row["provider"]: row["label"] for row in rows}
-    assert labels.get("minimax") == "MiniMax"
-    assert labels.get("openai") == "OpenAI"
+    # The transport pins itself to the host the deployment named, exactly as it
+    # does for a shipped provider whose URL is configurable.
+    assert spec.allowed_hosts is None
+    assert spec.default_base_url == "https://api.minimax.io/v1"
 
 
-def test_a_minimax_base_url_is_accepted_without_widening_the_allowlist(monkeypatch):
-    import socket as socket_module
+def test_a_declared_provider_needs_an_endpoint_not_just_a_key():
+    """A stray credential is not a provider.
 
+    Scraper and sandbox credentials share the *_API_KEY shape, and registering
+    them would offer the operator a scraper as an orchestrator.
+    """
+    from engine.llm_clients import declared_providers
+
+    assert declared_providers({"MINIMAX_API_KEY": "secret"}) == {}
+    assert declared_providers({
+        "DAYTONA_API_KEY": "secret", "DAYTONA_BASE_URL": "https://app.daytona.io/api",
+    }) == {}
+
+
+def test_a_declared_provider_is_shown_as_a_service_with_a_derived_logo_site():
+    from server.main import _provider_readiness, _vendor_site
+
+    env = {
+        "MINIMAX_API_KEY": "secret",
+        "MINIMAX_BASE_URL": "https://api.minimax.io/v1",
+    }
+    rows = {row["provider"]: row for row in _provider_readiness(env)}
+    assert "minimax" in rows, "a declared provider should appear as its own service"
+    # Its logo resolves from its own endpoint rather than from a table of sites,
+    # so a vendor added tomorrow gets a mark without anyone editing this repo.
+    assert rows["minimax"]["site"] == "https://minimax.io"
+    assert _vendor_site("https://api.newvendor.example/v1") == "https://newvendor.example"
+
+
+def test_a_declared_provider_may_supervise(monkeypatch):
+    """The distinct reviewer is where a second vendor matters most."""
     from server.main import _validate_provider_setting
 
-    # The validator resolves the host to reject private/link-local targets.
-    # Pin that to a public address so this asserts the allowlist decision
-    # rather than the test machine's DNS.
-    monkeypatch.setattr(
-        socket_module, "getaddrinfo",
-        lambda *args, **kwargs: [(None, None, None, "", ("93.184.216.34", 443))])
-
-    # Accepted: returns without raising.
-    _validate_provider_setting("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
-
-    # The allowlist is still an allowlist. This is rejected before resolution.
-    with pytest.raises(HTTPException) as rejected:
-        _validate_provider_setting("MINIMAX_BASE_URL",
-                                   "https://api.not-a-real-provider.example/v1")
-    assert "not allowed" in rejected.value.detail
-
-    # And MiniMax can now be named as the distinct supervisor.
+    monkeypatch.setenv("MINIMAX_API_KEY", "secret")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
     _validate_provider_setting("SUPERVISOR_PROVIDER", "minimax")
+    with pytest.raises(HTTPException):
+        _validate_provider_setting("SUPERVISOR_PROVIDER", "not-a-provider")
