@@ -12,6 +12,12 @@ python-multipart==0.0.32
 reportlab==5.0.0
 pypdf==6.15.0
 psycopg[binary]==3.3.4
+# psycopg needs a time zone database, and Windows does not ship one, so this is
+# a dependency of psycopg on win32 and invisible everywhere else. Compiling the
+# lock on Linux or macOS therefore omits it, and Windows CI then fails
+# --require-hashes on an unpinned transitive. Named here so it is pinned on
+# whichever platform the lock is compiled from.
+tzdata==2026.3
 
 # Transitive via daytona, pinned forward for PYSEC-2026-3545/3546/3547. Remove
 # this floor once daytona's own constraint moves past it.
