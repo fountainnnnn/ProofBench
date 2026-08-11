@@ -19,6 +19,7 @@ from typing import Any
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DOUBLEWORD_BASE_URL = "https://api.doubleword.ai/v1"
+MINIMAX_BASE_URL = "https://api.minimax.io/v1"
 MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -80,22 +81,36 @@ PROVIDERS: dict[str, ProviderSpec] = {
         model_env="DOUBLEWORD_MODEL",
         base_url_env="DOUBLEWORD_BASE_URL",
     ),
+    # MiniMax speaks the OpenAI wire format, which is the only reason it could
+    # be driven through the openai slot at all — by pointing OPENAI_BASE_URL at
+    # it and putting a MiniMax key in OPENAI_API_KEY. That works and reads as a
+    # lie: readiness, run provenance, and the supervisor's "distinct reviewer"
+    # rule all identify a provider by slot, so a MiniMax run would report itself
+    # as OpenAI and could be picked as its own independent reviewer. It gets its
+    # own slot instead.
+    "minimax": ProviderSpec(
+        api_key_env="MINIMAX_API_KEY",
+        default_base_url=MINIMAX_BASE_URL,
+        default_model="MiniMax-M3",
+        model_env="MINIMAX_MODEL",
+        base_url_env="MINIMAX_BASE_URL",
+    ),
 }
 
 # capability -> providers in preference order. The first configured one is used;
 # callers that tolerate a failure walk the rest of the list.
 CAPABILITY_PROVIDERS: dict[str, tuple[str, ...]] = {
-    "orchestration": ("moonshot", "openai", "openrouter", "deepseek"),
-    "assessment": ("doubleword", "openrouter", "openai", "deepseek"),
-    "report": ("moonshot", "openai", "openrouter", "deepseek"),
-    "codegen": ("deepseek", "openrouter"),
+    "orchestration": ("moonshot", "openai", "minimax", "openrouter", "deepseek"),
+    "assessment": ("doubleword", "openrouter", "openai", "minimax", "deepseek"),
+    "report": ("moonshot", "openai", "minimax", "openrouter", "deepseek"),
+    "codegen": ("deepseek", "minimax", "openrouter"),
     # Supervision is the pool a DISTINCT reviewer is drawn from. Order is a
     # preference, not a guarantee: supervisor_identity walks it and takes the
     # first configured provider whose (provider, model) differs from the primary
     # producer, so on a two-provider deployment the reviewer is naturally the one
     # the primary is not. It is never resolved with resolve_provider, because a
     # supervisor that collapses onto the primary is worse than none.
-    "supervision": ("moonshot", "openai", "deepseek", "openrouter", "doubleword"),
+    "supervision": ("moonshot", "openai", "minimax", "deepseek", "openrouter", "doubleword"),
 }
 
 # Every provider is selectable as a default, plus the historical "kimi" spelling
