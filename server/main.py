@@ -1075,16 +1075,18 @@ PROVIDER_NOTES = {
         # capability layer below would accept any configured LLM, but OpenAI is
         # the default a deployment is expected to hold, so a run is blocked
         # without it.
-        "label": "OpenAI", "essential": True,
+        "label": "OpenAI", "essential": True, "site": "https://openai.com",
         "capability": "Orchestrator reasoning and the built-in openai_vision candidate.",
         "optional": ("OPENAI_VISION_MODEL",),
     },
     "openrouter": {
         "label": "OpenRouter",
+        "site": "https://openrouter.ai",
         "capability": "OpenAI-compatible orchestration, documentation assessment, and reports.",
     },
     "doubleword": {
         "label": "Doubleword",
+        "site": "https://doubleword.ai",
         "capability": "Batched documentation assessment and the built-in doubleword candidate.",
         # A gateway serves many models, so choosing the provider is not yet a
         # choice of model: this one is required rather than optional.
@@ -1092,14 +1094,17 @@ PROVIDER_NOTES = {
     },
     "deepseek": {
         "label": "DeepSeek",
+        "site": "https://www.deepseek.com",
         "capability": "Generates and repairs adapters for candidates without a built-in.",
     },
     "moonshot": {
         "label": "Moonshot (Kimi)",
+        "site": "https://www.moonshot.ai",
         "capability": "Orchestration and supervisor reasoning with Kimi models.",
     },
     "minimax": {
         "label": "MiniMax",
+        "site": "https://www.minimax.io",
         "capability": "Orchestration, documentation assessment, and reports with MiniMax models.",
         # A MiniMax key is not a choice of MiniMax model, and the default here
         # ages faster than the provider does.
@@ -1121,7 +1126,8 @@ def _provider_readiness() -> tuple[dict, ...]:
 
     rows = [{"provider": "daytona", "label": "Daytona sandboxes",
              "capability": "Executes every benchmark candidate in an isolated sandbox.",
-             "required": ("DAYTONA_API_KEY",), "optional": (), "essential": True}]
+             "required": ("DAYTONA_API_KEY",), "optional": (), "essential": True,
+             "site": "https://www.daytona.io"}]
 
     for name, spec in PROVIDERS.items():
         notes = PROVIDER_NOTES.get(name, {})
@@ -1136,6 +1142,9 @@ def _provider_readiness() -> tuple[dict, ...]:
             "required": (spec.api_key_env, *extra_required),
             "optional": optional,
             "essential": bool(notes.get("essential", False)),
+            # Where this vendor's mark is resolved from. Stated here so the
+            # logo fetch has a server-owned URL and never a caller's.
+            "site": notes.get("site", ""),
         })
 
     for name in scrapers.DEFAULT_ORDER:
@@ -1151,6 +1160,7 @@ def _provider_readiness() -> tuple[dict, ...]:
             "required": credentials,
             "optional": (),
             "essential": False,
+            "site": scrapers.SITES.get(name, ""),
         })
 
     return tuple(rows)
@@ -1736,6 +1746,28 @@ def api_brand(names: str = "", identity: Identity = Depends(authenticate)):
         found = _LOGOS.get(name, known[name])
         if found:
             logos[name] = brand.data_uri(*found)
+    return {"logos": logos}
+
+
+@app.get("/api/brand/providers")
+def api_brand_providers(identity: Identity = Depends(authenticate)):
+    """Vendor marks for the services this deployment can hold a key for.
+
+    Same rule as the candidate marks above: each logo is resolved from a URL
+    this server states in PROVIDER_READINESS, never one a request supplies, and
+    a fetch that redirects off the vendor's own site is refused rather than
+    published under their name. A provider whose mark cannot be resolved is
+    simply absent, and the console keeps its monogram — a wrong logo is worse
+    than no logo.
+    """
+    logos = {}
+    for row in PROVIDER_READINESS:
+        site = row.get("site")
+        if not site:
+            continue
+        found = _LOGOS.get(f"provider:{row['provider']}", site)
+        if found:
+            logos[row["provider"]] = brand.data_uri(*found)
     return {"logos": logos}
 
 

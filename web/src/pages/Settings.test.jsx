@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   saveProviderKey: vi.fn(),
   revealProviderKey: vi.fn(),
   fetchBrandLogos: vi.fn(),
+  fetchProviderBrandLogos: vi.fn(),
   getIntegrationAgentStatus: vi.fn(),
   sendIntegrationAgentMessage: vi.fn(),
   streamIntegrationAgentMessage: vi.fn(),
@@ -78,6 +79,7 @@ describe("Settings about disclosure", () => {
     // No runtime brand lookup resolves by default, so a provider without a
     // bundled mark keeps its monogram instead of waiting on the network.
     api.fetchBrandLogos.mockResolvedValue({});
+    api.fetchProviderBrandLogos.mockResolvedValue({});
     api.getSettingsDefaults.mockResolvedValue({
       llm: [], scrapers: { order: [], default: [], providers: [] },
     });

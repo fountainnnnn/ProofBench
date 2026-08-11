@@ -355,6 +355,16 @@ export async function fetchBrandLogos(names) {
   return Object.assign({}, ...responses);
 }
 
+/* Marks for the services Settings lists, which are not candidates and so have
+   no docs URL of their own. The server resolves each from a site it states
+   itself, so this sends no names: asking for a logo must never be a way to ask
+   the deployment to fetch a URL of the caller's choosing. */
+export async function fetchProviderBrandLogos() {
+  const res = await apiFetch(`${BASE}/api/brand/providers`);
+  const data = await jsonOrThrow(res);
+  return data?.logos && typeof data.logos === "object" ? data.logos : {};
+}
+
 export async function createSession() {
   const res = await apiFetch(`${BASE}/api/sessions`, { method: "POST" });
   return jsonOrThrow(res);

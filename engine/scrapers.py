@@ -34,6 +34,16 @@ LABELS = {"scrapedo": "Scrape.do", "oxylabs": "Oxylabs", "brightdata": "Bright D
 # The self-hosted option costs nothing to run; the paid three bill per call.
 FREE = frozenset({"selfhosted"})
 
+# Each vendor's own site, used only to resolve its logo. Server-owned on
+# purpose: server/brand.py fetches a mark from a URL the deployment states, and
+# never from one a request supplies. The self-hosted pair is absent because it
+# is two open-source projects rather than a vendor with a mark to serve.
+SITES = {
+    "scrapedo": "https://scrape.do",
+    "oxylabs": "https://oxylabs.io",
+    "brightdata": "https://brightdata.com",
+}
+
 # What each provider answers, and a one-line note for the Settings tooltip.
 # `credentials` names the environment variables each provider authenticates
 # with. The provider modules each read their own names, so this is the one place

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
   deleteProviderKey,
-  fetchBrandLogos,
+  fetchProviderBrandLogos,
   getProviderReadiness,
   getScraperOrder,
   getSettingOptions,
@@ -1164,7 +1164,7 @@ export default function Settings() {
   useEffect(() => {
     if (!unbrandedProviders) return;
     let alive = true;
-    ensureBrandAssets(unbrandedProviders.split(","), fetchBrandLogos)
+    ensureBrandAssets(unbrandedProviders.split(","), fetchProviderBrandLogos)
       .then((found) => { if (alive && found) setLogoVersion((value) => value + 1); })
       .catch(() => {});
     return () => { alive = false; };
