@@ -25,6 +25,8 @@ import kimiLogo from "../assets/provider-logos/kimi.svg";
 import openaiLogo from "../assets/provider-logos/openai.svg";
 import openrouterLogo from "../assets/provider-logos/openrouter.svg";
 import oxylabsLogo from "../assets/provider-logos/oxylabs.svg";
+import scrapedoLogo from "../assets/provider-logos/scrapedo.svg";
+import brightdataLogo from "../assets/provider-logos/brightdata.svg";
 
 /* Banner glyphs. Same 16px box and 1.7 stroke as the console's nav icons, so
    the icon family stays one family. */
@@ -68,6 +70,12 @@ const PROVIDER_LOGOS = {
   openai: openaiLogo,
   openrouter: openrouterLogo,
   oxylabs: oxylabsLogo,
+  // The two scrapers that shipped without a mark. Their sites serve only a
+  // favicon, so the runtime resolver could offer nothing better than a 32px
+  // bitmap next to seven vector marks; these are the icon halves of each
+  // vendor's own lockup, which is what the tile has room for.
+  scrapedo: scrapedoLogo,
+  brightdata: brightdataLogo,
 };
 
 function Chevron({ open }) {
