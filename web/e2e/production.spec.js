@@ -92,9 +92,15 @@ test("production shell, dataset lifecycle, accessibility, and responsive layout"
   }
   await expect(page.locator("#proofbench-main").getByRole("heading", { name: "Datasets" })).toBeVisible();
 
-  await expect(page.getByRole("heading", { name: "Sample labelled dataset" })).toBeVisible();
+  // Before generating there is no sample dataset, only the card offering one.
+  // This used to assert the row's own heading here, which named a dataset that
+  // does not exist yet and only passed while the card happened to carry that
+  // same wording.
+  await expect(page.getByRole("heading", { name: "Start with the sample" })).toBeVisible();
   await page.getByRole("button", { name: "Generate sample dataset" }).click();
   await expect(page.getByRole("button", { name: "Use in benchmark" }).first()).toBeVisible({ timeout: 20_000 });
+  // And once it exists it is listed as what it is.
+  await expect(page.getByRole("heading", { name: "Sample labelled dataset" }).first()).toBeVisible();
   await assertNoDemoExecutionControl(page, "datasets");
   const desktopOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
