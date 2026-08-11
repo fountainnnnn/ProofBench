@@ -287,40 +287,33 @@ click==8.4.2 \
     --hash=sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6 \
     --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
     # via uvicorn
-colorama==0.4.6 \
-    --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
-    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
-    # via
-    #   click
-    #   loguru
-    #   tqdm
-daytona==0.199.0 \
-    --hash=sha256:26d23094853ae20d0c33f9df5410a60ef2ba70d0ce50965ff5267a29b64f117c \
-    --hash=sha256:c217ec0e1c795cafb74955e6f1ebab67ab1014b8c38a6bc51b953630a1760c80
+daytona==0.203.0 \
+    --hash=sha256:bfe2527225c612a5f7889679398bdc00aa1d5997e2f3c467d93d654cb9485905 \
+    --hash=sha256:c8c1eb44fbb710e6c35fc0c436a0e7d897db67bb5627006dcf5ed96801469d95
     # via -r requirements.in
-daytona-analytics-api-client==0.199.0 \
-    --hash=sha256:83f4852f7f2c90932e8a9230a1c098de7405d5ad2857242931f8101947d98939 \
-    --hash=sha256:da0435642a18851b0537b7773c444893d5364e0c4ce20b4b5274fb5131ccf9c8
+daytona-analytics-api-client==0.203.0 \
+    --hash=sha256:8b975fb897878e18d51c9b9c363273940d8b4d2f35124385e4f73c14d5e73380 \
+    --hash=sha256:e17315b0be51b59a8165653134ffb6f847b01107577d912667a2c2b37f38de84
     # via daytona
-daytona-analytics-api-client-async==0.199.0 \
-    --hash=sha256:0a9ccd57cb71e309f4a97b76d50e8f4fdf58c03359ab072dd9aa02ac590c980c \
-    --hash=sha256:6ddb48aac42677e688709c8c739a117717e5ed4da5458d4866cb776b04867f61
+daytona-analytics-api-client-async==0.203.0 \
+    --hash=sha256:25eb902f09679b32955db729f31af39c6f882b6fb006e9f650b7fe10adc33f20 \
+    --hash=sha256:9ee0afff2b84255ccbd3d9a1fb1b4306f7bffcdca06347832ba59e1bcb8ddeb6
     # via daytona
-daytona-api-client==0.199.0 \
-    --hash=sha256:038078b536dcd43ae8c20ad755e759be19c9228c3812a74969c54d0dc929b54e \
-    --hash=sha256:4b7914dfd812aa8b0de0036f5b41f82a04e942621186d8e7bc3d1c7799501219
+daytona-api-client==0.203.0 \
+    --hash=sha256:461e6ef12ba3d570114a5878822b69ea22a22a2c3787b946ad7afc66ee747905 \
+    --hash=sha256:e6c5c2b469d282682e39cfe0c5ecd13ec94a5e65f0401add678139a96a39d0ad
     # via daytona
-daytona-api-client-async==0.199.0 \
-    --hash=sha256:554acbb3c168070f7e9bac97c4259e552eef79de58e54cc75f9675c6bf58f8d4 \
-    --hash=sha256:f894c1ccca97ae2aecec00d3828111c8c24e021f3f751a13b6df596a34581d2c
+daytona-api-client-async==0.203.0 \
+    --hash=sha256:2ecdfc0c12f1eb6e92954c5d23d97b7a3a32e0560d075cde38f4a96b8ebc333e \
+    --hash=sha256:7dbe3df925bfc3b00e2ade7cbbf45cbe77f254b6d93202e7b10e2a518d7c7e3e
     # via daytona
-daytona-toolbox-api-client==0.199.0 \
-    --hash=sha256:63009ea7c55a0a03ea76b879b2e03e8a9e4fcf420d678c4b2bfee5ec9f531179 \
-    --hash=sha256:ce860c37b2ad8d706c7e2b42725821934f5943dc1e97ba04078c84bc67db0129
+daytona-toolbox-api-client==0.203.0 \
+    --hash=sha256:a2f35c55d9e582edda47dfa545b6732c655478c4ccf37a780c192139ba1f342d \
+    --hash=sha256:b443ada7142b23653ee8f3aeda8834421e0d6d13a1f8eb455f8f7511a4ba5e88
     # via daytona
-daytona-toolbox-api-client-async==0.199.0 \
-    --hash=sha256:47539035d6c1e6d6cafd6d3c003e2ac1aa633d35898f90fe6feeb829b04fd532 \
-    --hash=sha256:aabd5aaae3ae13a557fee420427e7908f1824775c60b1611291bf9cc0f5a629c
+daytona-toolbox-api-client-async==0.203.0 \
+    --hash=sha256:3d7ad4131200d93dc6a37ac697800957675edb48a72089c06e924e7a8753986e \
+    --hash=sha256:948f03d1527994e33df5d805f6d13d30743c39fa079f40e1643b442a8df41b04
     # via daytona
 deprecated==1.3.1 \
     --hash=sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f \
@@ -1407,7 +1400,7 @@ typing-inspection==0.4.2 \
 tzdata==2026.3 \
     --hash=sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415 \
     --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931
-    # via psycopg
+    # via -r requirements.in
 urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
@@ -1425,10 +1418,6 @@ websocket-client==1.9.0 \
     --hash=sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98 \
     --hash=sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef
     # via python-socketio
-win32-setctime==1.2.0 \
-    --hash=sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390 \
-    --hash=sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0
-    # via loguru
 wrapt==2.2.2 \
     --hash=sha256:0065a3b657cec06813b4241d2462ccec287f6863103d7445b725fb3a889736f9 \
     --hash=sha256:055e6fcfaa28e58c6a8c247d48b92be9d56f818b7068aa4f22b15b3343a09931 \
