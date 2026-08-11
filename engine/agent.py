@@ -127,6 +127,7 @@ NEVER_SANDBOX_PREFIXES = (
     "DEEPSEEK_",
     "DOUBLEWORD_",
     "KIMI_",
+    "MINIMAX_",
     "MOONSHOT_",
     "OPENAI_",
     "OPENROUTER_",

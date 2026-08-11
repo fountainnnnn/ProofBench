@@ -67,6 +67,7 @@ SYSTEM_SANDBOX_ENV = {
 # granted one however it is named or what its generated source asks for.
 SYSTEM_ORCHESTRATION_ENV = {
     "MOONSHOT_API_KEY", "KIMI_MODEL",
+    "MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_MODEL",
     "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL",
     "SUPERVISOR_PROVIDER", "SUPERVISOR_MODEL",
 }
@@ -86,7 +87,8 @@ SYSTEM_PROVISION_ENV = {"DAYTONA_API_KEY"}
 SETTINGS_PROVIDER_ENV = (SYSTEM_SANDBOX_ENV | SYSTEM_ORCHESTRATION_ENV
                          | SYSTEM_SCRAPER_ENV | SYSTEM_PROVISION_ENV)
 BUILTIN_PROVIDER_HOSTS = {
-    "api.deepseek.com", "api.doubleword.ai", "api.moonshot.ai", "openrouter.ai",
+    "api.deepseek.com", "api.doubleword.ai", "api.minimax.io", "api.moonshot.ai",
+    "openrouter.ai",
 }
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}_(?:API_KEY|BASE_URL|MODEL)$")
 # Oxylabs authenticates with a username/password pair rather than an API key, so
@@ -428,7 +430,8 @@ def _is_provider_env_name(name: str) -> bool:
 
 def _validate_provider_setting(name: str, value: str) -> None:
     if name == "SUPERVISOR_PROVIDER":
-        allowed = {"openai", "moonshot", "kimi", "openrouter", "deepseek", "doubleword"}
+        allowed = {"openai", "moonshot", "kimi", "minimax", "openrouter", "deepseek",
+                   "doubleword"}
         if value.strip().casefold() not in allowed:
             raise HTTPException(
                 status_code=422,
@@ -1094,6 +1097,13 @@ PROVIDER_NOTES = {
     "moonshot": {
         "label": "Moonshot (Kimi)",
         "capability": "Orchestration and supervisor reasoning with Kimi models.",
+    },
+    "minimax": {
+        "label": "MiniMax",
+        "capability": "Orchestration, documentation assessment, and reports with MiniMax models.",
+        # A MiniMax key is not a choice of MiniMax model, and the default here
+        # ages faster than the provider does.
+        "required": ("MINIMAX_MODEL",),
     },
 }
 
